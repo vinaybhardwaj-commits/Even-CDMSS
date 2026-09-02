@@ -235,17 +235,12 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
     });
 
     // ── 3. checkpoints (Haiku, blinded) ──
-    // ⚠️ THE ONLY TWO EXTRACTED-CASE FIELDS THE CHECKPOINT PATH MAY SEE, read once, here, so the
-    // relaxation is auditable in one place. `diagnosis` and `procedure` are classified PRE-OUTCOME
-    // by the DB addendum §A4; `disposition`, `followUp`, `aftercare` and `courseSummary` are
-    // outcome-bearing and are never read on this path. They steer retrieval only — neither string
-    // is placed in a checkpoint prompt.
-    const extractedCase = (extraction.extractedJson ?? {}) as Record<string, unknown>;
-    const extractedPreOutcome = {
-      diagnosis: extractedCase.diagnosis == null ? null : String(extractedCase.diagnosis),
-      procedure: extractedCase.procedure == null ? null : String(extractedCase.procedure),
-    };
-
+    // ⚠️ THE EXTRACTED CASE IS REACHED IN EXACTLY TWO PLACES IN THIS PIPELINE, and neither is the
+    // checkpoint loop below: assembleEpisode puts it on the DISCHARGE event (which every blinded
+    // filter removes), and runFidelityPass reads it because A2 is the pass whose whole job is to
+    // read it. A revision that fed its diagnosis and procedure into the checkpoint retrieval query
+    // was reverted on 2026-09-02 — a discharge summary is written after the fact, so choosing
+    // excerpts with it puts hindsight into a blinded pass through the retrieved text. §3.3.3 stands.
     const plan = checkpointPlan(envelope.losDays);
     const admittedAt = envelope.admittedAt as string;
     const checkpoints: CheckpointResult[] = [];
@@ -267,13 +262,9 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
         cutoffAt,
         admissionContext,
         events: input_events,
-        retrievalQueryInput: {
-          eventsBeforeCutoff: input_events,
-          // ONLY these two fields of the extracted case, split out at the call site so nothing
-          // else from it can reach a blinded pass. See RetrievalQueryInput's note.
-          extractedDiagnosis: extractedPreOutcome.diagnosis,
-          extractedProcedure: extractedPreOutcome.procedure,
-        },
+        // The SAME filtered list the checkpoint itself is given. Nothing else — the extracted case
+        // is not reachable from the retrieval path, deliberately (see RetrievalQueryInput).
+        retrievalQueryInput: { eventsBeforeCutoff: input_events },
         model: modelCheckpoint,
       }));
     }

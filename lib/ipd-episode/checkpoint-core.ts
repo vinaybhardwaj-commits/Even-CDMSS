@@ -40,23 +40,23 @@ const Q_TOTAL_CHARS = 1200;
 
 export interface RetrievalQueryInput {
   /**
-   * Events ALREADY filtered to this checkpoint's cut-off. Every clinical term below is read off
-   * this list, so the query cannot describe something the checkpoint is not allowed to see.
+   * Events ALREADY filtered to this checkpoint's cut-off, and the ONLY input this builder has.
+   *
+   * ⚠️ THE EXTRACTED CASE IS NOT AN INPUT HERE, and the absence is the point (V, 2026-09-02).
+   * An earlier revision fed the discharge summary's `diagnosis` and `procedure` into this query on
+   * the grounds that the DB addendum classifies them as "pre-outcome" and that they steer only
+   * WHICH PASSAGES ARE FETCHED, never the prompt. Both things were true and the reasoning was still
+   * wrong: a discharge summary is written after the fact, so its diagnosis is what the admission
+   * turned out to be. Selecting excerpts with it puts hindsight into a blinded pass through the
+   * retrieved text — a day 0 checkpoint would be reading passages chosen by knowing the answer,
+   * and its "expected course" would quietly become a description of what happened. PRD §3.3.3
+   * stands as written: the checkpoint never receives the extracted case, by any route.
+   *
+   * A thin query is the honest outcome when little is documented before day 0. `retrieval_offtopic`
+   * will show it and the checkpoint will have little to work from — which is the true state of the
+   * record at that hour, and is not to be backfilled with hindsight.
    */
   eventsBeforeCutoff: EpisodeEvent[];
-  /**
-   * ⚠️ THE ONLY TWO FIELDS OF THE EXTRACTED CASE THIS ENGINE'S BLINDED PASS MAY TOUCH, and they
-   * arrive pre-split so no other field can be reached from here. The DB addendum (§A4) classifies
-   * `diagnosis` and `procedure` as PRE-OUTCOME, against `disposition` / `followUp` / `aftercare` /
-   * `courseSummary` which are outcome-bearing and are never read.
-   *
-   * This is a deliberate, narrow relaxation of §3.3.3 ("the checkpoint never receives the extracted
-   * case"), made on V's instruction to fix retrieval topicality. Its blast radius is bounded: these
-   * strings steer WHICH PASSAGES ARE FETCHED and are never placed in the prompt, so the checkpoint
-   * still writes its expectations from the events alone. Flagged for the orchestrator.
-   */
-  extractedDiagnosis?: string | null;
-  extractedProcedure?: string | null;
 }
 
 const detailStr = (e: EpisodeEvent, key: string): string => {
@@ -65,38 +65,46 @@ const detailStr = (e: EpisodeEvent, key: string): string => {
 };
 
 /**
- * The retrieval query, in the priority §1 of the 2026-09-02 review sets:
- *   1. the OT note's `surgery_name` — the single most specific clinical fact an episode carries
- *   2. the extracted case's `diagnosis` and `procedure` (pre-outcome fields only)
- *   3. clinical narrative from progress notes and the initial assessment, most recent first
- *   4. distinct `ordered_item_name` of the day's pharmacy orders
+ * The retrieval query, built ONLY from what the checkpoint may already see:
+ *   1. the OT note's `surgery_name`, where that OT note is itself before the cut-off
+ *   2. the initial assessment's narrative — the admission-time clinical picture, and often the
+ *      only clinical text a day 0 checkpoint has
+ *   3. the most recent progress note before the cut-off
+ *   4. distinct `ordered_item_name` of the latest documented day's pharmacy orders
  *   5. lab `service_name` values
  *
- * Every part is optional. An episode with no OT note and no extraction still gets a query built
- * from its notes, drugs and labs — which is the point: this reaches for clinical words wherever
- * the record actually holds them.
+ * Every part is optional and every part comes off the filtered event list, so the query can never
+ * describe something the checkpoint is not allowed to see. An episode with nothing clinical
+ * documented before day 0 yields a thin query, and that is the correct answer rather than a
+ * problem to solve — see the note on RetrievalQueryInput.
  */
 export function buildRetrievalQuery(input: RetrievalQueryInput): string {
   const events = input.eventsBeforeCutoff;
   const parts: string[] = [];
   const push = (v: string | null | undefined) => { const t = (v ?? '').trim(); if (t) parts.push(t); };
 
-  // 1. what was operated on
+  // 1. what was operated on. `events` is already the cut-off window, so an OT note that has not
+  //    happened yet is simply not in this list — no separate date check is needed or wanted.
   const surgeries = Array.from(new Set(
     events.filter((e) => e.event_type === 'ot_note').map((e) => detailStr(e, 'surgery_name')).filter(Boolean),
   )).slice(0, Q_SURGERY_MAX);
   for (const sx of surgeries) push(sx);
 
-  // 2. the two pre-outcome fields of the extracted case, and nothing else from it
-  push(input.extractedDiagnosis);
-  push(input.extractedProcedure);
+  // 2. the initial assessment — the admission-time picture. Taken SEPARATELY from the progress
+  //    notes below rather than competing with them for one slot: at day 0 it is frequently the
+  //    only clinical narrative in existence, and losing it to a later note would empty the query
+  //    at exactly the checkpoint that can least afford it.
+  const assessment = [...events]
+    .filter((e) => e.event_type === 'initial_assessment' && e.summary.trim())
+    .sort((a, b) => String(a.occurred_at ?? '').localeCompare(String(b.occurred_at ?? '')))[0];
+  if (assessment) push(assessment.summary.slice(0, Q_NARRATIVE_CHARS));
 
-  // 3. the most recent clinical narrative before the cut-off
-  const narrative = [...events]
-    .filter((e) => (e.event_type === 'note' || e.event_type === 'initial_assessment') && e.occurred_at && e.summary.trim())
+  // 3. the most recent progress note before the cut-off
+  const note = [...events]
+    .filter((e) => e.event_type === 'note' && e.occurred_at && e.summary.trim())
     .sort((a, b) => String(a.occurred_at).localeCompare(String(b.occurred_at)))
     .pop();
-  if (narrative) push(narrative.summary.slice(0, Q_NARRATIVE_CHARS));
+  if (note) push(note.summary.slice(0, Q_NARRATIVE_CHARS));
 
   // 4. the drugs actually ordered on the latest documented day — what is being treated, in the
   //    only vocabulary this substrate reliably carries

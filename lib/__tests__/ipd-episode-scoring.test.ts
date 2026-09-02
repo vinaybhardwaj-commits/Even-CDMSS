@@ -812,18 +812,42 @@ const CLINICAL_EVENTS: EpisodeEvent[] = [
 ];
 
 test('the query is built from clinical content in the stated priority', () => {
-  const q = buildRetrievalQuery({
-    eventsBeforeCutoff: CLINICAL_EVENTS,
-    extractedDiagnosis: 'Right inguinal hernia',
-    extractedProcedure: 'Hernioplasty',
-  });
-  // 1 surgery, 2 diagnosis + procedure, 3 latest narrative, 4 latest day's drugs, 5 labs
-  assert.match(q, /^Open inguinal hernia repair Right inguinal hernia Hernioplasty/);
-  assert.ok(q.includes('right groin swelling'), 'the latest narrative before the cut-off');
+  const q = buildRetrievalQuery({ eventsBeforeCutoff: CLINICAL_EVENTS });
+  // 1 surgery, 2 initial assessment, 3 latest note, 4 latest day's drugs, 5 labs
+  assert.match(q, /^Open inguinal hernia repair/);
+  assert.ok(q.includes('right groin swelling'), 'the latest progress note before the cut-off');
   assert.ok(!q.includes('older note'));
   assert.ok(q.includes('CEFAZOLIN 1G') && q.includes('PARACETAMOL 1G'), 'the latest day’s drugs');
   assert.ok(!q.includes('OLDER DRUG'), 'only the latest documented drug day');
   assert.ok(q.includes('Complete Blood Count'), 'lab service names');
+});
+
+test('the extracted case CANNOT reach the query — hindsight is not a retrieval input', () => {
+  // the builder takes one argument and there is no field to smuggle a diagnosis through
+  const q = buildRetrievalQuery({ eventsBeforeCutoff: CLINICAL_EVENTS } as Parameters<typeof buildRetrievalQuery>[0]);
+  for (const hindsight of ['Right inguinal hernia', 'Hernioplasty', 'discharged', 'recovered']) {
+    assert.ok(!q.includes(hindsight), `'${hindsight}' comes from the discharge summary and must never steer retrieval`);
+  }
+});
+
+test('the initial assessment survives alongside the notes — it is often day 0’s only clinical text', () => {
+  const withAssessment: EpisodeEvent[] = [
+    ev({ event_id: 'ia', event_type: 'initial_assessment', occurred_at: '2026-08-01T19:00:00.000Z', summary: 'painful irreducible right groin lump, vomiting' }),
+    ev({ event_id: 'n', occurred_at: '2026-08-02T04:00:00.000Z', summary: 'post-op observation' }),
+  ];
+  const q = buildRetrievalQuery({ eventsBeforeCutoff: withAssessment });
+  assert.ok(q.includes('painful irreducible right groin lump'), 'the admission-time picture is kept');
+  assert.ok(q.includes('post-op observation'), 'and the latest note too — they do not compete for one slot');
+});
+
+test('a day 0 window with nothing clinical yields a THIN query, not a backfilled one', () => {
+  // the admission event alone: no note, no assessment, no order, no lab
+  const q = buildRetrievalQuery({
+    eventsBeforeCutoff: [ev({ event_id: 'adm', event_type: 'admission', summary: 'Admission type direct_admission · to General Surgery' })],
+  });
+  assert.equal(q, '', 'nothing clinical was documented, and the query says exactly that');
+  // and an empty query is never judged off-topic — that is a different failure with its own column
+  assert.equal(retrievalIsOffTopic(q, [{ label: 'anything', text: 'anything' }]), false);
 });
 
 test('NO administrative word can reach the query — this was the IP-1286 root cause', () => {
@@ -834,24 +858,21 @@ test('NO administrative word can reach the query — this was the IP-1286 root c
       ...CLINICAL_EVENTS,
       ev({ event_id: 'adm', event_type: 'admission', summary: 'Admission type direct_admission · from OPD · to General Surgery · ward 3B', detail: { ward: '3B', admission_type: 'direct_admission', admit_source: 'OPD', treating_department_name: 'General Surgery', facility_name: 'Even Hospital' } }),
     ],
-    extractedDiagnosis: null, extractedProcedure: null,
   });
   for (const admin of ['direct_admission', 'OPD', 'General Surgery', '3B', 'Even Hospital']) {
     assert.ok(!q.includes(admin), `'${admin}' must not appear — it retrieves staffing literature`);
   }
 });
 
-test('the query works with no OT note and no extraction — notes, drugs and labs alone', () => {
+test('the query works with no OT note — notes, drugs and labs alone', () => {
   const q = buildRetrievalQuery({
     eventsBeforeCutoff: CLINICAL_EVENTS.filter((e) => e.event_type !== 'ot_note'),
-    extractedDiagnosis: null, extractedProcedure: null,
   });
   assert.ok(q.includes('right groin swelling') && q.includes('CEFAZOLIN 1G') && q.includes('Complete Blood Count'));
   assert.ok(!q.includes('hernia repair'));
 });
 
-test('the query survives an empty event list and an absent extraction', () => {
-  assert.equal(buildRetrievalQuery({ eventsBeforeCutoff: [], extractedDiagnosis: null, extractedProcedure: null }), '');
+test('the query survives an empty event list', () => {
   assert.equal(buildRetrievalQuery({ eventsBeforeCutoff: [] }), '');
 });
 

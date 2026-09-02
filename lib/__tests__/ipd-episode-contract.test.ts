@@ -428,19 +428,48 @@ test('the query builder has no administrative parameter left to misuse', () => {
   }
 });
 
-test('ONLY diagnosis and procedure are read from the extracted case on the blinded path', () => {
-  const run = code('lib/ipd-episode/run.ts');
-  const block = run.slice(run.indexOf('const extractedPreOutcome'), run.indexOf('const plan = checkpointPlan'));
-  assert.ok(block.includes('extractedCase.diagnosis') && block.includes('extractedCase.procedure'));
-  // the outcome-bearing fields (addendum §A4) must never be reachable from this path
-  for (const outcome of ['disposition', 'followUp', 'aftercare', 'courseSummary', 'rawNotes', 'lengthOfStayDays']) {
-    assert.ok(!block.includes(outcome), `the checkpoint path must never read '${outcome}'`);
-  }
-  // and the two strings steer retrieval only — they are not put in a checkpoint prompt
+test('the extracted case is UNREACHABLE from the checkpoint retrieval path (§3.3.3, reverted 2026-09-02)', () => {
+  // A discharge summary is written after the fact. Its diagnosis is what the admission turned out
+  // to be, so selecting excerpts with it would put hindsight into a blinded pass through the
+  // retrieved text — even though the strings never enter the prompt. The whole path is gone, and
+  // this asserts it cannot come back.
   const cpCore = code('lib/ipd-episode/checkpoint-core.ts');
-  const userBuilder = cpCore.slice(cpCore.indexOf('export function buildCheckpointUser'), cpCore.indexOf('export function admissionContextLine'));
-  assert.ok(!userBuilder.includes('extractedDiagnosis') && !userBuilder.includes('extractedProcedure'),
-    'neither field may reach the prompt the checkpoint actually reads');
+  const cp = code('lib/ipd-episode/checkpoint.ts');
+  for (const src of [cpCore, cp]) {
+    for (const banned of ['extractedDiagnosis', 'extractedProcedure', 'extractedCase', 'extracted_case', 'extractedJson']) {
+      assert.ok(!src.includes(banned), `the checkpoint layer must not name '${banned}'`);
+    }
+  }
+  // the builder takes ONE input, and it is the filtered event list
+  const iface = cpCore.slice(cpCore.indexOf('export interface RetrievalQueryInput'), cpCore.indexOf('const detailStr'));
+  const fields = [...iface.matchAll(/^\s{2}(\w+)[?]?:/gm)].map((m) => m[1]);
+  assert.deepEqual(fields, ['eventsBeforeCutoff'], 'RetrievalQueryInput has exactly one field');
+
+  // and run.ts passes exactly that, nothing more
+  const run = code('lib/ipd-episode/run.ts');
+  const call = run.slice(run.indexOf('retrievalQueryInput:'), run.indexOf('retrievalQueryInput:') + 220);
+  assert.ok(call.includes('eventsBeforeCutoff: input_events'), 'the checkpoint gets its own filtered list');
+  for (const banned of ['extractedDiagnosis', 'extractedProcedure', 'extraction.']) {
+    assert.ok(!call.includes(banned), `run.ts must not pass '${banned}' into the query`);
+  }
+});
+
+test('the extracted case reaches only the two places that are entitled to it', () => {
+  const run = code('lib/ipd-episode/run.ts');
+  // every read of the stored extraction in the pipeline
+  const reads = [...run.matchAll(/extraction\.extractedJson/g)].length;
+  assert.equal(reads, 2, 'exactly two: assembly (onto the discharge event) and the fidelity pass');
+  assert.ok(/extractedCase: extraction\.extractedJson/.test(run), 'assembleEpisode — filtered out of every blinded input');
+  assert.ok(/runFidelityPass\([\s\S]{0,400}extractedCase: extraction\.extractedJson/.test(run),
+    'runFidelityPass — the one pass whose job is to read it');
+});
+
+test('a thin query is an honest answer, not a gap to backfill', () => {
+  const cpCore = code('lib/ipd-episode/checkpoint-core.ts');
+  // nothing invents content when the window is empty: the builder only ever pushes strings it
+  // found on the filtered events, and returns '' when it found none
+  assert.ok(cpCore.includes("return collapseSpaces(parts.join(' ')).slice(0, Q_TOTAL_CHARS);"));
+  assert.ok(!/fallback|backfill|default query/i.test(cpCore), 'no substitute source of clinical words exists');
 });
 
 test('retrieved titles and the off-topic flag are stored as columns, not buried in jsonb', () => {
