@@ -36,25 +36,32 @@ CREATE TABLE IF NOT EXISTS ipd_episode_audits (
   extraction_version    TEXT,
 
   -- headline
-  divergence_index      INTEGER,
-  completeness_pct      INTEGER,
+  --
+  -- DEFAULT 0 ON EVERY COUNTED COLUMN, and the reason is that NULL and 0 are different claims.
+  -- "no divergent findings" is a result; "we do not know how many divergent findings there were"
+  -- is an absence. A nullable counter makes SUM() and AVG() silently skip rows, so a cohort with
+  -- one unwritten column reports a mean over a denominator nobody chose. The writer also coalesces
+  -- (lib/ipd-episode/store.ts) — the default is the backstop for a future column added to the DDL
+  -- and not yet to the INSERT, which is exactly how a null gets in.
+  divergence_index      INTEGER DEFAULT 0,
+  completeness_pct      INTEGER DEFAULT 0,
 
   -- counters (§6.1) — one column per counter
-  n_findings            INTEGER,
-  n_divergence_pass     INTEGER,
-  n_fidelity_pass       INTEGER,
-  n_omission            INTEGER,
-  n_commission          INTEGER,
-  n_timing              INTEGER,
-  n_sequencing          INTEGER,
-  n_divergent           INTEGER,
-  n_context_dependent   INTEGER,
-  n_unassessable        INTEGER,
-  n_concordant          INTEGER,
-  n_low_value           INTEGER,
-  n_dropped_invalid     INTEGER,
+  n_findings            INTEGER DEFAULT 0,
+  n_divergence_pass     INTEGER DEFAULT 0,
+  n_fidelity_pass       INTEGER DEFAULT 0,
+  n_omission            INTEGER DEFAULT 0,
+  n_commission          INTEGER DEFAULT 0,
+  n_timing              INTEGER DEFAULT 0,
+  n_sequencing          INTEGER DEFAULT 0,
+  n_divergent           INTEGER DEFAULT 0,
+  n_context_dependent   INTEGER DEFAULT 0,
+  n_unassessable        INTEGER DEFAULT 0,
+  n_concordant          INTEGER DEFAULT 0,
+  n_low_value           INTEGER DEFAULT 0,
+  n_dropped_invalid     INTEGER DEFAULT 0,
 
-  checkpoint_count      INTEGER,
+  checkpoint_count      INTEGER DEFAULT 0,
   evidence_tiers        JSONB,
   real_course           JSONB,
   findings              JSONB,
@@ -93,6 +100,12 @@ CREATE TABLE IF NOT EXISTS ipd_episode_checkpoints (
   input_event_count  INTEGER,
   retrieval_query    TEXT,
   retrieval_failed   BOOLEAN DEFAULT FALSE,
+  -- INTEGER[], matching PRD §7.2 and the type of mksap_chunks.id, which is what these ARE
+  -- (lib/ipd-episode/checkpoint-core.ts resolves the model's ordinals to real chunk ids before
+  -- anything is stored). The store's INSERT casts $8::int[] and a contract test pins the two
+  -- together: a mismatch here would be rejected by Postgres inside a catch, and every checkpoint
+  -- row — which is where input_cutoff_at and input_event_count live, the blinding proof — would
+  -- vanish without a sound.
   citation_ids       INTEGER[],
   expected_course    JSONB,
   status             TEXT,

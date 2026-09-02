@@ -38,22 +38,22 @@ export async function POST(req: NextRequest) {
       los_days              INTEGER,
       discharge_type        TEXT,
       extraction_version    TEXT,
-      divergence_index      INTEGER,
-      completeness_pct      INTEGER,
-      n_findings            INTEGER,
-      n_divergence_pass     INTEGER,
-      n_fidelity_pass       INTEGER,
-      n_omission            INTEGER,
-      n_commission          INTEGER,
-      n_timing              INTEGER,
-      n_sequencing          INTEGER,
-      n_divergent           INTEGER,
-      n_context_dependent   INTEGER,
-      n_unassessable        INTEGER,
-      n_concordant          INTEGER,
-      n_low_value           INTEGER,
-      n_dropped_invalid     INTEGER,
-      checkpoint_count      INTEGER,
+      divergence_index      INTEGER DEFAULT 0,
+      completeness_pct      INTEGER DEFAULT 0,
+      n_findings            INTEGER DEFAULT 0,
+      n_divergence_pass     INTEGER DEFAULT 0,
+      n_fidelity_pass       INTEGER DEFAULT 0,
+      n_omission            INTEGER DEFAULT 0,
+      n_commission          INTEGER DEFAULT 0,
+      n_timing              INTEGER DEFAULT 0,
+      n_sequencing          INTEGER DEFAULT 0,
+      n_divergent           INTEGER DEFAULT 0,
+      n_context_dependent   INTEGER DEFAULT 0,
+      n_unassessable        INTEGER DEFAULT 0,
+      n_concordant          INTEGER DEFAULT 0,
+      n_low_value           INTEGER DEFAULT 0,
+      n_dropped_invalid     INTEGER DEFAULT 0,
+      checkpoint_count      INTEGER DEFAULT 0,
       evidence_tiers        JSONB,
       real_course           JSONB,
       findings              JSONB,
@@ -66,12 +66,26 @@ export async function POST(req: NextRequest) {
     )`;
     steps.audits_table = 'ok';
 
-    // ADD COLUMN for a table that already exists from an earlier run of this route — CREATE TABLE
-    // IF NOT EXISTS is a no-op there and would leave the column behind. Same shape as the 0014
-    // `report` column added to ipd_discharge_audits.
+    // ── repairs for a table an earlier run of this route already created ──────────────────────
+    // CREATE TABLE IF NOT EXISTS is a no-op on an existing table, so every column and default
+    // added after the first successful run has to be applied explicitly. Same shape as the 0014
+    // `report` column added to ipd_discharge_audits. All of this is idempotent.
     await sql`ALTER TABLE ipd_episode_audits ADD COLUMN IF NOT EXISTS error_detail TEXT`;
     await sql`ALTER TABLE ipd_episode_audits ALTER COLUMN app_source SET DEFAULT 'standalone'`;
     steps.audits_columns = 'ok';
+
+    // DEFAULT 0 on every counted column (see the DDL note): a null counter is not "zero findings",
+    // it is "unknown", and it makes an aggregate skip the row instead of counting it.
+    for (const col of [
+      'divergence_index', 'completeness_pct', 'n_findings', 'n_divergence_pass', 'n_fidelity_pass',
+      'n_omission', 'n_commission', 'n_timing', 'n_sequencing', 'n_divergent', 'n_context_dependent',
+      'n_unassessable', 'n_concordant', 'n_low_value', 'n_dropped_invalid', 'checkpoint_count',
+    ]) {
+      // identifier interpolation, not a value: `col` comes from this literal list and never from a
+      // request, so there is nothing here for a caller to influence.
+      await sql(`ALTER TABLE ipd_episode_audits ALTER COLUMN ${col} SET DEFAULT 0`);
+    }
+    steps.audits_defaults = 'ok';
 
     await sql`CREATE UNIQUE INDEX IF NOT EXISTS ipd_episode_audits_encounter_engine_uq ON ipd_episode_audits (encounter_id, engine_version)`;
     await sql`CREATE INDEX IF NOT EXISTS ipd_episode_audits_discharged_idx ON ipd_episode_audits (discharged_at DESC)`;
@@ -98,6 +112,32 @@ export async function POST(req: NextRequest) {
     )`;
     await sql`CREATE INDEX IF NOT EXISTS ipd_episode_checkpoints_audit_idx ON ipd_episode_checkpoints (episode_audit_id)`;
     steps.checkpoints_table = 'ok';
+
+    // ── citation_ids must be INTEGER[] ────────────────────────────────────────────────────────
+    // The store inserts `$8::int[]`. If this column were ever created as TEXT[], Postgres would
+    // reject every checkpoint INSERT — and that INSERT is inside a catch, so the rows would
+    // disappear in silence, taking input_cutoff_at and input_event_count (the blinding proof) with
+    // them. This engine has only ever declared INTEGER[], so on any table it created the repair
+    // below is a no-op; it exists so a table created by some other hand cannot poison the writer.
+    //
+    // GUARDED ON THE CATALOGUE so it is genuinely idempotent: an unconditional ALTER TYPE rewrites
+    // the whole table on every run. `_int4` is the pg_type name for integer[].
+    const citationType = (await sql`
+      SELECT a.atttypid::regtype::text AS t
+      FROM pg_attribute a
+      WHERE a.attrelid = 'ipd_episode_checkpoints'::regclass
+        AND a.attname = 'citation_ids' AND a.attnum > 0 AND NOT a.attisdropped
+    `) as Array<{ t: string }>;
+    const current = citationType[0]?.t ?? 'unknown';
+    if (current === 'integer[]') {
+      steps.checkpoints_citation_ids = 'integer[] — already correct, no rewrite';
+    } else {
+      // USING …::text[]::integer[] converts a text[] column elementwise; on an empty table it is
+      // trivially safe, and on a populated one it fails loudly rather than dropping data.
+      await sql`ALTER TABLE ipd_episode_checkpoints
+                ALTER COLUMN citation_ids TYPE INTEGER[] USING citation_ids::text[]::integer[]`;
+      steps.checkpoints_citation_ids = `repaired from ${current} to integer[]`;
+    }
 
     await sql`CREATE TABLE IF NOT EXISTS ipd_episode_skips (
       encounter_id    TEXT NOT NULL,

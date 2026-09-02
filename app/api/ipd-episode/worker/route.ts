@@ -35,7 +35,7 @@ import { fetchClosedEpisodes, isEncounterId } from '@/lib/ipd-episode/db13';
 import {
   IPD_EPISODE_ENGINE_VERSION, auditedEncounterIds, skipIsRetryable, skipRows,
 } from '@/lib/ipd-episode/store';
-import { runEpisodeAudit, type RunEpisodeResult } from '@/lib/ipd-episode/run';
+import { runEpisodeAudit, runEpisodeBatch, MAX_CANDIDATES_EXAMINED } from '@/lib/ipd-episode/run';
 
 /**
  * The soft lock. `app_settings` key `ipd_episode_lock`, written at the start of a tick and released
@@ -85,14 +85,23 @@ async function authed(req: NextRequest): Promise<boolean> {
 }
 
 /**
- * The next episodes to audit, in ascending discharge order (§3.1). "Un-audited" is decided by the
- * audit TABLE, not by a cursor — the table is the watermark, so a missed tick self-heals and a
- * caught-up run is a cheap no-op. A skip row past its 14-day retry window is excluded here rather
- * than attempted and re-skipped.
+ * The candidate QUEUE, in ascending discharge order (§3.1). "Un-audited" is decided by the audit
+ * TABLE, not by a cursor — the table is the watermark, so a missed tick self-heals and a caught-up
+ * run is a cheap no-op. A skip row past its 14-day retry window is excluded here rather than
+ * attempted and re-skipped.
+ *
+ * ⚠️ NOT TRUNCATED TO `max`. It used to be, and that was the bug: a batch of two candidates that
+ * both failed selection audited nothing and reported a full tick. The queue is now handed whole to
+ * `runEpisodeBatch`, which stops when `max` episodes have actually reached the model stages —
+ * or when it has examined `MAX_CANDIDATES_EXAMINED` of them, so a cohort where nothing qualifies
+ * cannot make a tick walk the entire list.
+ *
+ * The db13 query already drops episodes with no progress note (§3.1 condition 2), so the queue is
+ * mostly real candidates before this filter runs at all.
  */
-async function nextCandidates(max: number): Promise<{ encounterId: string; dischargedAt: string | null }[]> {
+async function candidateQueue(): Promise<{ encounterId: string; dischargedAt: string | null }[]> {
   const [closed, audited, skips] = await Promise.all([
-    fetchClosedEpisodes(400),
+    fetchClosedEpisodes(2000),
     auditedEncounterIds(),
     skipRows(),
   ]);
@@ -102,7 +111,6 @@ async function nextCandidates(max: number): Promise<{ encounterId: string; disch
   for (const c of closed) {
     if (done.has(c.encounterId) || stale.has(c.encounterId)) continue;
     out.push({ encounterId: c.encounterId, dischargedAt: c.dischargeDateTime });
-    if (out.length >= max) break;
   }
   return out;
 }
@@ -131,25 +139,39 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ ok: true, mode: 'encounter', engine: IPD_EPISODE_ENGINE_VERSION, processed: 1, results: [r] });
     }
 
-    const candidates = await nextCandidates(max);
-    if (!candidates.length) {
-      return NextResponse.json({ ok: true, mode: 'sweep', engine: IPD_EPISODE_ENGINE_VERSION, caughtUp: true, processed: 0, results: [] });
+    const queue = await candidateQueue();
+    if (!queue.length) {
+      return NextResponse.json({
+        ok: true, mode: 'sweep', engine: IPD_EPISODE_ENGINE_VERSION, caughtUp: true,
+        queueLength: 0, candidatesExamined: 0, audited: 0, skipped: 0,
+        skippedByReason: {}, errors: 0, processed: 0, results: [],
+      });
     }
 
     // SEQUENTIAL, deliberately (see the box arithmetic above). No concurrency knob exists.
-    const results: RunEpisodeResult[] = [];
-    for (const c of candidates) {
-      results.push(await runEpisodeAudit({ encounterId: c.encounterId, dischargedAtHint: c.dischargedAt }));
-    }
+    // A selection skip costs one db13 read and does NOT consume a slot — `max` bounds model spend,
+    // which is the only thing the box is short of.
+    const { results, tally } = await runEpisodeBatch(queue, max, runEpisodeAudit);
 
     return NextResponse.json({
       ok: true,
       mode: 'sweep',
       engine: IPD_EPISODE_ENGINE_VERSION,
+      // What this tick actually did, per §5 of the review: how many candidates were looked at, how
+      // many were audited, how many were skipped and for exactly which reason, how many errored.
+      queueLength: queue.length,
+      candidatesExamined: tally.candidatesExamined,
+      audited: tally.audited,
+      skipped: tally.skipped,
+      skippedByReason: tally.skippedByReason,
+      errors: tally.errors,
+      // `capReached` says a tick stopped on MAX_CANDIDATES_EXAMINED rather than on `max` — i.e. it
+      // walked 50 candidates without filling the batch, which means the queue is mostly unqualified
+      // and is worth knowing rather than inferring from a low audited count.
+      examineCap: MAX_CANDIDATES_EXAMINED,
+      capReached: tally.capReached,
+      caughtUp: tally.exhausted && tally.audited === 0,
       processed: results.length,
-      audited: results.filter((r) => r.status === 'inserted' || r.status === 'updated').length,
-      skipped: results.filter((r) => r.skip).length,
-      errors: results.filter((r) => r.error).length,
       results,
     });
   } catch (e) {

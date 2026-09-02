@@ -27,6 +27,21 @@ const run = sql as unknown as (text: string, params?: unknown[]) => Promise<Reco
 /** Every degraded path in this file says so. A reader of the logs can tell "no rows" from
  *  "this query has been failing since someone renamed a column", which a bare `.catch(() => [])`
  *  cannot. Truncated: an error string is a log line, not a payload. */
+/**
+ * A counted column is never null. `0` and `unknown` are different claims about an episode, and a
+ * nullable counter is the one that quietly corrupts a cohort: SUM and AVG skip nulls, so a single
+ * unwritten column changes the denominator of every aggregate over the table without saying so.
+ *
+ * The DDL carries DEFAULT 0 as well. Both halves are needed — the default covers a column added to
+ * the schema before the INSERT names it, this covers the columns the INSERT already names.
+ *
+ * NB: `losDays` is deliberately NOT run through this. A missing length of stay IS unknown, and
+ * writing 0 would assert a same-day discharge that nothing in the record supports.
+ */
+function num(v: number | null | undefined): number {
+  return Number.isFinite(v as number) ? (v as number) : 0;
+}
+
 function warn(label: string, e: unknown): void {
   console.warn(`[ipd-episode/store] ${label} failed (degraded): ${String((e as Error)?.message ?? e).slice(0, 300)}`);
 }
@@ -266,11 +281,15 @@ export async function saveEpisodeAudit(row: EpisodeAuditRow, checkpoints: Checkp
       [
         row.engineVersion, row.encounterId, row.ipUid, row.memberId, row.facilityName, row.speciality,
         row.admittedAt, row.dischargedAt, row.losDays, row.dischargeType, row.extractionVersion,
-        row.divergenceIndex, row.completenessPct,
-        c.n_findings, c.n_divergence_pass, c.n_fidelity_pass, c.n_omission, c.n_commission, c.n_timing,
-        c.n_sequencing, c.n_divergent, c.n_context_dependent, c.n_unassessable, c.n_concordant,
-        c.n_low_value, c.n_dropped_invalid,
-        row.checkpointCount, JSON.stringify(row.evidenceTiers ?? null), JSON.stringify(row.realCourse ?? null),
+        // NEVER NULL. The DDL defaults these to 0, but a DEFAULT only applies to a column the
+        // INSERT omits — and this INSERT names all of them, so a null here would be written as a
+        // null. `num` is the half of the guarantee that actually holds on this statement.
+        num(row.divergenceIndex), num(row.completenessPct),
+        num(c.n_findings), num(c.n_divergence_pass), num(c.n_fidelity_pass), num(c.n_omission),
+        num(c.n_commission), num(c.n_timing), num(c.n_sequencing), num(c.n_divergent),
+        num(c.n_context_dependent), num(c.n_unassessable), num(c.n_concordant),
+        num(c.n_low_value), num(c.n_dropped_invalid),
+        num(row.checkpointCount), JSON.stringify(row.evidenceTiers ?? null), JSON.stringify(row.realCourse ?? null),
         JSON.stringify(row.findings ?? []), row.commentary == null ? null : JSON.stringify(row.commentary),
         row.modelCheckpoint, row.modelJudge, row.traceId, row.errorDetail ?? null,
       ],

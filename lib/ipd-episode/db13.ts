@@ -123,9 +123,20 @@ export interface EpisodeCandidate {
  * DISTINCT ON takes the latest `_create_time` when one `ipd_no` carries several rows (8 of 2,457
  * do). That is the ONE legitimate use of `_create_time` in this engine and it is a tiebreak
  * between duplicate mirror rows, never a clinical ordering.
+ *
+ * ⚠️ SELECTION CONDITION 2 IS ENFORCED HERE, IN SQL, and that is a behaviour change worth naming.
+ * The EXISTS clause drops episodes with no progress note, so they never become candidates at all.
+ * Previously they were fetched, attempted, and skipped `no_notes` one at a time — 797 closed
+ * episodes against 446 with notes means roughly 44% of every candidate page was destined to be
+ * thrown away, and each one still consumed a slot in the worker's batch. They are now filtered by
+ * the database, which is the only place that can do it cheaply.
+ *
+ * The join stays EXACT on `p.encounter_id = a.encounter_id`. Conditions 1 and 3 are still
+ * re-checked per episode in run.ts, because the candidate query and the attempt can be minutes
+ * apart and a skip must record what was true when the episode was actually tried.
  */
-export async function fetchClosedEpisodes(limit = 200): Promise<EpisodeCandidate[]> {
-  const lim = Math.max(1, Math.min(1000, Math.floor(limit)));
+export async function fetchClosedEpisodes(limit = 2000): Promise<EpisodeCandidate[]> {
+  const lim = Math.max(1, Math.min(5000, Math.floor(limit)));
   const rows = await safeRows('fetchClosedEpisodes', `
     SELECT a.encounter_id, a.admission_date_time, d.discharge_date_time
     FROM kx_ip_admissions a
@@ -135,6 +146,8 @@ export async function fetchClosedEpisodes(limit = 200): Promise<EpisodeCandidate
       WHERE discharge_date_time IS NOT NULL
       ORDER BY ipd_no, _create_time DESC
     ) d ON d.ipd_no = a.encounter_id
+    AND EXISTS (SELECT 1 FROM kx_clinical_template_progress_reports p
+                WHERE p.encounter_id = a.encounter_id)
     ORDER BY d.discharge_date_time ASC
     LIMIT ${lim}`);
   return rows

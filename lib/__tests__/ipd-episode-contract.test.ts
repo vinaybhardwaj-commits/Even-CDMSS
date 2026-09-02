@@ -19,6 +19,10 @@ import { join } from 'node:path';
 import { OUTCOME_AWARE_NOTICE, NO_DIVERGENCE_COPY } from '../../app/admin/ipd-audit/episodes/ui';
 import { IPD_EPISODE_ENGINE_VERSION, SKIP_REASONS, IPD_DISCHARGE_ENGINE_VERSION_FOR_JOIN } from '../ipd-episode/store';
 import {
+  runEpisodeBatch, countsTowardMax, MAX_CANDIDATES_EXAMINED, SELECTION_SKIP_REASONS,
+  type RunEpisodeResult,
+} from '../ipd-episode/run';
+import {
   IPD_EPISODE_CHECKPOINT_SYSTEM, IPD_EPISODE_COMMENTARY_SYSTEM, IPD_EPISODE_DIFF_SYSTEM,
   IPD_EPISODE_FIDELITY_SYSTEM,
 } from '../ipd-episode/prompts';
@@ -276,6 +280,71 @@ test('app_source matches ipd_discharge_audits: TEXT NOT NULL DEFAULT \'standalon
   assert.ok(sqlText.includes('error_detail          TEXT'));
 });
 
+test('citation_ids: the DDL type and the store’s cast agree — a mismatch would delete the blinding proof', () => {
+  const sqlText = read(join('migrations', '0052_ipd_episode_audits.sql'));
+  const route = read('app/api/admin/migrate-ipd-episode-audits/route.ts');
+  const store = code('lib/ipd-episode/store.ts');
+
+  // one type, declared identically in both copies of the DDL
+  assert.match(sqlText, /citation_ids\s+INTEGER\[\]/, '.sql declares INTEGER[]');
+  assert.match(route, /citation_ids\s+INTEGER\[\]/, 'the admin route declares INTEGER[]');
+  assert.ok(!/citation_ids\s+TEXT\[\]/i.test(sqlText) && !/citation_ids\s+TEXT\[\]/i.test(route),
+    'citation_ids is never TEXT[] — these values are mksap_chunks ids');
+
+  // and the writer casts to the same type
+  assert.ok(store.includes('$8::int[]'), 'the store casts citation_ids as int[]');
+  assert.ok(!/citation_ids[^)]*::text\[\]/.test(store), 'the store never casts citation_ids to text[]');
+
+  // the ONE ::text[] in the store is a different query on a different, genuinely-text column
+  const textCasts = store.match(/::text\[\]/g) ?? [];
+  assert.equal(textCasts.length, 1, 'exactly one ::text[] cast in the file');
+  assert.ok(store.includes('ip_uid = ANY($2::text[])'), 'and it is the sibling-score join on ip_uid, which IS text');
+});
+
+test('the migrate route repairs a citation_ids column of the wrong type, and is idempotent about it', () => {
+  const route = read('app/api/admin/migrate-ipd-episode-audits/route.ts');
+  assert.ok(route.includes('ALTER COLUMN citation_ids TYPE INTEGER[] USING citation_ids::text[]::integer[]'),
+    'the repair is present');
+  // guarded on the catalogue, so a correct table is not rewritten on every run
+  assert.ok(route.includes("current === 'integer[]'") && route.includes('pg_attribute'),
+    'the ALTER runs only when the live type is actually wrong');
+  assert.ok(route.includes('steps.checkpoints_citation_ids'), 'and the route reports which branch it took');
+});
+
+test('every counted column carries DEFAULT 0 in both DDL copies, and the writer never sends null', () => {
+  const sqlText = read(join('migrations', '0052_ipd_episode_audits.sql'));
+  const route = read('app/api/admin/migrate-ipd-episode-audits/route.ts');
+  const counted = [
+    'divergence_index', 'completeness_pct', 'n_findings', 'n_divergence_pass', 'n_fidelity_pass',
+    'n_omission', 'n_commission', 'n_timing', 'n_sequencing', 'n_divergent', 'n_context_dependent',
+    'n_unassessable', 'n_concordant', 'n_low_value', 'n_dropped_invalid', 'checkpoint_count',
+  ];
+  for (const col of counted) {
+    assert.ok(new RegExp(`${col}\\s+INTEGER DEFAULT 0`).test(sqlText), `.sql: ${col} DEFAULT 0`);
+    assert.ok(new RegExp(`${col}\\s+INTEGER DEFAULT 0`).test(route), `route: ${col} DEFAULT 0`);
+    assert.ok(route.includes(`'${col}'`), `route re-applies the default to an existing table for ${col}`);
+  }
+  // the INSERT names every one of these columns, so DEFAULT alone cannot save them — the writer
+  // coalesces too
+  const store = code('lib/ipd-episode/store.ts');
+  assert.ok(/function num\(v: number \| null \| undefined\): number/.test(store), 'the coalescing helper exists');
+  assert.ok(store.includes('num(c.n_findings)') && store.includes('num(row.divergenceIndex)'),
+    'counters and the index go through it');
+  // los_days deliberately does NOT: a missing stay length is unknown, not zero
+  assert.ok(store.includes('row.losDays,'), 'losDays is passed through as-is, nulls included');
+});
+
+test('selection requires a progress note in SQL, so a note-less episode is never a candidate', () => {
+  const src = code('lib/ipd-episode/db13.ts');
+  assert.ok(src.includes('AND EXISTS (SELECT 1 FROM kx_clinical_template_progress_reports p'),
+    'the EXISTS clause is present');
+  assert.ok(src.includes('WHERE p.encounter_id = a.encounter_id)'), 'and the join is exact — no rewriting');
+  assert.ok(src.includes('fetchClosedEpisodes(limit = 2000)'), 'the fetch limit is 2000');
+  // run.ts still re-checks conditions 1 and 3 per episode, because the query and the attempt differ in time
+  const run = code('lib/ipd-episode/run.ts');
+  assert.ok(run.includes("reason: 'no_notes'"), 'no_notes stays reachable as a per-episode skip');
+});
+
 test('no PHI column name appears in the migration DDL, in either copy', () => {
   const sqlFiles = readdirSync('migrations').filter((n) => n.includes('ipd_episode_audits'));
   for (const src of [code('app/api/admin/migrate-ipd-episode-audits/route.ts'), read(join('migrations', sqlFiles[0])).replace(/^--.*$/gm, '')]) {
@@ -333,6 +402,83 @@ test('unparseable findings go to a trace event and error_detail, never to n_drop
     'n_dropped_invalid is fed the A2 domain-drop count and nothing else');
 });
 
+// ── the batch driver: skips must not consume a slot (fix round 2, items 4 and 6) ─────────────
+
+test('a candidate list of [no_notes, no_extraction, ok, ok, ok] with max=2 audits exactly the first two ok episodes', async () => {
+  const plan: Record<string, RunEpisodeResult> = {
+    e1: { encounterId: 'e1', skip: 'no_notes', latencyMs: 1 },
+    e2: { encounterId: 'e2', skip: 'no_extraction', latencyMs: 1 },
+    e3: { encounterId: 'e3', status: 'inserted', latencyMs: 1 },
+    e4: { encounterId: 'e4', status: 'inserted', latencyMs: 1 },
+    e5: { encounterId: 'e5', status: 'inserted', latencyMs: 1 },
+  };
+  const seen: string[] = [];
+  const { results, tally } = await runEpisodeBatch(
+    ['e1', 'e2', 'e3', 'e4', 'e5'].map((encounterId) => ({ encounterId, dischargedAt: null })),
+    2,
+    async (input) => { seen.push(input.encounterId); return plan[input.encounterId]; },
+  );
+
+  assert.deepEqual(seen, ['e1', 'e2', 'e3', 'e4'], 'it walked past both skips and stopped after two real audits');
+  assert.equal(tally.audited, 2, 'exactly two episodes were audited');
+  assert.deepEqual(results.filter((r) => r.status).map((r) => r.encounterId), ['e3', 'e4'],
+    'and they are the FIRST two ok episodes, in order');
+  assert.ok(!seen.includes('e5'), 'the third ok episode is left for the next tick');
+  assert.equal(tally.candidatesExamined, 4);
+  assert.equal(tally.skipped, 2);
+  assert.deepEqual(tally.skippedByReason, { no_notes: 1, no_extraction: 1 });
+  assert.equal(tally.errors, 0);
+});
+
+test('a selection skip costs no slot; a model-stage skip does — that is what `max` is bounding', () => {
+  // conditions 1–3 are decided before a model runs, so they are free
+  for (const skip of ['no_discharge_summary', 'no_notes', 'no_extraction']) {
+    assert.equal(countsTowardMax({ skip }), false, skip);
+  }
+  // these two spent the whole checkpoint + judge budget before failing
+  for (const skip of ['diff_failed', 'fidelity_failed']) {
+    assert.equal(countsTowardMax({ skip }), true, skip);
+  }
+  assert.equal(countsTowardMax({ skip: undefined }), true, 'a successful audit obviously counts');
+});
+
+test('a tick cannot spin: the examine cap stops it even when nothing in the queue qualifies', async () => {
+  const queue = Array.from({ length: 500 }, (_, i) => ({ encounterId: `e${i}`, dischargedAt: null }));
+  let calls = 0;
+  const { tally } = await runEpisodeBatch(queue, 2, async (input) => {
+    calls++;
+    return { encounterId: input.encounterId, skip: 'no_extraction', latencyMs: 1 };
+  });
+  assert.equal(calls, MAX_CANDIDATES_EXAMINED, 'it stops at the cap, not at the end of a 500-long queue');
+  assert.equal(tally.candidatesExamined, MAX_CANDIDATES_EXAMINED);
+  assert.equal(tally.audited, 0);
+  assert.equal(tally.capReached, true, 'and it SAYS it stopped on the cap rather than looking caught-up');
+  assert.equal(tally.exhausted, false);
+});
+
+test('the batch driver reports errors separately from skips', async () => {
+  const { tally } = await runEpisodeBatch(
+    [{ encounterId: 'a', dischargedAt: null }, { encounterId: 'b', dischargedAt: null }],
+    5,
+    async (input) => (input.encounterId === 'a'
+      ? { encounterId: 'a', error: 'metabase unreachable', latencyMs: 1 }
+      : { encounterId: 'b', status: 'inserted' as const, latencyMs: 1 }),
+  );
+  assert.equal(tally.errors, 1);
+  assert.equal(tally.audited, 1);
+  assert.equal(tally.skipped, 0, 'a transport error is not a skip — it writes no skip row either');
+  assert.equal(tally.exhausted, true);
+});
+
+test('the worker reports the per-tick tally the review asked for, and no longer truncates its queue', () => {
+  const src = code('app/api/ipd-episode/worker/route.ts');
+  for (const field of ['candidatesExamined', 'audited', 'skippedByReason', 'errors', 'queueLength', 'capReached']) {
+    assert.ok(src.includes(field), `the sweep response must report ${field}`);
+  }
+  assert.ok(src.includes('runEpisodeBatch('), 'the sweep runs through the tested batch driver');
+  assert.ok(!/nextCandidates\(max\)/.test(src), 'the queue is no longer pre-truncated to max');
+});
+
 // ── the worker ───────────────────────────────────────────────────────────────────────────────
 
 test('the worker mirrors the IPD discharge worker: 800 s box, the same auth, ?max= default 2 cap 5', () => {
@@ -344,7 +490,12 @@ test('the worker mirrors the IPD discharge worker: 800 s box, the same auth, ?ma
   assert.ok(src.includes("p.get('encounter')"), '?encounter= runs one named episode');
   // sequential by construction: no concurrency knob exists at all
   assert.ok(!src.includes("p.get('conc')") && !src.includes('mapLimit'), 'the worker has no concurrency knob');
-  assert.ok(/for \(const c of candidates\)/.test(src), 'episodes are processed one after another');
+  // the loop itself now lives in run.ts's injectable batch driver (so it is unit-testable); the
+  // point still stands — one episode at a time, awaited, no Promise.all anywhere on this path
+  const runSrc = code('lib/ipd-episode/run.ts');
+  assert.ok(/for \(const c of candidates\) \{/.test(runSrc), 'runEpisodeBatch processes candidates one after another');
+  assert.ok(!/Promise\.all\([^)]*runner/.test(runSrc), 'never concurrently — three Opus calls per episode is the whole budget');
+  assert.ok(src.includes('runEpisodeBatch('), 'and the worker drives it');
 });
 
 test('the worker holds the app_settings lock key the PRD names, and releases it in finally', () => {
