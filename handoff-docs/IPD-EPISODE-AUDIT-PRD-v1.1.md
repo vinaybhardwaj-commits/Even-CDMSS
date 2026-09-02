@@ -63,6 +63,7 @@ This PRD specifies a second IPD engine. It assembles the whole episode, builds a
 ### 1.4 Settled with V on 2026-09-02, after v1.1 was drafted
 
 31. **Build on branch `ipd-episode-audit`, not on main.** V chose this over the direct-to-main standing rule for this build. The builder creates the branch from the current `main`, commits there, and pushes the branch. Vercel builds a preview deployment. Preview and Production share the same `DATABASE_URL`, `METABASE_API_KEY`, and Bedrock variables (V confirmed), so the migration and the validation run on the preview URL write to the real Neon database. The branch merges to `main` after the orchestrator's verification in §14 passes and before V's clinical gate. The flag is off throughout, so the merge shows nothing to clinicians.
+32. **No ask panel on the episode detail page in this build.** The existing discharge audit ask (`case-ask-panel.tsx`, `/api/admin/ipd-audit-ask`) stays as it is. An episode ask panel is deferred to v1.2, after V's 20-episode review. The builder must not add one.
 
 ---
 
