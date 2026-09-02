@@ -18,7 +18,7 @@ import { retrieve, resolveNormativeSources } from '../retrieve';
 import { assertKnownBedrockModel } from '../bedrock-core';
 import {
   buildCheckpointUser, buildRetrievalQuery, checkpointEntryRefs, countUncitedEntries,
-  everyEntryUncited, parseExpectedCourse, retrievalIsOffTopic, retrievedTitles,
+  everyEntryUncited, parseExpectedCourse, assessTopicality, retrievedTitles,
   RETRIEVAL_TOP_K, type CheckpointEntryRef, type ExpectedCourse, type RetrievedExcerpt,
 } from './checkpoint-core';
 import { IPD_EPISODE_CHECKPOINT_SYSTEM } from './prompts';
@@ -34,6 +34,11 @@ export function checkpointModel(env: Record<string, string | undefined>): string
 }
 
 const EXCERPT_CHARS = 1100;
+
+/** The similarity floor. `lib/retrieve.ts` defaults `minSimilarity` to 0.3 for the literature legs;
+ *  it is passed EXPLICITLY so this engine's normative gate and retrieval's own floor are one
+ *  number, and a change to either is visible at both. */
+export const RETRIEVAL_MIN_SIMILARITY = 0.3;
 
 export interface RunCheckpointInput {
   traceId: string | undefined;
@@ -61,8 +66,14 @@ export interface CheckpointResult {
   citationSources: Record<string, string>;
   /** First 100 chars of each retrieved excerpt — a topical failure, readable without jsonb. */
   retrievedTitles: string[];
-  /** No excerpt shared a clinical term with the query. Recorded, never blocking. */
+  /** A MAJORITY of excerpts shared no clinical term with the query. Recorded, never blocking. */
   retrievalOffTopic: boolean;
+  /** How many of them, so the boolean can be checked rather than trusted. */
+  offTopicExcerptCount: number;
+  /** Normative chunks dropped for failing the similarity floor (item 5). */
+  normativeDropped: number;
+  /** The day 0 query was empty and fell back to the episode's OT surgery_name (item 3). */
+  day0QueryFromOt: boolean;
   expectedCourse: ExpectedCourse | null;
   entryRefs: CheckpointEntryRef[];
   status: 'ok' | 'error';
@@ -92,16 +103,41 @@ export interface CheckpointResult {
  * guideline is a standard; the score should be able to tell you which one it rests on.
  */
 async function retrieveExcerpts(query: string): Promise<{
-  excerpts: RetrievedExcerpt[]; ids: number[]; sources: Record<string, string>; failed: boolean;
+  excerpts: RetrievedExcerpt[]; ids: number[]; sources: Record<string, string>;
+  normativeDropped: number; failed: boolean;
 }> {
-  if (!query.trim()) return { excerpts: [], ids: [], sources: {}, failed: false };
+  if (!query.trim()) return { excerpts: [], ids: [], sources: {}, normativeDropped: 0, failed: false };
   try {
-    const res = await retrieve(query, { topK: RETRIEVAL_TOP_K, useNormativeLeg: true });
+    const res = await retrieve(query, { topK: RETRIEVAL_TOP_K, useNormativeLeg: true, minSimilarity: RETRIEVAL_MIN_SIMILARITY });
     // ⚠️ ONE FILTERED LIST, TWO VIEWS OF IT. `excerpts` is what the prompt numbers [1]…[k] and
     // `ids` is what those ordinals resolve to, so they MUST stay index-aligned. Filtering a hit
     // out of one list and not the other would silently shift every ordinal after it onto the wrong
     // passage — a citation that points at real text nobody was shown.
-    const hits = (res?.hits ?? []).slice(0, RETRIEVAL_TOP_K).filter((h) => Number.isFinite(Number(h.id)));
+    // ── item 5: the normative leg is a CANDIDATE SOURCE, not a fixed block ──────────────────
+    // The leg is unconditional by construction: it takes the top N normative chunks for the query
+    // whether or not they are similar to it, and unions them into the slate. On a clean elective
+    // hernia case that meant the same four ICMR AMR chunks — hospital-acquired pneumonia, pelvic
+    // infections — in every single checkpoint, twelve of twenty-four excerpts on IP-1286.
+    //
+    // lib/retrieve.ts is on the UNTOUCHED list, so the leg cannot be gated where it is built. It is
+    // gated HERE instead, on the same floor the literature legs use (`minSimilarity`, default 0.3,
+    // passed explicitly above so the two cannot drift): a normative chunk that does not clear the
+    // floor is dropped from the slate. Non-normative hits are left alone — they already passed the
+    // floor inside retrieve().
+    //
+    // If this empties the normative contribution for a case, that IS the correct answer, and the
+    // topicality numbers below will say so rather than a block of confident irrelevance hiding it.
+    const normative = new Set(normativeSourcesForProvenance().map((x) => x.trim()).filter(Boolean));
+    const raw = (res?.hits ?? []).filter((h) => Number.isFinite(Number(h.id)));
+    let normativeDropped = 0;
+    const gated = raw.filter((h) => {
+      if (!normative.has(String(h.source ?? '').trim())) return true;
+      const sim = Number(h.similarity);
+      if (Number.isFinite(sim) && sim >= RETRIEVAL_MIN_SIMILARITY) return true;
+      normativeDropped++;
+      return false;
+    });
+    const hits = gated.slice(0, RETRIEVAL_TOP_K);
     // chunk id → its `source` value, verbatim from the row. The classification into
     // normative/literature happens later, against the shipped source list, so this map records the
     // FACT and nothing derived from it — a source list that changes later can be re-applied to
@@ -116,10 +152,11 @@ async function retrieveExcerpts(query: string): Promise<{
       })),
       ids: hits.map((h) => Number(h.id)),
       sources,
+      normativeDropped,
       failed: false,
     };
   } catch {
-    return { excerpts: [], ids: [], sources: {}, failed: true };
+    return { excerpts: [], ids: [], sources: {}, normativeDropped: 0, failed: true };
   }
 }
 
@@ -136,8 +173,9 @@ export function normativeSourcesForProvenance(env: Record<string, string | undef
  * that did not arrive.
  */
 export async function runCheckpoint(input: RunCheckpointInput): Promise<CheckpointResult> {
-  const query = buildRetrievalQuery(input.retrievalQueryInput);
-  const { excerpts, ids, sources, failed } = await retrieveExcerpts(query);
+  const { query, day0FromOt } = buildRetrievalQuery(input.retrievalQueryInput);
+  const { excerpts, ids, sources, normativeDropped, failed } = await retrieveExcerpts(query);
+  const topicality = assessTopicality(query, excerpts);
 
   const base: Omit<CheckpointResult, 'expectedCourse' | 'entryRefs' | 'status' | 'errorDetail' | 'uncitedEntryCount' | 'entryCount' | 'retriedForCitations'> = {
     checkpointId: input.checkpointId,
@@ -150,7 +188,10 @@ export async function runCheckpoint(input: RunCheckpointInput): Promise<Checkpoi
     citationIds: ids,
     citationSources: sources,
     retrievedTitles: retrievedTitles(excerpts),
-    retrievalOffTopic: retrievalIsOffTopic(query, excerpts),
+    retrievalOffTopic: topicality.offTopic,
+    offTopicExcerptCount: topicality.offTopicCount,
+    normativeDropped,
+    day0QueryFromOt: day0FromOt,
     model: input.model,
   };
 

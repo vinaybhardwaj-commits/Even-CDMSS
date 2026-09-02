@@ -86,17 +86,21 @@ YOU ARE NOT TOLD HOW THIS ADMISSION ENDED. There is no discharge summary here, n
 
 YOUR TASK: report each place where the real course left the expected one.
 
-FINDING TYPES.
+FINDING TYPES AND VERDICTS ARE TWO DIFFERENT FIELDS. finding_type says WHAT KIND of departure this is; verdict says WHAT YOU CONCLUDE about it. "concordant" is a VERDICT. It is never a finding_type, and a finding whose type reads "concordant" is malformed.
+
+finding_type is always exactly one of: omission | commission | timing | sequencing.
 - omission: a checkpoint expected an action and no matching event exists.
 - commission: an event happened that no checkpoint expected and no later evidence justifies.
 - timing: the expected action happened, but later than expected.
 - sequencing: expected actions happened in an order that inverts a stated dependency.
 
+To record that something went RIGHT — the diet was tolerated, the dressing stayed dry, glucose was monitored as expected — keep a finding_type from the four above (the kind of departure you looked for) and set verdict to "concordant". Do not put "concordant" in finding_type.
+
 VERDICTS.
 - divergent: the record shows the course left the expectation, and the evidence supports saying so.
 - context_dependent: it may be a divergence, but a legitimate reason is plausible and unrecorded.
 - unassessable: the record cannot answer the question. Say this rather than guessing.
-- concordant: expectation and course agree, and it is worth recording that they do.
+- concordant: expectation and course agree, and it is worth recording that they do. Use this freely — an audit that records only what went wrong is a defect list, not an audit, and a well-run admission should be visible as one.
 
 EVIDENCE IS THE WHOLE DISCIPLINE. Every finding must carry an evidence_basis: the exact source_table, source_record_id and source_timestamp of the events it rests on, copied verbatim from the event list. A finding with no evidence_basis is downgraded to unassessable in code. Absence of an event is evidence of omission ONLY in a source that would have recorded it — cite the sources you searched.
 

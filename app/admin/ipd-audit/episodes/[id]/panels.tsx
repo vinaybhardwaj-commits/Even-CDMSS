@@ -68,6 +68,13 @@ function FindingCard({ f }: { f: Row }) {
         <Tag>{s(f.verdict)}</Tag>
         <Tag>tier {s(f.evidence_tier)}</Tag>
         {f.lvc_category ? <Tag tone="amber">low value · {s(f.lvc_category)}</Tag> : null}
+        {/* The cap trail: what the model said before code intervened. Without it, a reader cannot
+            tell a finding the judge called context_dependent from one the cap moved there. */}
+        {f.capped ? (
+          <Tag tone="amber">
+            capped from {s(f.severity_before_cap)} · {s(f.verdict_before_cap)}
+          </Tag>
+        ) : null}
         {/* What KIND of source this finding stands on. A guideline is a standard; a journal
             passage is evidence. A finding backed only by literature is capped at moderate in
             code, so the reader can see why a serious-sounding finding is not marked major. */}
@@ -209,7 +216,8 @@ export function CheckpointPanels({ checkpoints }: { checkpoints: Row[] }) {
                 <span className="ml-2 text-[10.5px] font-normal text-slate-400">
                   cut-off {fmtStamp(c.input_cutoff_at)} · {s(c.input_event_count)} event(s) in · {s(c.status)}
                   {c.retrieval_failed ? ' · retrieval failed' : ''}
-                  {c.retrieval_offtopic ? ' · retrieval off topic' : ''}
+                  {c.retrieval_offtopic ? ` · ${s(c.offtopic_excerpt_count)} off-topic excerpt(s)` : ''}
+                  {c.day0_query_from_ot ? ' · day 0 query from OT note' : ''}
                   {Number(c.entry_count ?? 0) > 0
                     ? ` · ${Number(c.entry_count) - Number(c.uncited_entry_count ?? 0)}/${s(c.entry_count)} entries cited`
                     : ''}
@@ -258,8 +266,9 @@ export function CheckpointPanels({ checkpoints }: { checkpoints: Row[] }) {
                   ) : null}
                   {c.retrieval_offtopic ? (
                     <p className="mt-1 text-[11px] text-amber-800">
-                      No retrieved excerpt shared a clinical term with this checkpoint&rsquo;s query. The expected
-                      course was still generated; its uncited entries are scored conservatively.
+                      {s(c.offtopic_excerpt_count)} of the retrieved excerpts shared no clinical term with this
+                      checkpoint&rsquo;s query. The expected course was still generated; its uncited entries are
+                      scored conservatively.
                     </p>
                   ) : null}
                   {ids.length > 0 && Number(c.entry_count ?? 0) > 0 && Number(c.uncited_entry_count ?? 0) === Number(c.entry_count)

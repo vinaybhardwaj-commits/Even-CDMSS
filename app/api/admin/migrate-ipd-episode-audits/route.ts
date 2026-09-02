@@ -55,6 +55,7 @@ export async function POST(req: NextRequest) {
       n_low_value           INTEGER DEFAULT 0,
       n_dropped_invalid     INTEGER DEFAULT 0,
       n_parse_failed        INTEGER DEFAULT 0,
+      capped_count          INTEGER DEFAULT 0,
       checkpoint_count      INTEGER DEFAULT 0,
       evidence_tiers        JSONB,
       real_course           JSONB,
@@ -77,6 +78,7 @@ export async function POST(req: NextRequest) {
     await sql`ALTER TABLE ipd_episode_audits ADD COLUMN IF NOT EXISTS raw_judge_error JSONB`;
     await sql`ALTER TABLE ipd_episode_audits ADD COLUMN IF NOT EXISTS n_parse_failed INTEGER DEFAULT 0`;
     await sql`ALTER TABLE ipd_episode_audits ADD COLUMN IF NOT EXISTS scoring_status TEXT NOT NULL DEFAULT 'ok'`;
+    await sql`ALTER TABLE ipd_episode_audits ADD COLUMN IF NOT EXISTS capped_count INTEGER DEFAULT 0`;
     await sql`ALTER TABLE ipd_episode_audits ALTER COLUMN app_source SET DEFAULT 'standalone'`;
     steps.audits_columns = 'ok';
 
@@ -89,7 +91,7 @@ export async function POST(req: NextRequest) {
       'completeness_pct', 'n_findings', 'n_divergence_pass', 'n_fidelity_pass',
       'n_omission', 'n_commission', 'n_timing', 'n_sequencing', 'n_divergent', 'n_context_dependent',
       'n_unassessable', 'n_concordant', 'n_low_value', 'n_dropped_invalid', 'n_parse_failed',
-      'checkpoint_count',
+      'capped_count', 'checkpoint_count',
     ]) {
       // identifier interpolation, not a value: `col` comes from this literal list and never from a
       // request, so there is nothing here for a caller to influence.
@@ -124,7 +126,9 @@ export async function POST(req: NextRequest) {
       entry_count         INTEGER DEFAULT 0,
       citation_sources    JSONB,
       retrieved_titles    TEXT[],
-      retrieval_offtopic  BOOLEAN DEFAULT FALSE
+      retrieval_offtopic  BOOLEAN DEFAULT FALSE,
+      offtopic_excerpt_count INTEGER DEFAULT 0,
+      day0_query_from_ot  BOOLEAN DEFAULT FALSE
     )`;
     await sql`CREATE INDEX IF NOT EXISTS ipd_episode_checkpoints_audit_idx ON ipd_episode_checkpoints (episode_audit_id)`;
     await sql`ALTER TABLE ipd_episode_checkpoints ADD COLUMN IF NOT EXISTS uncited_entry_count INTEGER DEFAULT 0`;
@@ -132,6 +136,8 @@ export async function POST(req: NextRequest) {
     await sql`ALTER TABLE ipd_episode_checkpoints ADD COLUMN IF NOT EXISTS citation_sources JSONB`;
     await sql`ALTER TABLE ipd_episode_checkpoints ADD COLUMN IF NOT EXISTS retrieved_titles TEXT[]`;
     await sql`ALTER TABLE ipd_episode_checkpoints ADD COLUMN IF NOT EXISTS retrieval_offtopic BOOLEAN DEFAULT FALSE`;
+    await sql`ALTER TABLE ipd_episode_checkpoints ADD COLUMN IF NOT EXISTS offtopic_excerpt_count INTEGER DEFAULT 0`;
+    await sql`ALTER TABLE ipd_episode_checkpoints ADD COLUMN IF NOT EXISTS day0_query_from_ot BOOLEAN DEFAULT FALSE`;
     steps.checkpoints_table = 'ok';
 
     // ── citation_ids must be INTEGER[] ────────────────────────────────────────────────────────

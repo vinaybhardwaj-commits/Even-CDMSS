@@ -241,6 +241,15 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
     // read it. A revision that fed its diagnosis and procedure into the checkpoint retrieval query
     // was reverted on 2026-09-02 — a discharge summary is written after the fact, so choosing
     // excerpts with it puts hindsight into a blinded pass through the retrieved text. §3.3.3 stands.
+    // The episode's OT surgery names, from the WHOLE event list. Used by one caller only — the
+    // day 0 fallback in buildRetrievalQuery, when nothing clinical exists before the door and the
+    // alternative is an empty query. Every row it touches is stamped day0_query_from_ot.
+    const episodeSurgeryNames = Array.from(new Set(
+      events.filter((e) => e.event_type === 'ot_note')
+        .map((e) => String((e.detail as Record<string, unknown>)?.surgery_name ?? '').trim())
+        .filter(Boolean),
+    ));
+
     const plan = checkpointPlan(envelope.losDays);
     const admittedAt = envelope.admittedAt as string;
     const checkpoints: CheckpointResult[] = [];
@@ -262,9 +271,16 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
         cutoffAt,
         admissionContext,
         events: input_events,
-        // The SAME filtered list the checkpoint itself is given. Nothing else — the extracted case
-        // is not reachable from the retrieval path, deliberately (see RetrievalQueryInput).
-        retrievalQueryInput: { eventsBeforeCutoff: input_events },
+        retrievalQueryInput: {
+          // The SAME filtered list the checkpoint itself is given. The extracted case is not
+          // reachable from the retrieval path, deliberately (see RetrievalQueryInput).
+          eventsBeforeCutoff: input_events,
+          // Written at admission, so it carries the presenting picture and no hindsight.
+          remarks: envelope.remarks,
+          // Day 0 last resort only, and stamped on the row when it fires.
+          isDayZero: entry.checkpoint_type === 'daily' && entry.day_index === 0,
+          episodeSurgeryNames,
+        },
         model: modelCheckpoint,
       }));
     }
@@ -371,8 +387,17 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
       }
     }
     const offTopic = checkpoints.filter((c) => c.retrievalOffTopic).length;
+    const offTopicExcerpts = checkpoints.reduce((n, c) => n + c.offTopicExcerptCount, 0);
     if (offTopic > 0) {
-      errorDetail.push(`${offTopic} of ${checkpoints.length} checkpoint(s) retrieved nothing sharing a clinical term with their query`);
+      errorDetail.push(`${offTopic} of ${checkpoints.length} checkpoint(s) had a majority of off-topic excerpts (${offTopicExcerpts} excerpt(s) in total)`);
+    }
+    const normativeDropped = checkpoints.reduce((n, c) => n + c.normativeDropped, 0);
+    if (normativeDropped > 0) {
+      errorDetail.push(`${normativeDropped} normative chunk(s) dropped for failing the similarity floor`);
+    }
+    const day0FromOt = checkpoints.filter((c) => c.day0QueryFromOt).length;
+    if (day0FromOt > 0) {
+      errorDetail.push('the day 0 query was empty and fell back to the episode OT surgery name');
     }
 
     // Checkpoint grounding, surfaced on the audit row too: 42 of 42 uncited was invisible until
@@ -421,6 +446,8 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
       citationSources: c.citationSources,
       retrievedTitles: c.retrievedTitles,
       retrievalOffTopic: c.retrievalOffTopic,
+      offTopicExcerptCount: c.offTopicExcerptCount,
+      day0QueryFromOt: c.day0QueryFromOt,
     }));
 
     const saved = await saveEpisodeAudit({
@@ -440,6 +467,7 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
       scoringStatus,
       completenessPct: completenessPct(sourcesPresent),
       counters: final.counters,
+      cappedCount: final.capped_finding_ids.size,
       checkpointCount: checkpoints.length,
       evidenceTiers: evidenceTiersOf(sourcesPresent),
       realCourse: events,
@@ -482,7 +510,10 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
         ...(final.n_fidelity_normalized ? [`${final.n_fidelity_normalized} fidelity finding(s) normalised to commission / no checkpoint`] : []),
         ...(final.n_literature_capped ? [`${final.n_literature_capped} finding(s) capped from major to moderate — literature only, no normative citation`] : []),
         ...(scoringStatus !== 'ok' ? [`scoring_status ${scoringStatus} — this episode is not presented as scored`] : []),
-        ...(offTopic ? [`${offTopic} checkpoint(s) flagged retrieval_offtopic`] : []),
+        ...(offTopic ? [`${offTopic} checkpoint(s) flagged retrieval_offtopic (${offTopicExcerpts} off-topic excerpt(s))`] : []),
+        ...(normativeDropped ? [`${normativeDropped} normative chunk(s) dropped below the similarity floor`] : []),
+        ...(day0FromOt ? ['day 0 retrieval fell back to the OT surgery name'] : []),
+        `${final.capped_finding_ids.size} of ${final.counters.n_findings} finding(s) capped`,
         `citations by provenance: ${Object.entries(final.provenance_counts).filter(([, n]) => n > 0).map(([k, n]) => `${k} ${n}`).join(', ') || 'none'}`,
         ...(repaired ? [`${repaired} finding(s) kept by the enum repair pass`] : []),
         ...(unparseable ? [`${unparseable} finding(s) discarded — see raw_judge_error and the trace`] : []),

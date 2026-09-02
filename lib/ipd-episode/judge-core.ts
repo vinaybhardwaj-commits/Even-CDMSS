@@ -84,6 +84,17 @@ export interface EpisodeFinding {
    * actually rests on guidelines rather than on literature that reads like one.
    */
   citation_provenance: CitationProvenance | null;
+  /**
+   * THE CAP, AUDITABLE FROM STORED DATA. `capped` is true when any cap touched this finding, and
+   * the two `*_before_cap` fields hold what it said beforehand. Without these, "5 capped" is a
+   * sentence in a response body that nobody can check against the row; with them a validator can
+   * recount every cap from `findings` alone. `severity_before_cap` is carried as well as the
+   * verdict because the literature cap moves severity WITHOUT moving the verdict, and a
+   * verdict-only record would make those caps invisible.
+   */
+  verdict_before_cap: Verdict | null;
+  severity_before_cap: Severity | null;
+  capped: boolean;
 }
 
 const oneOf = <T extends string>(allowed: readonly T[], v: unknown): T | null =>
@@ -115,6 +126,28 @@ function coerceEnum<T extends string>(allowed: readonly T[], v: unknown): { valu
   });
   // exactly one legal option, or nothing — ambiguity is never resolved by guessing
   return hits.length === 1 ? { value: hits[0], repaired: true } : { value: null, repaired: false };
+}
+
+/**
+ * ⚠️ `concordant` IS A VERDICT, NOT A FINDING TYPE, and confusing the two cost IP-1286 five real
+ * findings — diet tolerated, vitals stable, dressing dry, glucose monitored, ambulating. Every one
+ * was a correct observation that the course MET its expectation, and every one was discarded
+ * because `concordant` is not in FINDING_TYPES.
+ *
+ * AN AUDIT THAT CANNOT RECORD WHAT WENT RIGHT IS NOT AN AUDIT. It is a defect list, and a defect
+ * list read as an audit makes a well-run admission indistinguishable from an unexamined one. The
+ * prompt now states the distinction outright; this repairs the responses that get it wrong anyway.
+ *
+ * The type is inferred from the statement, defaulting to `omission` as instructed. The inference
+ * is deliberately low-stakes: a concordant finding is excluded from the four type counters
+ * anyway (see countFindings), so this label decides presentation, not arithmetic.
+ */
+export function impliedFindingType(statement: string): FindingType {
+  const t = (statement || '').toLowerCase();
+  if (/\b(late|delay|delayed|overdue|promptly|on time|within \d|hours? after|days? after)\b/.test(t)) return 'timing';
+  if (/\b(sequence|sequenced|order of|out of order|before starting|prior to)\b/.test(t)) return 'sequencing';
+  if (/\b(given|administered|performed|started|ordered|prescribed|carried out|documented|monitored|tolerated|ambulat)\w*\b/.test(t)) return 'commission';
+  return 'omission';
 }
 
 /** An unreadable severity becomes `moderate`: the middle of the scale, so a repair can neither
@@ -228,10 +261,21 @@ export function parseFindings(text: string, opts: ParseFindingsOptions): ParseFi
       return;
     }
 
-    const typeRes = coerceEnum(FINDING_TYPES, f.finding_type);
+    // A finding_type naming a VERDICT is a category slip, not an unreadable value: the model put
+    // the right word in the wrong field. Move it to the verdict and infer the type, rather than
+    // discarding a finding whose content is fine.
+    const rawType = String(f.finding_type ?? '').trim().toLowerCase();
+    const typeIsVerdict = (VERDICTS as readonly string[]).includes(rawType);
+    const typeRes = typeIsVerdict
+      ? { value: impliedFindingType(statement), repaired: true }
+      : coerceEnum(FINDING_TYPES, f.finding_type);
     const domainRes = coerceEnum(DOMAINS, f.domain);
     const sevRes = coerceEnum(SEVERITIES, f.severity);
-    const verdictRes = coerceEnum(VERDICTS, f.verdict);
+    // when the type carried the verdict, THAT is the verdict — a `concordant` in the type field is
+    // the model telling us the course matched, whatever it left in the verdict field
+    const verdictRes = typeIsVerdict
+      ? { value: rawType as Verdict, repaired: true }
+      : coerceEnum(VERDICTS, f.verdict);
 
     // severity and verdict have safe fallbacks (see the consts): an unreadable severity lands
     // mid-scale, an unreadable verdict lands on `unassessable`, which scores nothing.
@@ -292,6 +336,9 @@ export function parseFindings(text: string, opts: ParseFindingsOptions): ParseFi
       citation_ids,
       // filled by classifyCitationProvenance once the chunk→source map is known (run.ts)
       citation_provenance: null,
+      verdict_before_cap: verdict,
+      severity_before_cap: severity,
+      capped: false,
     });
   });
   return { findings, unparseable, repaired, failures };
@@ -315,27 +362,36 @@ export function applyTierCRule(f: EpisodeFinding): { finding: EpisodeFinding; re
 }
 
 /**
- * §4.4, the uncited-entry cap. A DIVERGENCE finding is capped at severity `minor` and verdict
- * `context_dependent` unless it is measured against a checkpoint entry that actually carried a
- * citation.
+ * §4.4, the uncited cap. ONE RULE, and this is it:
  *
- * ⚠️ THREE CASES CAP, NOT ONE, AND THE TWO NEW ONES ARE THE IMPORTANT ONES. §3.4 requires every
- * A1 finding to carry a non-null `checkpoint_ref`, but a requirement in a prompt is a request. A
- * finding with a NULL ref, or one naming an entry that does not exist, is not measured against any
- * expectation this engine can produce — so it is exactly the thing the cap exists for, and leaving
- * it uncapped let the weakest findings in the set carry the heaviest penalty. Capping only the
- * resolvable-and-uncited case meant a model could evade the cap by citing nothing at all.
+ *   A DIVERGENCE finding is capped to severity `minor` and verdict `context_dependent` unless
+ *   BOTH the finding itself AND the checkpoint entry it is measured against carry a citation.
+ *   SEVERITY IS NOT AN EXEMPTION. A `major` finding is capped on exactly the same terms as a
+ *   `minor` one.
  *
- * Still not applied to fidelity findings: §4.4 says so outright, and the reason holds — A2 is
- * measured against the record, not against an expectation, so an expectation's citations say
- * nothing about it.
+ * ⚠️ WHAT WAS INCONSISTENT, AND WHY IT WAS NOT ABOUT SEVERITY. On IP-1286 ten uncited findings
+ * were capped and one — the major VTE-prophylaxis finding, with zero citations of its own — was
+ * not, and it supplied 8 of the run's 12 penalty points. The cap read the ENTRY's `citation_ids`
+ * while `citation_provenance` and the literature cap read the FINDING's, so a finding that cited
+ * nothing could still count as grounded because the expectation behind it happened to be cited.
+ * Two notions of "grounded" in one pipeline is how the loudest finding in a run ended up the least
+ * evidenced. There is now one notion, and it requires both halves.
+ *
+ * NO SEVERITY EXEMPTION, deliberately. Exempting `major` would mean the findings that move the
+ * score most are the ones held to the weakest evidential standard — precisely backwards, and it
+ * would have preserved the exact defect being fixed. A major finding that genuinely stands on
+ * evidence keeps its weight by citing it.
+ *
+ * Still not applied to fidelity findings: §4.4 says so outright, and the reason holds — A2 is shown
+ * no excerpts at all, so an expectation's citations say nothing about it and capping every A2
+ * finding would silently zero the fidelity pass.
  */
 export function applyUncitedCap(f: EpisodeFinding, entryRefs: Map<string, CheckpointEntryRef>): { finding: EpisodeFinding; capped: boolean } {
   if (f.pass !== 'divergence') return { finding: f, capped: false };
   const entry = f.checkpoint_ref ? entryRefs.get(f.checkpoint_ref) : undefined;
-  // capped when: no ref at all · a ref naming nothing · a ref naming an entry with no citation
-  const grounded = !!entry && entry.citation_ids.length > 0;
-  if (grounded) return { finding: f, capped: false };
+  const entryGrounded = !!entry && entry.citation_ids.length > 0;
+  const findingGrounded = f.citation_ids.length > 0;
+  if (entryGrounded && findingGrounded) return { finding: f, capped: false };
   if (f.severity === 'minor' && f.verdict === 'context_dependent') return { finding: f, capped: false };
   return { finding: { ...f, severity: 'minor', verdict: 'context_dependent' }, capped: true };
 }
@@ -595,7 +651,8 @@ export interface FinalizeResult {
   n_fidelity_normalized: number;
   /** Findings whose severity was cut from major because only literature backed them. */
   n_literature_capped: number;
-  /** Ids of findings that ANY cap touched — the input to `scoringStatusFor`. */
+  /** Ids of findings that ANY cap touched — the input to `scoringStatusFor`, and the source of
+   *  `capped_count` on the audit row. */
   capped_finding_ids: Set<string>;
   /** How the surviving findings' citations break down — the measurement V asked for. */
   provenance_counts: Record<string, number>;
@@ -631,7 +688,16 @@ export function finalizeFindings(
 
     const tierRes = applyTierCRule(litRes.finding);
     if (tierRes.rewritten) rewritten++;
-    return attachAttribution(tierRes.finding, events);
+
+    // Stamp the audit trail from what the MODEL said, before any of the three rules ran, so the
+    // caps can be recounted from the stored row rather than trusted from a log line.
+    const stamped: EpisodeFinding = {
+      ...tierRes.finding,
+      verdict_before_cap: f0.verdict,
+      severity_before_cap: f0.severity,
+      capped: capRes.capped || litRes.capped,
+    };
+    return attachAttribution(stamped, events);
   });
   return {
     findings,

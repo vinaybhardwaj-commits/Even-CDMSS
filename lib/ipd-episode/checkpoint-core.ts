@@ -40,7 +40,7 @@ const Q_TOTAL_CHARS = 1200;
 
 export interface RetrievalQueryInput {
   /**
-   * Events ALREADY filtered to this checkpoint's cut-off, and the ONLY input this builder has.
+   * Events ALREADY filtered to this checkpoint's cut-off.
    *
    * ⚠️ THE EXTRACTED CASE IS NOT AN INPUT HERE, and the absence is the point (V, 2026-09-02).
    * An earlier revision fed the discharge summary's `diagnosis` and `procedure` into this query on
@@ -57,6 +57,90 @@ export interface RetrievalQueryInput {
    * record at that hour, and is not to be backfilled with hindsight.
    */
   eventsBeforeCutoff: EpisodeEvent[];
+  /**
+   * The admission `remarks`, restored 2026-09-02 after an over-strip. It was removed with the four
+   * administrative fields, but it does not belong with them: remarks is free text WRITTEN AT
+   * ADMISSION, so it is the presenting picture rather than a description of where care happened,
+   * and it carries no hindsight. Stripping it left the day 0 query empty on IP-1286 — nine of the
+   * eleven uncited findings were day 0 — because at the door there is often nothing else.
+   */
+  remarks?: string | null;
+  /**
+   * ⚠️ THE DAY 0 LAST RESORT, AND IT REACHES OUTSIDE THE WINDOW. When the query would otherwise be
+   * EMPTY at day 0, the episode's OT `surgery_name` is used even though that OT note may post-date
+   * the cut-off. This is a deliberate, bounded exception on V's instruction: an empty query means
+   * the day 0 checkpoint retrieves nothing and can cite nothing, which is a worse failure than a
+   * narrow one. It applies ONLY when nothing else exists, and every row it touches is stamped
+   * `day0_query_from_ot` so the frequency is measurable rather than assumed.
+   */
+  episodeSurgeryNames?: string[];
+  /** True for the day 0 checkpoint only — the fallback above applies nowhere else. */
+  isDayZero?: boolean;
+}
+
+/** What `buildRetrievalQuery` returns: the query, and whether it needed the day 0 OT fallback. */
+export interface RetrievalQueryResult {
+  query: string;
+  day0FromOt: boolean;
+}
+
+/**
+ * ⚠️ AN INVENTORY STRING IS NOT A CLINICAL TERM. The mirror's `ordered_item_name` is a SKU:
+ * "ABSTACK 30-.-5MM-COVIDEN-1's", "EMESET 2ML INJ-1's". Fed to a retrieval engine those tokens
+ * match nothing clinical and actively pull the query toward packaging and supplier text, which is
+ * the same class of failure as querying on department names.
+ *
+ * The base name is everything before the first token that looks like inventory: a pack size, a
+ * dose, a form, a supplier suffix or a bare code. Deliberately conservative — it TRUNCATES at the
+ * first inventory token rather than trying to understand the rest, so "PARACETAMOL 1G" yields
+ * "PARACETAMOL" and an unrecognised shape yields itself unharmed.
+ */
+const INVENTORY_TOKEN = /^(\d+(\.\d+)?\s*(mg|mcg|g|gm|ml|l|iu|units?|mm|cm|fr|ga)?|\d+'?s|inj|tab|tabs|cap|caps|syp|susp|soln|amp|vial|strip|pack|kit|set|nos?)$/i;
+const SUPPLIER_NOISE = /[-.]/;
+
+export function drugBaseName(raw: string): string {
+  const words = (raw || '').trim().split(/\s+/);
+  const kept: string[] = [];
+  for (const w of words) {
+    const bare = w.replace(/[(),]/g, '');
+    if (!bare) continue;
+    if (INVENTORY_TOKEN.test(bare)) break;                 // a pack size ends the clinical name
+    if (SUPPLIER_NOISE.test(bare) && /\d/.test(bare)) break; // "30-.-5MM-COVIDEN-1's"
+    kept.push(bare);
+    if (kept.length >= 3) break;                            // a drug name is not a sentence
+  }
+  return kept.join(' ').trim();
+}
+
+/**
+ * Strip identifier-shaped content out of narrative before it becomes a query term. A note's
+ * component_json carries `speciality_code`, `department_id`, `subDepartment_id`, `visit_type_id`
+ * and friends alongside the actual narrative, and `noteSummaryFrom` concatenates them all — which
+ * is right for the STORED summary (it is the record) and wrong for a retrieval query, where a uuid
+ * is noise that displaces clinical words under the character cap.
+ *
+ * Operates on the "name: value" segments the summary is built from, so it removes the id AND its
+ * label rather than leaving an orphaned key behind.
+ */
+const ID_FIELD = /(^|_)(id|ids|code|codes|uid|uuid|guid)$|^(speciality|specialisation|department|subdepartment|visit_type|priority|service_type|module|template|tag|facility|ward|bed)/i;
+
+export function clinicalTextForQuery(summary: string): string {
+  const segments = (summary || '').split(' · ');
+  const kept: string[] = [];
+  for (const seg of segments) {
+    const idx = seg.indexOf(': ');
+    if (idx > 0) {
+      const key = seg.slice(0, idx).trim();
+      if (ID_FIELD.test(key)) continue;                    // an identifier and its label, both gone
+      const value = seg.slice(idx + 2).trim();
+      // a value that is only a code or a uuid carries nothing either
+      if (!value || /^[0-9a-f-]{8,}$/i.test(value) || /^\d+$/.test(value)) continue;
+      kept.push(value);
+      continue;
+    }
+    if (seg.trim()) kept.push(seg.trim());
+  }
+  return collapseSpaces(kept.join(' '));
 }
 
 const detailStr = (e: EpisodeEvent, key: string): string => {
@@ -78,7 +162,7 @@ const detailStr = (e: EpisodeEvent, key: string): string => {
  * documented before day 0 yields a thin query, and that is the correct answer rather than a
  * problem to solve — see the note on RetrievalQueryInput.
  */
-export function buildRetrievalQuery(input: RetrievalQueryInput): string {
+export function buildRetrievalQuery(input: RetrievalQueryInput): RetrievalQueryResult {
   const events = input.eventsBeforeCutoff;
   const parts: string[] = [];
   const push = (v: string | null | undefined) => { const t = (v ?? '').trim(); if (t) parts.push(t); };
@@ -90,38 +174,56 @@ export function buildRetrievalQuery(input: RetrievalQueryInput): string {
   )).slice(0, Q_SURGERY_MAX);
   for (const sx of surgeries) push(sx);
 
-  // 2. the initial assessment — the admission-time picture. Taken SEPARATELY from the progress
+  // 2. the admission remarks — the presenting picture, written at the door
+  push(input.remarks ? clinicalTextForQuery(input.remarks).slice(0, Q_NARRATIVE_CHARS) : null);
+
+  // 3. the initial assessment — the admission-time picture. Taken SEPARATELY from the progress
   //    notes below rather than competing with them for one slot: at day 0 it is frequently the
   //    only clinical narrative in existence, and losing it to a later note would empty the query
   //    at exactly the checkpoint that can least afford it.
   const assessment = [...events]
     .filter((e) => e.event_type === 'initial_assessment' && e.summary.trim())
     .sort((a, b) => String(a.occurred_at ?? '').localeCompare(String(b.occurred_at ?? '')))[0];
-  if (assessment) push(assessment.summary.slice(0, Q_NARRATIVE_CHARS));
+  if (assessment) push(clinicalTextForQuery(assessment.summary).slice(0, Q_NARRATIVE_CHARS));
 
-  // 3. the most recent progress note before the cut-off
+  // 4. the most recent progress note before the cut-off
   const note = [...events]
     .filter((e) => e.event_type === 'note' && e.occurred_at && e.summary.trim())
     .sort((a, b) => String(a.occurred_at).localeCompare(String(b.occurred_at)))
     .pop();
-  if (note) push(note.summary.slice(0, Q_NARRATIVE_CHARS));
+  if (note) push(clinicalTextForQuery(note.summary).slice(0, Q_NARRATIVE_CHARS));
 
-  // 4. the drugs actually ordered on the latest documented day — what is being treated, in the
-  //    only vocabulary this substrate reliably carries
+  // 5. the drugs actually ordered on the latest documented day, as BASE NAMES — a SKU string
+  //    retrieves packaging literature, which is the same defect as querying on a department.
   const drugEvents = events.filter((e) => e.event_type === 'order' && detailStr(e, 'service_type') === PHARMACY_SERVICE_TYPE);
   const latestDrugDay = drugEvents.reduce((m, e) => Math.max(m, e.day_index), -1);
   const drugs = Array.from(new Set(
-    drugEvents.filter((e) => e.day_index === latestDrugDay).map((e) => detailStr(e, 'ordered_item_name')).filter(Boolean),
+    drugEvents.filter((e) => e.day_index === latestDrugDay)
+      .map((e) => drugBaseName(detailStr(e, 'ordered_item_name')))
+      .filter(Boolean),
   )).slice(0, Q_DRUGS_MAX);
   for (const d of drugs) push(d);
 
-  // 5. what was investigated
+  // 6. what was investigated
   const labs = Array.from(new Set(
-    events.filter((e) => e.event_type === 'lab_order').map((e) => detailStr(e, 'service_name')).filter(Boolean),
+    events.filter((e) => e.event_type === 'lab_order').map((e) => drugBaseName(detailStr(e, 'service_name'))).filter(Boolean),
   )).slice(0, Q_LABS_MAX);
   for (const l of labs) push(l);
 
-  return collapseSpaces(parts.join(' ')).slice(0, Q_TOTAL_CHARS);
+  const query = collapseSpaces(parts.join(' ')).slice(0, Q_TOTAL_CHARS);
+  if (query) return { query, day0FromOt: false };
+
+  // ── the day 0 last resort (see episodeSurgeryNames) ──
+  if (input.isDayZero && input.episodeSurgeryNames?.length) {
+    const fallback = collapseSpaces(
+      Array.from(new Set(input.episodeSurgeryNames.filter(Boolean))).slice(0, Q_SURGERY_MAX).join(' '),
+    ).slice(0, Q_TOTAL_CHARS);
+    if (fallback) return { query: fallback, day0FromOt: true };
+  }
+
+  // Nothing clinical was documented before this cut-off and there is no OT note to fall back on.
+  // An empty query is the honest answer; retrieval_offtopic and the citation counts will show it.
+  return { query: '', day0FromOt: false };
 }
 
 // ── topicality (item 3) ─────────────────────────────────────────────────────────────────────
@@ -157,21 +259,39 @@ export function clinicalTerms(text: string): Set<string> {
 }
 
 /**
- * True when NO retrieved excerpt shares a clinical term with the query — the IP-1286 shape, where a
- * hernia repair was answered with pediatric rotation content.
+ * Topicality, measured PER EXCERPT.
  *
- * Returns false when there is nothing to judge (no query, or no excerpts): an empty retrieval is
- * already recorded by `retrieval_failed` and the citation counts, and calling it "off topic" would
- * put two different failures in one column.
+ * ⚠️ THE ALL-OR-NOTHING VERSION COULD NOT FIRE, AND DIDN'T. It returned true only when EVERY
+ * excerpt was unrelated, so a slate that was half hospital-acquired-pneumonia guidance on a clean
+ * elective hernia case scored false — "on topic" — because the other half matched. On IP-1286 the
+ * flag was false on every checkpoint while twelve of twenty-four excerpts were unrelated. A signal
+ * that cannot fire on the case it was built for is not a signal.
+ *
+ * Each excerpt is now judged on its own, `offTopicCount` is reported alongside, and the boolean
+ * fires on a MAJORITY — more than half the slate sharing no clinical term with the query.
+ *
+ * Still returns zero/false when there is nothing to judge (no query, or no excerpts): an empty
+ * retrieval is already recorded by `retrieval_failed` and by the citation counts, and calling it
+ * "off topic" would put two different failures in one column.
  */
-export function retrievalIsOffTopic(query: string, excerpts: { label: string; text: string }[]): boolean {
+export function assessTopicality(
+  query: string, excerpts: { label: string; text: string }[],
+): { offTopic: boolean; offTopicCount: number; total: number } {
   const q = clinicalTerms(query);
-  if (q.size === 0 || excerpts.length === 0) return false;
+  if (q.size === 0 || excerpts.length === 0) return { offTopic: false, offTopicCount: 0, total: excerpts.length };
+  let off = 0;
   for (const x of excerpts) {
     const terms = clinicalTerms(`${x.label} ${x.text}`);
-    for (const t of terms) if (q.has(t)) return false;
+    let shares = false;
+    for (const t of terms) if (q.has(t)) { shares = true; break; }
+    if (!shares) off++;
   }
-  return true;
+  return { offTopic: off * 2 > excerpts.length, offTopicCount: off, total: excerpts.length };
+}
+
+/** Kept as the boolean-only view for callers that want it. */
+export function retrievalIsOffTopic(query: string, excerpts: { label: string; text: string }[]): boolean {
+  return assessTopicality(query, excerpts).offTopic;
 }
 
 /** First 100 chars of each excerpt, for the checkpoint row's `retrieved_titles` (item 2): what came

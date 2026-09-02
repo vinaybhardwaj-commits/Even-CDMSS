@@ -73,6 +73,10 @@ CREATE TABLE IF NOT EXISTS ipd_episode_audits (
   n_dropped_invalid     INTEGER DEFAULT 0,
   n_parse_failed        INTEGER DEFAULT 0,
 
+  -- How many findings any cap touched. Recountable from findings[].capped / verdict_before_cap —
+  -- the point being that "5 capped" is now a number in the row rather than a sentence in a
+  -- response body that nobody can check.
+  capped_count          INTEGER DEFAULT 0,
   checkpoint_count      INTEGER DEFAULT 0,
   evidence_tiers        JSONB,
   real_course           JSONB,
@@ -149,7 +153,14 @@ CREATE TABLE IF NOT EXISTS ipd_episode_checkpoints (
   -- True when NO excerpt shared a clinical term with the query. Recorded, never blocking: the
   -- checkpoint still generates, and the uncited cap already bounds what a finding built on
   -- off-topic material may score.
-  retrieval_offtopic  BOOLEAN DEFAULT FALSE
+  retrieval_offtopic  BOOLEAN DEFAULT FALSE,
+  -- How many of the k excerpts shared no clinical term with the query. The boolean fires on a
+  -- MAJORITY; the count is what makes the boolean checkable. The all-or-nothing version could not
+  -- fire and never did, while half a slate was unrelated.
+  offtopic_excerpt_count INTEGER DEFAULT 0,
+  -- The day 0 query was empty and fell back to the episode's OT surgery_name. That fallback reaches
+  -- outside the cut-off window, so every row it touches says so and the frequency is measurable.
+  day0_query_from_ot  BOOLEAN DEFAULT FALSE
 );
 
 CREATE INDEX IF NOT EXISTS ipd_episode_checkpoints_audit_idx ON ipd_episode_checkpoints (episode_audit_id);

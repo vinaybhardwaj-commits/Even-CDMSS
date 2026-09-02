@@ -416,14 +416,19 @@ test('unparseable findings reach the trace, error_detail, raw_judge_error AND th
 
 test('the query builder has no administrative parameter left to misuse', () => {
   const core = code('lib/ipd-episode/checkpoint-core.ts');
-  const iface = core.slice(core.indexOf('export interface RetrievalQueryInput'), core.indexOf('const detailStr'));
-  for (const gone of ['treatingDepartmentName', 'admissionType', 'admitSource', 'remarks', 'ward', 'facility']) {
+  // bounded to the interface ITSELF — a wider slice picks up the ID_FIELD regex below, which names
+  // ward/facility precisely because it strips them
+  const iface = core.slice(core.indexOf('export interface RetrievalQueryInput'), core.indexOf('export interface RetrievalQueryResult'));
+  // ⚠️ `remarks` is DELIBERATELY NOT in this list as of round 5 item 3. It was stripped with the
+  // four administrative fields and should not have been: it is free text written AT ADMISSION, so
+  // it carries the presenting picture and no hindsight. Removing it left IP-1286's day 0 query
+  // empty, and nine of its eleven uncited findings were day 0.
+  for (const gone of ['treatingDepartmentName', 'admissionType', 'admitSource', 'ward', 'facility', 'doctor']) {
     assert.ok(!iface.includes(gone), `RetrievalQueryInput must not accept '${gone}' — it retrieves staffing literature`);
   }
-  // and run.ts no longer passes them
   const run = code('lib/ipd-episode/run.ts');
-  const call = run.slice(run.indexOf('retrievalQueryInput:'), run.indexOf('retrievalQueryInput:') + 400);
-  for (const gone of ['treatingDepartmentName', 'admitSource', 'admissionType', 'remarks']) {
+  const call = run.slice(run.indexOf('retrievalQueryInput:'), run.indexOf('retrievalQueryInput:') + 600);
+  for (const gone of ['treatingDepartmentName', 'admitSource', 'admissionType', 'facilityName']) {
     assert.ok(!call.includes(gone), `run.ts must not pass '${gone}' into the query`);
   }
 });
@@ -441,17 +446,79 @@ test('the extracted case is UNREACHABLE from the checkpoint retrieval path (§3.
     }
   }
   // the builder takes ONE input, and it is the filtered event list
-  const iface = cpCore.slice(cpCore.indexOf('export interface RetrievalQueryInput'), cpCore.indexOf('const detailStr'));
+  const iface = cpCore.slice(cpCore.indexOf('export interface RetrievalQueryInput'), cpCore.indexOf('export interface RetrievalQueryResult'));
   const fields = [...iface.matchAll(/^\s{2}(\w+)[?]?:/gm)].map((m) => m[1]);
-  assert.deepEqual(fields, ['eventsBeforeCutoff'], 'RetrievalQueryInput has exactly one field');
+  assert.deepEqual(fields.sort(), ['episodeSurgeryNames', 'eventsBeforeCutoff', 'isDayZero', 'remarks'],
+    'the builder takes the cut-off window, admission remarks, and the day 0 OT fallback — no extraction');
 
-  // and run.ts passes exactly that, nothing more
+  // and run.ts passes exactly those, nothing more
   const run = code('lib/ipd-episode/run.ts');
-  const call = run.slice(run.indexOf('retrievalQueryInput:'), run.indexOf('retrievalQueryInput:') + 220);
+  const call = run.slice(run.indexOf('retrievalQueryInput:'), run.indexOf('retrievalQueryInput:') + 600);
   assert.ok(call.includes('eventsBeforeCutoff: input_events'), 'the checkpoint gets its own filtered list');
   for (const banned of ['extractedDiagnosis', 'extractedProcedure', 'extraction.']) {
     assert.ok(!call.includes(banned), `run.ts must not pass '${banned}' into the query`);
   }
+});
+
+// ── round 5 ─────────────────────────────────────────────────────────────────────────────────
+
+test('ONE cap rule: both halves must cite, and severity is not an exemption', () => {
+  const core = code('lib/ipd-episode/judge-core.ts');
+  assert.ok(core.includes('const entryGrounded = !!entry && entry.citation_ids.length > 0;'));
+  assert.ok(core.includes('const findingGrounded = f.citation_ids.length > 0;'));
+  assert.ok(core.includes('if (entryGrounded && findingGrounded) return { finding: f, capped: false };'),
+    'grounded requires BOTH — one notion of grounded, not two');
+  // no severity branch may guard the cap
+  const fn = core.slice(core.indexOf('export function applyUncitedCap'), core.indexOf('export function dropInvalid') > 0 ? core.indexOf('export function dropInvalid') : core.indexOf('export function normalizeFidelityFindings'));
+  assert.ok(!/severity === 'major'/.test(fn), 'major is not exempt — that would hold the loudest findings to the weakest standard');
+});
+
+test('the cap trail is persisted on every finding, and capped_count on the row', () => {
+  const core = code('lib/ipd-episode/judge-core.ts');
+  for (const field of ['verdict_before_cap', 'severity_before_cap', 'capped']) {
+    assert.ok(core.includes(`${field}:`), `the finding carries ${field}`);
+  }
+  const sqlText = read(join('migrations', '0052_ipd_episode_audits.sql'));
+  const route = read('app/api/admin/migrate-ipd-episode-audits/route.ts');
+  assert.ok(/capped_count          INTEGER DEFAULT 0/.test(sqlText));
+  assert.ok(route.includes('ADD COLUMN IF NOT EXISTS capped_count INTEGER DEFAULT 0'));
+  const store = code('lib/ipd-episode/store.ts');
+  assert.ok(store.includes('num(row.cappedCount)'), 'the writer persists it');
+  const run = code('lib/ipd-episode/run.ts');
+  assert.ok(run.includes('cappedCount: final.capped_finding_ids.size'), 'from the same set the status uses');
+});
+
+test('the normative leg is gated on the same similarity floor as the literature legs', () => {
+  const cp = code('lib/ipd-episode/checkpoint.ts');
+  assert.ok(cp.includes('export const RETRIEVAL_MIN_SIMILARITY = 0.3'), 'one number');
+  assert.ok(cp.includes('minSimilarity: RETRIEVAL_MIN_SIMILARITY'), 'passed to retrieve, so the floors cannot drift');
+  assert.ok(cp.includes('sim >= RETRIEVAL_MIN_SIMILARITY'), 'and applied to normative hits in the engine');
+  assert.ok(cp.includes('normativeDropped'), 'drops are counted, not silent');
+  // lib/retrieve.ts is UNTOUCHED — the gate lives here by necessity
+  assert.ok(!existsSync('lib/retrieve.ts.orig'), 'sanity');
+});
+
+test('topicality is per excerpt, with a count beside the boolean', () => {
+  const core = code('lib/ipd-episode/checkpoint-core.ts');
+  assert.ok(core.includes('export function assessTopicality('), 'the per-excerpt assessor exists');
+  assert.ok(core.includes('offTopic: off * 2 > excerpts.length'), 'the boolean fires on a majority');
+  const sqlText = read(join('migrations', '0052_ipd_episode_audits.sql'));
+  const route = read('app/api/admin/migrate-ipd-episode-audits/route.ts');
+  for (const col of ['offtopic_excerpt_count', 'day0_query_from_ot']) {
+    assert.ok(sqlText.includes(col), `.sql declares ${col}`);
+    assert.ok(route.includes(`ADD COLUMN IF NOT EXISTS ${col}`), `the route back-fills ${col}`);
+  }
+});
+
+test('the day 0 OT fallback is the ONLY place retrieval reaches outside the cut-off, and it is stamped', () => {
+  const core = code('lib/ipd-episode/checkpoint-core.ts');
+  assert.ok(core.includes('input.isDayZero && input.episodeSurgeryNames?.length'),
+    'day 0 only, and only when the query is otherwise empty');
+  const run = code('lib/ipd-episode/run.ts');
+  assert.ok(run.includes('isDayZero: entry.checkpoint_type === \'daily\' && entry.day_index === 0'));
+  assert.ok(run.includes('const episodeSurgeryNames'), 'the episode-wide list is built once, for this one caller');
+  const store = code('lib/ipd-episode/store.ts');
+  assert.ok(store.includes('day0QueryFromOt'), 'and every row it touches records it');
 });
 
 test('the extracted case reaches only the two places that are entitled to it', () => {
@@ -468,8 +535,12 @@ test('a thin query is an honest answer, not a gap to backfill', () => {
   const cpCore = code('lib/ipd-episode/checkpoint-core.ts');
   // nothing invents content when the window is empty: the builder only ever pushes strings it
   // found on the filtered events, and returns '' when it found none
-  assert.ok(cpCore.includes("return collapseSpaces(parts.join(' ')).slice(0, Q_TOTAL_CHARS);"));
-  assert.ok(!/fallback|backfill|default query/i.test(cpCore), 'no substitute source of clinical words exists');
+  assert.ok(cpCore.includes("const query = collapseSpaces(parts.join(' ')).slice(0, Q_TOTAL_CHARS);"));
+  assert.ok(cpCore.includes("return { query: '', day0FromOt: false };"),
+    'an empty window yields an empty query — nothing invents clinical words');
+  // the ONE fallback is the day 0 OT note, and it is gated and stamped (round 5 item 3)
+  const fallbacks = (cpCore.match(/day0FromOt: true/g) ?? []).length;
+  assert.equal(fallbacks, 1, 'exactly one fallback path exists');
 });
 
 test('retrieved titles and the off-topic flag are stored as columns, not buried in jsonb', () => {
@@ -590,12 +661,16 @@ test('the checkpoint pass retries ONCE when the whole course comes back uncited 
 test('an uncited entry is never repaired by guessing — the count is the whole response', () => {
   const core = code('lib/ipd-episode/checkpoint-core.ts');
   assert.ok(core.includes('export function countUncitedEntries('), 'it counts');
-  // nothing in the engine attaches a citation on a text overlap
+  // nothing in the engine attaches a citation on a text overlap. `similarity` is excluded from the
+  // pattern: round 5 item 5 gates the normative leg on retrieval's own similarity floor, which
+  // decides which excerpts are SHOWN and never which of them a finding is said to have used.
   for (const f of ENGINE_FILES) {
-    const src = code(f);
-    assert.ok(!/overlap|fuzzy|similar/i.test(src.replace(/citation_ids/g, '')),
-      `${f} must not infer a citation from text similarity`);
+    const src = code(f).replace(/citation_ids/g, '').replace(/[Ss]imilarity/g, '').replace(/MIN_SIMILARITY/g, '');
+    assert.ok(!/overlap|fuzzy/i.test(src), `${f} must not infer a citation from text similarity`);
   }
+  // and the count is never repaired into a citation
+  const cpCore = code('lib/ipd-episode/checkpoint-core.ts');
+  assert.ok(!/citation_ids\s*=\s*\[[^\]]/.test(cpCore), 'no code path assigns a citation list it did not parse');
 });
 
 test('the checkpoint row carries grounding as scalars, in the DDL and in the writer', () => {
