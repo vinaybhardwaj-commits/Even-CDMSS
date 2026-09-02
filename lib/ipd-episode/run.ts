@@ -30,6 +30,7 @@ import { checkpointModel, normativeSourcesForProvenance, runCheckpoint, type Che
 import { judgeModel, runCommentaryPass, runDiffPass, runFidelityPass } from './judge';
 import {
   evidenceTiersOf, finalizeFindings, completenessPct, resolveFindingCitations,
+  scoringStatusFor, storedDivergenceIndex,
   type EpisodeFinding,
 } from './judge-core';
 import { fetchProgressNotes, fetchDischargeSummary } from './db13';
@@ -51,6 +52,7 @@ export interface RunEpisodeResult {
   skip?: string;
   error?: string;
   divergenceIndex?: number;
+  scoringStatus?: string;
   completenessPct?: number;
   nFindings?: number;
   checkpointCount?: number;
@@ -233,6 +235,17 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
     });
 
     // ── 3. checkpoints (Haiku, blinded) ──
+    // ⚠️ THE ONLY TWO EXTRACTED-CASE FIELDS THE CHECKPOINT PATH MAY SEE, read once, here, so the
+    // relaxation is auditable in one place. `diagnosis` and `procedure` are classified PRE-OUTCOME
+    // by the DB addendum §A4; `disposition`, `followUp`, `aftercare` and `courseSummary` are
+    // outcome-bearing and are never read on this path. They steer retrieval only — neither string
+    // is placed in a checkpoint prompt.
+    const extractedCase = (extraction.extractedJson ?? {}) as Record<string, unknown>;
+    const extractedPreOutcome = {
+      diagnosis: extractedCase.diagnosis == null ? null : String(extractedCase.diagnosis),
+      procedure: extractedCase.procedure == null ? null : String(extractedCase.procedure),
+    };
+
     const plan = checkpointPlan(envelope.losDays);
     const admittedAt = envelope.admittedAt as string;
     const checkpoints: CheckpointResult[] = [];
@@ -255,11 +268,11 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
         admissionContext,
         events: input_events,
         retrievalQueryInput: {
-          treatingDepartmentName: envelope.treatingDepartmentName,
-          admissionType: envelope.admissionType,
-          admitSource: envelope.admitSource,
-          remarks: envelope.remarks,
           eventsBeforeCutoff: input_events,
+          // ONLY these two fields of the extracted case, split out at the call site so nothing
+          // else from it can reach a blinded pass. See RetrievalQueryInput's note.
+          extractedDiagnosis: extractedPreOutcome.diagnosis,
+          extractedProcedure: extractedPreOutcome.procedure,
         },
         model: modelCheckpoint,
       }));
@@ -345,6 +358,32 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
         }).catch(() => {});
       }
     }
+    // ── item 5: is this episode scorable at all? ──
+    // A divergence_index of 100 on an episode where no expectation was ever formed is the most
+    // dangerous thing this engine can emit: it reads as "ran perfectly" and means "nothing was
+    // measured". The status is computed BEFORE the row is built so the stored index can be null.
+    const scoringStatus = scoringStatusFor({
+      totalExpectedEntries: checkpoints.reduce((n, c) => n + c.entryCount, 0),
+      findings: final.findings,
+      cappedFindingIds: final.capped_finding_ids,
+    });
+    if (scoringStatus !== 'ok') {
+      errorDetail.push(scoringStatus === 'no_expectations'
+        ? 'no checkpoint produced a single expected entry — this episode is not scorable'
+        : 'every finding was capped — the index is arithmetically high but nothing survived at full weight');
+      if (traceId) {
+        await logEvent(traceId, 'ipd_episode_not_scorable', 'score', {
+          encounter_id: encounterId, scoring_status: scoringStatus,
+          expected_entries: checkpoints.reduce((n, c) => n + c.entryCount, 0),
+          findings: final.findings.length,
+        }).catch(() => {});
+      }
+    }
+    const offTopic = checkpoints.filter((c) => c.retrievalOffTopic).length;
+    if (offTopic > 0) {
+      errorDetail.push(`${offTopic} of ${checkpoints.length} checkpoint(s) retrieved nothing sharing a clinical term with their query`);
+    }
+
     // Checkpoint grounding, surfaced on the audit row too: 42 of 42 uncited was invisible until
     // someone read the jsonb.
     const uncitedEntries = checkpoints.reduce((n, c) => n + c.uncitedEntryCount, 0);
@@ -389,6 +428,8 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
       uncitedEntryCount: c.uncitedEntryCount,
       entryCount: c.entryCount,
       citationSources: c.citationSources,
+      retrievedTitles: c.retrievedTitles,
+      retrievalOffTopic: c.retrievalOffTopic,
     }));
 
     const saved = await saveEpisodeAudit({
@@ -404,7 +445,8 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
       losDays: envelope.losDays,
       dischargeType: envelope.dischargeType,
       extractionVersion: extraction.extractionVersion,
-      divergenceIndex: final.divergence_index,
+      divergenceIndex: storedDivergenceIndex(final.divergence_index, scoringStatus),
+      scoringStatus,
       completenessPct: completenessPct(sourcesPresent),
       counters: final.counters,
       checkpointCount: checkpoints.length,
@@ -434,7 +476,8 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
     return {
       encounterId,
       status: saved.status,
-      divergenceIndex: final.divergence_index,
+      divergenceIndex: storedDivergenceIndex(final.divergence_index, scoringStatus) ?? undefined,
+      scoringStatus,
       completenessPct: completenessPct(sourcesPresent),
       nFindings: final.counters.n_findings,
       checkpointCount: checkpoints.length,
@@ -447,6 +490,8 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
         ...(final.n_uncited_capped ? [`${final.n_uncited_capped} finding(s) capped by the uncited-expectation rule`] : []),
         ...(final.n_fidelity_normalized ? [`${final.n_fidelity_normalized} fidelity finding(s) normalised to commission / no checkpoint`] : []),
         ...(final.n_literature_capped ? [`${final.n_literature_capped} finding(s) capped from major to moderate — literature only, no normative citation`] : []),
+        ...(scoringStatus !== 'ok' ? [`scoring_status ${scoringStatus} — this episode is not presented as scored`] : []),
+        ...(offTopic ? [`${offTopic} checkpoint(s) flagged retrieval_offtopic`] : []),
         `citations by provenance: ${Object.entries(final.provenance_counts).filter(([, n]) => n > 0).map(([k, n]) => `${k} ${n}`).join(', ') || 'none'}`,
         ...(repaired ? [`${repaired} finding(s) kept by the enum repair pass`] : []),
         ...(unparseable ? [`${unparseable} finding(s) discarded — see raw_judge_error and the trace`] : []),

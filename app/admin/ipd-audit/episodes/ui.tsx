@@ -14,8 +14,30 @@ export const OUTCOME_AWARE_NOTICE = 'This commentary was written with knowledge 
 /** The verbatim empty-findings copy (PRD §10). */
 export const NO_DIVERGENCE_COPY = 'No divergence found against the expected course.';
 
-export function DivergenceChip({ index }: { index: number | null }) {
-  if (index == null) return <span className="text-[12px] text-slate-400">not scored</span>;
+/**
+ * ⚠️ A NUMBER IS ONLY SHOWN WHEN THERE IS ONE TO SHOW.
+ *
+ * `divergence_index` counts down from 100, so an episode where no expectation was ever formed
+ * scores 100 — identical to an admission that ran perfectly. That is the most dangerous output
+ * this engine can produce, because a clinician reading 100 has no way to tell the two apart. When
+ * `scoring_status` is anything but 'ok', this renders "not scorable" and says why, instead of a
+ * figure someone might act on.
+ */
+export function DivergenceChip({ index, status }: { index: number | null; status?: string | null }) {
+  const st = status ?? 'ok';
+  if (st !== 'ok' || index == null) {
+    const why = st === 'no_expectations' ? 'no checkpoint produced an expected course, so nothing could be measured'
+      : st === 'all_capped' ? 'every finding was capped — nothing survived at full weight'
+      : 'no score was stored for this episode';
+    return (
+      <span className="inline-flex items-baseline gap-1" title={why}>
+        <span className="text-[13px] font-semibold text-amber-700">not scorable</span>
+        <span className="text-[10px] font-medium uppercase tracking-wide text-slate-400">
+          {st === 'ok' ? 'no score' : st.replace(/_/g, ' ')}
+        </span>
+      </span>
+    );
+  }
   return (
     <span className="inline-flex items-baseline gap-1" title="100 minus 8·major + 4·moderate + 1·minor over divergent findings from both passes">
       <span className="text-[15px] font-semibold tabular-nums text-slate-900">{index}</span>

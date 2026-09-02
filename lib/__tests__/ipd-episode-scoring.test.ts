@@ -12,12 +12,14 @@ import {
   applyTierCRule, applyUncitedCap, attachAttribution, attributedParty, completenessPct,
   countFindings, divergenceIndex, normalizeFidelityFindings, evidenceTiersOf, finalizeFindings,
   parseFindings, resolveFindingCitations, validateCommentary, asLvcCategory, SEVERITY_PENALTY,
-  PARSE_FRAGMENT_CHARS, classifyCitationProvenance, applyLiteratureCap,
+  PARSE_FRAGMENT_CHARS, classifyCitationProvenance, applyLiteratureCap, scoringStatusFor,
+  storedDivergenceIndex,
   type EpisodeFinding, type Severity, type Verdict, type Domain, type AuditPass,
 } from '../ipd-episode/judge-core';
 import {
   checkpointEntryRefs, parseExpectedCourse, buildRetrievalQuery, renderExpectedCourse,
   ordinalForChunkId, countUncitedEntries, everyEntryUncited, buildCheckpointUser,
+  clinicalTerms, retrievalIsOffTopic, retrievedTitles, RETRIEVED_TITLE_CHARS,
   type CheckpointEntryRef,
 } from '../ipd-episode/checkpoint-core';
 import { checkpointModel, IPD_EPISODE_CHECKPOINT_MODEL_DEFAULT } from '../ipd-episode/checkpoint';
@@ -261,6 +263,17 @@ test('the checkpoint prompt requires a citation per entry and shows a worked exa
   // as written. Neither sentence may return.
   assert.ok(!IPD_EPISODE_CHECKPOINT_SYSTEM.includes('that is honest and expected'));
   assert.ok(!IPD_EPISODE_CHECKPOINT_SYSTEM.includes('do not pad citations'));
+});
+
+test('item 4: an uncited expectation must still be EMITTED — an empty course is the worse failure', () => {
+  assert.match(IPD_EPISODE_CHECKPOINT_SYSTEM, /STILL EMIT IT, WITH EMPTY citation_ids/);
+  assert.match(IPD_EPISODE_CHECKPOINT_SYSTEM, /AN EMPTY EXPECTED COURSE IS THE WORST OUTPUT/);
+  assert.match(IPD_EPISODE_CHECKPOINT_SYSTEM, /Never withhold an expectation because you cannot cite it/);
+  // round 3 told it to return fewer entries rather than uncited ones — that instruction produced
+  // the empty courses item 5 now has to defend against, and it must not come back
+  assert.ok(!IPD_EPISODE_CHECKPOINT_SYSTEM.includes('return fewer entries rather than a list of uncited ones'));
+  // the citation requirement itself survives
+  assert.match(IPD_EPISODE_CHECKPOINT_SYSTEM, /MUST carry at least one of those numbers/);
 });
 
 test('uncited entries are COUNTED, never repaired by guessing a citation', () => {
@@ -779,24 +792,149 @@ test('the cap runs before the Tier C rule, and a capped finding is therefore no 
 
 // ── retrieval query ──────────────────────────────────────────────────────────────────────────
 
-test('the retrieval query is built in the PRD order and reads only events the checkpoint may see', () => {
-  const before: EpisodeEvent[] = [
-    { ...NOTE_EVENT, event_id: 'n-old', occurred_at: '2026-08-01T20:00:00.000Z', summary: 'older note' },
-    { ...NOTE_EVENT, event_id: 'n-new', occurred_at: '2026-08-02T04:00:00.000Z', summary: 'newest note before the cutoff' },
-  ];
-  const q = buildRetrievalQuery({
-    treatingDepartmentName: 'General Medicine', admissionType: 'direct_admission',
-    admitSource: 'OPD', remarks: 'fever 4 days', eventsBeforeCutoff: before,
-  });
-  assert.match(q, /^General Medicine direct_admission OPD fever 4 days/);
-  assert.ok(q.includes('newest note before the cutoff'), 'the LATEST note before the cutoff is used');
-  assert.ok(!q.includes('older note'));
+// ── item 1: the query is built from clinical content, never administrative words ─────────────
+
+const ev = (o: Partial<EpisodeEvent> & { event_id: string }): EpisodeEvent => ({
+  occurred_at: '2026-08-02T04:00:00.000Z', day_index: 0, event_type: 'note', summary: '', detail: {},
+  author_name: null, author_role: null, responsible_clinician_id: null,
+  provenance: { source_table: 't', source_record_id: o.event_id, source_timestamp: null },
+  evidence_tier: 'A', ...o,
 });
 
-test('the retrieval query survives an empty envelope and an empty event list', () => {
-  assert.equal(buildRetrievalQuery({
-    treatingDepartmentName: null, admissionType: null, admitSource: null, remarks: null, eventsBeforeCutoff: [],
-  }), '');
+const CLINICAL_EVENTS: EpisodeEvent[] = [
+  ev({ event_id: 'ot', event_type: 'ot_note', detail: { surgery_name: 'Open inguinal hernia repair' } }),
+  ev({ event_id: 'n-old', occurred_at: '2026-08-01T20:00:00.000Z', summary: 'older note' }),
+  ev({ event_id: 'n-new', occurred_at: '2026-08-02T04:00:00.000Z', summary: 'right groin swelling, reducible' }),
+  ev({ event_id: 'p1', event_type: 'order', day_index: 1, detail: { service_type: 'Pharmacy', ordered_item_name: 'CEFAZOLIN 1G' } }),
+  ev({ event_id: 'p2', event_type: 'order', day_index: 1, detail: { service_type: 'Pharmacy', ordered_item_name: 'PARACETAMOL 1G' } }),
+  ev({ event_id: 'p-old', event_type: 'order', day_index: 0, detail: { service_type: 'Pharmacy', ordered_item_name: 'OLDER DRUG' } }),
+  ev({ event_id: 'lab', event_type: 'lab_order', detail: { service_name: 'Complete Blood Count' } }),
+];
+
+test('the query is built from clinical content in the stated priority', () => {
+  const q = buildRetrievalQuery({
+    eventsBeforeCutoff: CLINICAL_EVENTS,
+    extractedDiagnosis: 'Right inguinal hernia',
+    extractedProcedure: 'Hernioplasty',
+  });
+  // 1 surgery, 2 diagnosis + procedure, 3 latest narrative, 4 latest day's drugs, 5 labs
+  assert.match(q, /^Open inguinal hernia repair Right inguinal hernia Hernioplasty/);
+  assert.ok(q.includes('right groin swelling'), 'the latest narrative before the cut-off');
+  assert.ok(!q.includes('older note'));
+  assert.ok(q.includes('CEFAZOLIN 1G') && q.includes('PARACETAMOL 1G'), 'the latest day’s drugs');
+  assert.ok(!q.includes('OLDER DRUG'), 'only the latest documented drug day');
+  assert.ok(q.includes('Complete Blood Count'), 'lab service names');
+});
+
+test('NO administrative word can reach the query — this was the IP-1286 root cause', () => {
+  // the builder has no parameter for any of them any more, so the only way in would be an event
+  // detail, and none of these is read
+  const q = buildRetrievalQuery({
+    eventsBeforeCutoff: [
+      ...CLINICAL_EVENTS,
+      ev({ event_id: 'adm', event_type: 'admission', summary: 'Admission type direct_admission · from OPD · to General Surgery · ward 3B', detail: { ward: '3B', admission_type: 'direct_admission', admit_source: 'OPD', treating_department_name: 'General Surgery', facility_name: 'Even Hospital' } }),
+    ],
+    extractedDiagnosis: null, extractedProcedure: null,
+  });
+  for (const admin of ['direct_admission', 'OPD', 'General Surgery', '3B', 'Even Hospital']) {
+    assert.ok(!q.includes(admin), `'${admin}' must not appear — it retrieves staffing literature`);
+  }
+});
+
+test('the query works with no OT note and no extraction — notes, drugs and labs alone', () => {
+  const q = buildRetrievalQuery({
+    eventsBeforeCutoff: CLINICAL_EVENTS.filter((e) => e.event_type !== 'ot_note'),
+    extractedDiagnosis: null, extractedProcedure: null,
+  });
+  assert.ok(q.includes('right groin swelling') && q.includes('CEFAZOLIN 1G') && q.includes('Complete Blood Count'));
+  assert.ok(!q.includes('hernia repair'));
+});
+
+test('the query survives an empty event list and an absent extraction', () => {
+  assert.equal(buildRetrievalQuery({ eventsBeforeCutoff: [], extractedDiagnosis: null, extractedProcedure: null }), '');
+  assert.equal(buildRetrievalQuery({ eventsBeforeCutoff: [] }), '');
+});
+
+// ── items 2 and 3: what came back, and whether it was on topic ───────────────────────────────
+
+test('retrieved titles are the first 100 chars of each excerpt, in order', () => {
+  const titles = retrievedTitles([
+    { label: 'StatPearls · Inguinal Hernia', text: 'x'.repeat(500) },
+    { label: 'CW · Surgery', text: 'short' },
+  ]);
+  assert.equal(titles.length, 2);
+  assert.equal(titles[0].length, RETRIEVED_TITLE_CHARS);
+  assert.match(titles[0], /^StatPearls · Inguinal Hernia/);
+  assert.match(titles[1], /^CW · Surgery — short$/);
+});
+
+test('off-topic is true when NO excerpt shares a clinical term with the query', () => {
+  const query = 'Open inguinal hernia repair Right inguinal hernia CEFAZOLIN';
+  // the IP-1286 shape: a hernia repair answered with paediatric rotation and obstetric staffing
+  assert.equal(retrievalIsOffTopic(query, [
+    { label: 'Paediatric rotation staffing', text: 'Rotational scheduling for residents on paediatric wards.' },
+    { label: 'Obstetric staffing models', text: 'Midwifery ratios and obstetric unit coverage.' },
+  ]), true);
+  // one shared clinical term is enough to call it on topic
+  assert.equal(retrievalIsOffTopic(query, [
+    { label: 'Paediatric rotation staffing', text: 'Rotational scheduling.' },
+    { label: 'Inguinal hernia repair', text: 'Mesh hernia repair technique.' },
+  ]), false);
+});
+
+test('off-topic is false when there is nothing to judge — that is a different failure', () => {
+  assert.equal(retrievalIsOffTopic('', [{ label: 'a', text: 'b' }]), false, 'no query');
+  assert.equal(retrievalIsOffTopic('hernia repair', []), false, 'no excerpts — retrieval_failed owns that');
+});
+
+test('clinical terms ignore stopwords, short words and bare numbers', () => {
+  const t = clinicalTerms('The patient was given 500 mg of CEFAZOLIN for the hernia');
+  assert.ok(t.has('cefazolin') && t.has('hernia'));
+  for (const stop of ['the', 'was', 'given', 'patient', '500', 'mg']) {
+    assert.ok(!t.has(stop), `'${stop}' carries no clinical signal`);
+  }
+});
+
+// ── item 5: a defaulted 100 is the most dangerous output this engine can produce ──────────────
+
+test('no expectation anywhere ⇒ no_expectations, and the stored index is NULL not 100', () => {
+  const status = scoringStatusFor({ totalExpectedEntries: 0, findings: [], cappedFindingIds: new Set() });
+  assert.equal(status, 'no_expectations');
+  assert.equal(storedDivergenceIndex(100, status), null,
+    'a perfect-looking 100 on an unmeasured episode is exactly what must never be stored');
+});
+
+test('every finding capped ⇒ all_capped, so a high number is not presented as a clean run', () => {
+  const findings = [f({ finding_id: 'a' }), f({ finding_id: 'b' })];
+  const status = scoringStatusFor({
+    totalExpectedEntries: 12, findings, cappedFindingIds: new Set(['a', 'b']),
+  });
+  assert.equal(status, 'all_capped');
+  // the index is still stored for all_capped — it is real arithmetic, just weak evidence
+  assert.equal(storedDivergenceIndex(98, status), 98);
+});
+
+test('a genuinely concordant episode is `ok` — an empty finding list is not a failure', () => {
+  assert.equal(scoringStatusFor({ totalExpectedEntries: 12, findings: [], cappedFindingIds: new Set() }), 'ok');
+  assert.equal(storedDivergenceIndex(100, 'ok'), 100);
+});
+
+test('one uncapped finding is enough to make the episode scorable', () => {
+  const findings = [f({ finding_id: 'a' }), f({ finding_id: 'b' })];
+  assert.equal(scoringStatusFor({
+    totalExpectedEntries: 12, findings, cappedFindingIds: new Set(['a']),
+  }), 'ok');
+});
+
+test('finalizeFindings reports which findings were capped, so the status can be computed', () => {
+  const map = refs([['cp-d0/diagnostics/1', []]]);
+  const res = finalizeFindings([
+    f({ finding_id: 'capped', severity: 'major', checkpoint_ref: 'cp-d0/diagnostics/1' }),
+  ], map, [], 0, SOURCES, NORMATIVE);
+  assert.ok(res.capped_finding_ids.has('capped'));
+  assert.equal(scoringStatusFor({
+    totalExpectedEntries: 3, findings: res.findings, cappedFindingIds: res.capped_finding_ids,
+  }), 'all_capped');
 });
 
 // ── 16. the skip retry window ────────────────────────────────────────────────────────────────

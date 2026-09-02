@@ -209,11 +209,17 @@ export function CheckpointPanels({ checkpoints }: { checkpoints: Row[] }) {
                 <span className="ml-2 text-[10.5px] font-normal text-slate-400">
                   cut-off {fmtStamp(c.input_cutoff_at)} · {s(c.input_event_count)} event(s) in · {s(c.status)}
                   {c.retrieval_failed ? ' · retrieval failed' : ''}
+                  {c.retrieval_offtopic ? ' · retrieval off topic' : ''}
                   {Number(c.entry_count ?? 0) > 0
                     ? ` · ${Number(c.entry_count) - Number(c.uncited_entry_count ?? 0)}/${s(c.entry_count)} entries cited`
                     : ''}
                 </span>
               </summary>
+              {c.retrieval_query ? (
+                <p className="mt-2 text-[10.5px] text-slate-400">
+                  <span className="font-semibold uppercase tracking-wide">Query</span> {s(c.retrieval_query).slice(0, 400)}
+                </p>
+              ) : null}
               {s(c.status) === 'error' ? (
                 <p className="mt-2 text-[12px] text-red-700">This checkpoint did not produce an expected course: {s(c.error_detail) || 'no detail recorded'}.</p>
               ) : !course ? (
@@ -240,6 +246,22 @@ export function CheckpointPanels({ checkpoints }: { checkpoints: Row[] }) {
                         }).join(', ')}`
                       : 'No excerpts were retrieved for this checkpoint.'}
                   </div>
+                  {Array.isArray(c.retrieved_titles) && (c.retrieved_titles as unknown[]).length ? (
+                    <div className="mt-1">
+                      <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">What was retrieved</div>
+                      <ul className="mt-0.5 space-y-0.5">
+                        {(c.retrieved_titles as unknown[]).map((t, j) => (
+                          <li key={j} className="text-[11px] text-slate-500">[{j + 1}] {s(t)}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
+                  {c.retrieval_offtopic ? (
+                    <p className="mt-1 text-[11px] text-amber-800">
+                      No retrieved excerpt shared a clinical term with this checkpoint&rsquo;s query. The expected
+                      course was still generated; its uncited entries are scored conservatively.
+                    </p>
+                  ) : null}
                   {ids.length > 0 && Number(c.entry_count ?? 0) > 0 && Number(c.uncited_entry_count ?? 0) === Number(c.entry_count)
                     ? (
                       <p className="mt-1 text-[11px] text-amber-800">

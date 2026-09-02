@@ -53,7 +53,11 @@ Worked example. Given excerpts numbered 1 to 8, where [3] states that a patient 
 
 citation_ids is [3] — a number in the stated range, naming the excerpt the expectation came from. Not [] and not a made-up number.
 
-THE ONE EXCEPTION, AND ITS PRICE. If an expectation genuinely rests on nothing you were shown, you may leave its citation_ids empty — but a finding built on an uncited expectation is capped downstream to minor and context_dependent, so an uncited entry carries almost no weight. Prefer an expectation you can ground. If NO excerpt supports anything you would expect, return fewer entries rather than a list of uncited ones, and say why in uncertainty.
+WHEN NO EXCERPT SUPPORTS AN EXPECTATION, STILL EMIT IT, WITH EMPTY citation_ids.
+
+The excerpts are retrieved automatically and they are sometimes off topic. An expectation you are confident about, from ordinary clinical practice, is worth stating whether or not a passage in front of you happens to support it — leave its citation_ids empty and write it anyway. Code scores an uncited expectation conservatively: any finding built on it is capped to minor and context_dependent, so a well-founded uncited entry costs the audit nothing it should not cost.
+
+AN EMPTY EXPECTED COURSE IS THE WORST OUTPUT YOU CAN PRODUCE. It is read downstream as "nothing was expected of this admission", which scores it as though nothing went wrong. Never withhold an expectation because you cannot cite it. State it, leave citation_ids empty, and note in uncertainty that the excerpts did not speak to it.
 
 NEVER invent a number, never cite an excerpt you did not use, and never cite a number outside the stated range — a citation to an excerpt that does not exist is dropped in code, which leaves the entry uncited anyway.
 

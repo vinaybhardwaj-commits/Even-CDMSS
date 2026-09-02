@@ -204,6 +204,9 @@ export interface EpisodeAuditRow {
   dischargeType: string | null;
   extractionVersion: string | null;
   divergenceIndex: number | null;
+  /** 'ok' | 'no_expectations' | 'all_capped'. Anything but 'ok' means the number beside it is not
+   *  a score, and the UI must not render one. */
+  scoringStatus?: string | null;
   completenessPct: number | null;
   counters: FindingCounters;
   checkpointCount: number;
@@ -242,6 +245,10 @@ export interface CheckpointWriteRow {
   /** Cited chunk id → its `source`. Records the FACT; the normative/literature split is derived
    *  from it at finalise time, so a later change to the source list can be re-applied to old rows. */
   citationSources: Record<string, string>;
+  /** First 100 chars of each retrieved excerpt — what came back, without opening jsonb. */
+  retrievedTitles: string[];
+  /** No excerpt shared a clinical term with the query. */
+  retrievalOffTopic: boolean;
 }
 
 /**
@@ -258,15 +265,15 @@ export async function saveEpisodeAudit(row: EpisodeAuditRow, checkpoints: Checkp
       `INSERT INTO ipd_episode_audits (
          engine_version, encounter_id, ip_uid, member_id, facility_name, speciality,
          admitted_at, discharged_at, los_days, discharge_type, extraction_version,
-         divergence_index, completeness_pct,
+         divergence_index, scoring_status, completeness_pct,
          n_findings, n_divergence_pass, n_fidelity_pass, n_omission, n_commission, n_timing,
          n_sequencing, n_divergent, n_context_dependent, n_unassessable, n_concordant,
          n_low_value, n_dropped_invalid, n_parse_failed,
          checkpoint_count, evidence_tiers, real_course, findings, commentary,
          model_checkpoint, model_judge, trace_id, error_detail, raw_judge_error)
-       VALUES ($1,$2,$3,$4,$5,$6, $7,$8,$9,$10,$11, $12,$13,
-               $14,$15,$16,$17,$18,$19, $20,$21,$22,$23,$24, $25,$26,$27,
-               $28,$29::jsonb,$30::jsonb,$31::jsonb,$32::jsonb, $33,$34,$35,$36,$37::jsonb)
+       VALUES ($1,$2,$3,$4,$5,$6, $7,$8,$9,$10,$11, $12,$13,$14,
+               $15,$16,$17,$18,$19,$20, $21,$22,$23,$24,$25, $26,$27,$28,
+               $29,$30::jsonb,$31::jsonb,$32::jsonb,$33::jsonb, $34,$35,$36,$37,$38::jsonb)
        ON CONFLICT (encounter_id, engine_version) DO UPDATE SET
          audited_at = NOW(),
          ip_uid = EXCLUDED.ip_uid, member_id = EXCLUDED.member_id,
@@ -274,7 +281,8 @@ export async function saveEpisodeAudit(row: EpisodeAuditRow, checkpoints: Checkp
          admitted_at = EXCLUDED.admitted_at, discharged_at = EXCLUDED.discharged_at,
          los_days = EXCLUDED.los_days, discharge_type = EXCLUDED.discharge_type,
          extraction_version = EXCLUDED.extraction_version,
-         divergence_index = EXCLUDED.divergence_index, completeness_pct = EXCLUDED.completeness_pct,
+         divergence_index = EXCLUDED.divergence_index, scoring_status = EXCLUDED.scoring_status,
+         completeness_pct = EXCLUDED.completeness_pct,
          n_findings = EXCLUDED.n_findings, n_divergence_pass = EXCLUDED.n_divergence_pass,
          n_fidelity_pass = EXCLUDED.n_fidelity_pass, n_omission = EXCLUDED.n_omission,
          n_commission = EXCLUDED.n_commission, n_timing = EXCLUDED.n_timing,
@@ -294,7 +302,10 @@ export async function saveEpisodeAudit(row: EpisodeAuditRow, checkpoints: Checkp
         // NEVER NULL. The DDL defaults these to 0, but a DEFAULT only applies to a column the
         // INSERT omits — and this INSERT names all of them, so a null here would be written as a
         // null. `num` is the half of the guarantee that actually holds on this statement.
-        num(row.divergenceIndex), num(row.completenessPct),
+        // ⚠️ divergence_index is the ONE counted column that may legitimately be null: under
+        // scoring_status 'no_expectations' there is no score, and 0 would read as a catastrophic
+        // episode while null reads as "not scorable", which is what actually happened.
+        row.divergenceIndex, row.scoringStatus ?? 'ok', num(row.completenessPct),
         num(c.n_findings), num(c.n_divergence_pass), num(c.n_fidelity_pass), num(c.n_omission),
         num(c.n_commission), num(c.n_timing), num(c.n_sequencing), num(c.n_divergent),
         num(c.n_context_dependent), num(c.n_unassessable), num(c.n_concordant),
@@ -321,14 +332,17 @@ export async function saveEpisodeAudit(row: EpisodeAuditRow, checkpoints: Checkp
         `INSERT INTO ipd_episode_checkpoints (
            episode_audit_id, day_index, checkpoint_type, input_cutoff_at, input_event_count,
            retrieval_query, retrieval_failed, citation_ids, expected_course, status, error_detail,
-           model, trace_id, uncited_entry_count, entry_count, citation_sources)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8::int[],$9::jsonb,$10,$11,$12,$13,$14,$15,$16::jsonb)`,
+           model, trace_id, uncited_entry_count, entry_count, citation_sources,
+           retrieved_titles, retrieval_offtopic)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8::int[],$9::jsonb,$10,$11,$12,$13,$14,$15,$16::jsonb,
+                 $17::text[],$18)`,
         [
           auditId, cp.dayIndex, cp.checkpointType, cp.inputCutoffAt, cp.inputEventCount,
           cp.retrievalQuery, cp.retrievalFailed, cp.citationIds,
           cp.expectedCourse == null ? null : JSON.stringify(cp.expectedCourse),
           cp.status, cp.errorDetail, cp.model, cp.traceId,
           num(cp.uncitedEntryCount), num(cp.entryCount), JSON.stringify(cp.citationSources ?? {}),
+          cp.retrievedTitles ?? [], cp.retrievalOffTopic ?? false,
         ],
       ).catch((e: unknown) => {
         warn(`saveEpisodeAudit checkpoint day ${cp.dayIndex} (${cp.checkpointType})`, e);
@@ -375,7 +389,7 @@ export async function checkpointsForAudit(auditId: string): Promise<EpisodeListR
   return run(
     `SELECT day_index, checkpoint_type, generated_at, input_cutoff_at, input_event_count,
             retrieval_query, retrieval_failed, citation_ids, expected_course, status, error_detail, model,
-            uncited_entry_count, entry_count, citation_sources
+            uncited_entry_count, entry_count, citation_sources, retrieved_titles, retrieval_offtopic
      FROM ipd_episode_checkpoints
      WHERE episode_audit_id = $1
      ORDER BY (checkpoint_type = 'episode'), day_index ASC`, [auditId],

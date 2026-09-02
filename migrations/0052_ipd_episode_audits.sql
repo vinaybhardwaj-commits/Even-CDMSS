@@ -43,7 +43,14 @@ CREATE TABLE IF NOT EXISTS ipd_episode_audits (
   -- one unwritten column reports a mean over a denominator nobody chose. The writer also coalesces
   -- (lib/ipd-episode/store.ts) — the default is the backstop for a future column added to the DDL
   -- and not yet to the INSERT, which is exactly how a null gets in.
-  divergence_index      INTEGER DEFAULT 0,
+  -- ⚠️ NO DEFAULT ON divergence_index, unlike every other counted column. This one may legitimately
+  -- be NULL, and that is the whole point of scoring_status below: an episode where no checkpoint
+  -- produced an expectation has no score, and 0 would read as catastrophic while 100 — what the
+  -- arithmetic actually yields — reads as flawless. Null is the only honest value.
+  divergence_index      INTEGER,
+  -- 'ok' | 'no_expectations' | 'all_capped'. Anything but 'ok' means the number beside it is not a
+  -- score and no surface may render it as one.
+  scoring_status        TEXT NOT NULL DEFAULT 'ok',
   completeness_pct      INTEGER DEFAULT 0,
 
   -- counters (§6.1) — one column per counter
@@ -134,7 +141,15 @@ CREATE TABLE IF NOT EXISTS ipd_episode_checkpoints (
   -- source is stored per citation and the normative/literature split is DERIVED from it rather
   -- than baked in — a later change to the normative source list can be re-applied to stored rows
   -- without re-running a single model call.
-  citation_sources    JSONB
+  citation_sources    JSONB,
+
+  -- What actually came back, in a column. A topical failure — a hernia repair answered with
+  -- paediatric rotation content — was invisible until someone opened the jsonb and read it.
+  retrieved_titles    TEXT[],
+  -- True when NO excerpt shared a clinical term with the query. Recorded, never blocking: the
+  -- checkpoint still generates, and the uncited cap already bounds what a finding built on
+  -- off-topic material may score.
+  retrieval_offtopic  BOOLEAN DEFAULT FALSE
 );
 
 CREATE INDEX IF NOT EXISTS ipd_episode_checkpoints_audit_idx ON ipd_episode_checkpoints (episode_audit_id);

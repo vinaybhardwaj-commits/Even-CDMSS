@@ -56,7 +56,7 @@ export default async function EpisodeAuditDetail({ params, searchParams }: {
       <EpisodeTabs active="episodes" />
 
       <div className="mt-4 flex flex-wrap items-center gap-x-6 gap-y-2 rounded-xl border border-slate-200 bg-white px-4 py-3">
-        <DivergenceChip index={audit.divergence_index == null ? null : Number(audit.divergence_index)} />
+        <DivergenceChip index={audit.divergence_index == null ? null : Number(audit.divergence_index)} status={audit.scoring_status as string | null} />
         <DischargeEngineScore cvi={sib.care_value_index} band={sib.band} />
         <span className="text-[12px] text-slate-600">
           <span className="text-[10px] font-medium uppercase tracking-wide text-slate-400">Completeness </span>
@@ -75,7 +75,7 @@ export default async function EpisodeAuditDetail({ params, searchParams }: {
       </div>
 
       <p className="mt-2 text-[11px] text-slate-400">
-        Engine {s(audit.engine_version)} · checkpoints {s(audit.checkpoint_count)} · extraction {s(audit.extraction_version)} ·
+        Engine {s(audit.engine_version)} · checkpoints {s(audit.checkpoint_count)} · scoring {s(audit.scoring_status)} · extraction {s(audit.extraction_version)} ·
         checkpoint model {s(audit.model_checkpoint)} · judge model {s(audit.model_judge)}
       </p>
 

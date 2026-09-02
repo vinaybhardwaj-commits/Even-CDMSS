@@ -295,10 +295,11 @@ test('citation_ids: the DDL type and the store’s cast agree — a mismatch wou
   assert.ok(store.includes('$8::int[]'), 'the store casts citation_ids as int[]');
   assert.ok(!/citation_ids[^)]*::text\[\]/.test(store), 'the store never casts citation_ids to text[]');
 
-  // the ONE ::text[] in the store is a different query on a different, genuinely-text column
+  // the ::text[] casts in this file are on genuinely-text columns, and neither is citation_ids
   const textCasts = store.match(/::text\[\]/g) ?? [];
-  assert.equal(textCasts.length, 1, 'exactly one ::text[] cast in the file');
-  assert.ok(store.includes('ip_uid = ANY($2::text[])'), 'and it is the sibling-score join on ip_uid, which IS text');
+  assert.equal(textCasts.length, 2, 'two ::text[] casts: the ip_uid join and the retrieved_titles array');
+  assert.ok(store.includes('ip_uid = ANY($2::text[])'), 'the sibling-score join on ip_uid, which IS text');
+  assert.ok(store.includes('$17::text[]'), 'and retrieved_titles, which IS a text[]');
 });
 
 test('the migrate route repairs a citation_ids column of the wrong type, and is idempotent about it', () => {
@@ -314,8 +315,12 @@ test('the migrate route repairs a citation_ids column of the wrong type, and is 
 test('every counted column carries DEFAULT 0 in both DDL copies, and the writer never sends null', () => {
   const sqlText = read(join('migrations', '0052_ipd_episode_audits.sql'));
   const route = read('app/api/admin/migrate-ipd-episode-audits/route.ts');
+  // ⚠️ divergence_index is DELIBERATELY ABSENT from this list as of round 4 item 5. It is the one
+  // counted column that may legitimately be NULL — under scoring_status 'no_expectations' there is
+  // no score — and a DEFAULT 0 would make "not scorable" indistinguishable from the worst episode
+  // this engine has ever produced. Its own test asserts the absence.
   const counted = [
-    'divergence_index', 'completeness_pct', 'n_findings', 'n_divergence_pass', 'n_fidelity_pass',
+    'completeness_pct', 'n_findings', 'n_divergence_pass', 'n_fidelity_pass',
     'n_omission', 'n_commission', 'n_timing', 'n_sequencing', 'n_divergent', 'n_context_dependent',
     'n_unassessable', 'n_concordant', 'n_low_value', 'n_dropped_invalid', 'checkpoint_count',
   ];
@@ -328,8 +333,7 @@ test('every counted column carries DEFAULT 0 in both DDL copies, and the writer 
   // coalesces too
   const store = code('lib/ipd-episode/store.ts');
   assert.ok(/function num\(v: number \| null \| undefined\): number/.test(store), 'the coalescing helper exists');
-  assert.ok(store.includes('num(c.n_findings)') && store.includes('num(row.divergenceIndex)'),
-    'counters and the index go through it');
+  assert.ok(store.includes('num(c.n_findings)'), 'every counter goes through it');
   // los_days deliberately does NOT: a missing stay length is unknown, not zero
   assert.ok(store.includes('row.losDays,'), 'losDays is passed through as-is, nulls included');
 });
@@ -406,6 +410,80 @@ test('unparseable findings reach the trace, error_detail, raw_judge_error AND th
   const core = code('lib/ipd-episode/judge-core.ts');
   assert.ok(core.includes('countFindings(findings, dropped, parseFailed)'),
     'n_dropped_invalid is fed both causes; n_parse_failed isolates the second');
+});
+
+// ── round 4 items 1–5: the retrieval query, and refusing to invent a score ───────────────────
+
+test('the query builder has no administrative parameter left to misuse', () => {
+  const core = code('lib/ipd-episode/checkpoint-core.ts');
+  const iface = core.slice(core.indexOf('export interface RetrievalQueryInput'), core.indexOf('const detailStr'));
+  for (const gone of ['treatingDepartmentName', 'admissionType', 'admitSource', 'remarks', 'ward', 'facility']) {
+    assert.ok(!iface.includes(gone), `RetrievalQueryInput must not accept '${gone}' — it retrieves staffing literature`);
+  }
+  // and run.ts no longer passes them
+  const run = code('lib/ipd-episode/run.ts');
+  const call = run.slice(run.indexOf('retrievalQueryInput:'), run.indexOf('retrievalQueryInput:') + 400);
+  for (const gone of ['treatingDepartmentName', 'admitSource', 'admissionType', 'remarks']) {
+    assert.ok(!call.includes(gone), `run.ts must not pass '${gone}' into the query`);
+  }
+});
+
+test('ONLY diagnosis and procedure are read from the extracted case on the blinded path', () => {
+  const run = code('lib/ipd-episode/run.ts');
+  const block = run.slice(run.indexOf('const extractedPreOutcome'), run.indexOf('const plan = checkpointPlan'));
+  assert.ok(block.includes('extractedCase.diagnosis') && block.includes('extractedCase.procedure'));
+  // the outcome-bearing fields (addendum §A4) must never be reachable from this path
+  for (const outcome of ['disposition', 'followUp', 'aftercare', 'courseSummary', 'rawNotes', 'lengthOfStayDays']) {
+    assert.ok(!block.includes(outcome), `the checkpoint path must never read '${outcome}'`);
+  }
+  // and the two strings steer retrieval only — they are not put in a checkpoint prompt
+  const cpCore = code('lib/ipd-episode/checkpoint-core.ts');
+  const userBuilder = cpCore.slice(cpCore.indexOf('export function buildCheckpointUser'), cpCore.indexOf('export function admissionContextLine'));
+  assert.ok(!userBuilder.includes('extractedDiagnosis') && !userBuilder.includes('extractedProcedure'),
+    'neither field may reach the prompt the checkpoint actually reads');
+});
+
+test('retrieved titles and the off-topic flag are stored as columns, not buried in jsonb', () => {
+  const sqlText = read(join('migrations', '0052_ipd_episode_audits.sql'));
+  const route = read('app/api/admin/migrate-ipd-episode-audits/route.ts');
+  for (const col of ['retrieved_titles', 'retrieval_offtopic']) {
+    assert.ok(sqlText.includes(col), `.sql declares ${col}`);
+    assert.ok(route.includes(`ADD COLUMN IF NOT EXISTS ${col}`), `the route back-fills ${col}`);
+  }
+  assert.ok(sqlText.includes('retrieved_titles    TEXT[]'), 'titles are a text[]');
+  const store = code('lib/ipd-episode/store.ts');
+  assert.ok(store.includes('$17::text[]'), 'the insert casts the titles array');
+  // off topic never blocks generation
+  const cp = code('lib/ipd-episode/checkpoint.ts');
+  assert.ok(!/if \(.*retrievalIsOffTopic/.test(cp), 'the flag is recorded, never branched on');
+});
+
+test('divergence_index alone among the counted columns may be NULL, and is never defaulted to 0', () => {
+  const sqlText = read(join('migrations', '0052_ipd_episode_audits.sql'));
+  const route = read('app/api/admin/migrate-ipd-episode-audits/route.ts');
+  assert.ok(/divergence_index      INTEGER,/.test(sqlText), '.sql leaves it nullable with no default');
+  assert.ok(!/divergence_index\s+INTEGER DEFAULT 0/.test(sqlText) && !/divergence_index\s+INTEGER DEFAULT 0/.test(route),
+    'a DEFAULT 0 would make "not scorable" read as the worst episode ever recorded');
+  assert.ok(route.includes('ALTER COLUMN divergence_index DROP DEFAULT'),
+    'and a table created by an earlier run has the default removed');
+  // the writer must not coalesce it either
+  const store = code('lib/ipd-episode/store.ts');
+  assert.ok(!store.includes('num(row.divergenceIndex)'), 'the writer passes it through, nulls included');
+  assert.ok(store.includes('row.divergenceIndex,'));
+});
+
+test('scoring_status is stored and the UI refuses to render a number without one', () => {
+  const sqlText = read(join('migrations', '0052_ipd_episode_audits.sql'));
+  const route = read('app/api/admin/migrate-ipd-episode-audits/route.ts');
+  assert.ok(sqlText.includes("scoring_status        TEXT NOT NULL DEFAULT 'ok'"));
+  assert.ok(route.includes("ADD COLUMN IF NOT EXISTS scoring_status TEXT NOT NULL DEFAULT 'ok'"));
+  const ui = code('app/admin/ipd-audit/episodes/ui.tsx');
+  assert.ok(ui.includes('not scorable'), 'the chip says so in words');
+  assert.ok(/if \(st !== 'ok' \|\| index == null\)/.test(ui), 'any status but ok suppresses the number');
+  // both surfaces pass the status in
+  for (const f of ['app/admin/ipd-audit/episodes/page.tsx', 'app/admin/ipd-audit/episodes/[id]/page.tsx']) {
+    assert.ok(read(f).includes('scoring_status'), `${f} passes scoring_status to the chip`);
+  }
 });
 
 // ── V's 2026-09-02 widening: cite anything, but price it ─────────────────────────────────────

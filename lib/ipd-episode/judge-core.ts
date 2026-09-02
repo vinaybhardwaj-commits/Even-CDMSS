@@ -595,6 +595,8 @@ export interface FinalizeResult {
   n_fidelity_normalized: number;
   /** Findings whose severity was cut from major because only literature backed them. */
   n_literature_capped: number;
+  /** Ids of findings that ANY cap touched — the input to `scoringStatusFor`. */
+  capped_finding_ids: Set<string>;
   /** How the surviving findings' citations break down — the measurement V asked for. */
   provenance_counts: Record<string, number>;
 }
@@ -611,20 +613,21 @@ export function finalizeFindings(
   let rewritten = 0;
   let capped = 0;
   let litCapped = 0;
+  const capped_finding_ids = new Set<string>();
   const provenance_counts: Record<string, number> = { normative: 0, literature: 0, mixed: 0, none: 0 };
   const findings = kept.map((f0) => {
     // Cap BEFORE the Tier C rewrite: the cap can move a divergent finding to context_dependent,
     // at which point the Tier C rule no longer applies to it — which is correct, since the rule
     // exists to stop an unsupported DIVERGENT claim, and a capped finding no longer makes one.
     const capRes = applyUncitedCap(f0, entryRefs);
-    if (capRes.capped) capped++;
+    if (capRes.capped) { capped++; capped_finding_ids.add(f0.finding_id); }
     // Provenance is classified BEFORE the literature cap, because the cap reads it.
     const provenance = classifyCitationProvenance(capRes.finding.citation_ids, sourceById, normativeSources);
     const withProv: EpisodeFinding = { ...capRes.finding, citation_provenance: provenance };
     provenance_counts[provenance ?? 'none']++;
 
     const litRes = applyLiteratureCap(withProv);
-    if (litRes.capped) litCapped++;
+    if (litRes.capped) { litCapped++; capped_finding_ids.add(withProv.finding_id); }
 
     const tierRes = applyTierCRule(litRes.finding);
     if (tierRes.rewritten) rewritten++;
@@ -638,8 +641,48 @@ export function finalizeFindings(
     n_uncited_capped: capped,
     n_fidelity_normalized: normalized,
     n_literature_capped: litCapped,
+    capped_finding_ids,
     provenance_counts,
   };
+}
+
+// ── scoring status (item 5) ──────────────────────────────────────────────────────────────────
+
+export const SCORING_STATUSES = ['ok', 'no_expectations', 'all_capped'] as const;
+export type ScoringStatus = (typeof SCORING_STATUSES)[number];
+
+/**
+ * ⚠️ THE MOST DANGEROUS OUTPUT THIS ENGINE CAN PRODUCE IS A CONFIDENT 100.
+ *
+ * `divergence_index` starts at 100 and subtracts penalties. That arithmetic cannot distinguish
+ * "this admission ran exactly as expected" from "no expectation was ever formed, so nothing could
+ * be found to diverge from" — and IP-1286 produced the second while looking like the first. An
+ * episode with real omissions displaying a perfect score is worse than an episode displaying
+ * nothing, because a number invites a clinician to trust it.
+ *
+ *   no_expectations — no checkpoint produced a single entry. There was no standard to measure
+ *                     against, so there is no score. `divergence_index` is stored NULL and the UI
+ *                     says "not scorable" rather than rendering a number.
+ *   all_capped      — findings exist, and EVERY one of them was capped (uncited expectation, or
+ *                     literature-only evidence). The arithmetic still yields a high number, but
+ *                     nothing in it survived at full weight, so the number means less than it
+ *                     looks. Recorded so the UI can say so.
+ *   ok              — a real score.
+ */
+export function scoringStatusFor(a: {
+  totalExpectedEntries: number;
+  findings: readonly EpisodeFinding[];
+  cappedFindingIds: ReadonlySet<string>;
+}): ScoringStatus {
+  if (a.totalExpectedEntries === 0) return 'no_expectations';
+  if (a.findings.length > 0 && a.findings.every((f) => a.cappedFindingIds.has(f.finding_id))) return 'all_capped';
+  return 'ok';
+}
+
+/** The score to STORE. Null under `no_expectations` — an absent standard yields no number, and a
+ *  null is the only honest way to say that in an integer column. */
+export function storedDivergenceIndex(index: number, status: ScoringStatus): number | null {
+  return status === 'no_expectations' ? null : index;
 }
 
 // ── commentary (PRD §3.6) ────────────────────────────────────────────────────────────────────

@@ -18,7 +18,7 @@ import { retrieve, resolveNormativeSources } from '../retrieve';
 import { assertKnownBedrockModel } from '../bedrock-core';
 import {
   buildCheckpointUser, buildRetrievalQuery, checkpointEntryRefs, countUncitedEntries,
-  everyEntryUncited, parseExpectedCourse,
+  everyEntryUncited, parseExpectedCourse, retrievalIsOffTopic, retrievedTitles,
   RETRIEVAL_TOP_K, type CheckpointEntryRef, type ExpectedCourse, type RetrievedExcerpt,
 } from './checkpoint-core';
 import { IPD_EPISODE_CHECKPOINT_SYSTEM } from './prompts';
@@ -59,6 +59,10 @@ export interface CheckpointResult {
   citationIds: number[];
   /** Cited chunk id → the `source` value of that chunk, verbatim. */
   citationSources: Record<string, string>;
+  /** First 100 chars of each retrieved excerpt — a topical failure, readable without jsonb. */
+  retrievedTitles: string[];
+  /** No excerpt shared a clinical term with the query. Recorded, never blocking. */
+  retrievalOffTopic: boolean;
   expectedCourse: ExpectedCourse | null;
   entryRefs: CheckpointEntryRef[];
   status: 'ok' | 'error';
@@ -145,6 +149,8 @@ export async function runCheckpoint(input: RunCheckpointInput): Promise<Checkpoi
     retrievalFailed: failed,
     citationIds: ids,
     citationSources: sources,
+    retrievedTitles: retrievedTitles(excerpts),
+    retrievalOffTopic: retrievalIsOffTopic(query, excerpts),
     model: input.model,
   };
 

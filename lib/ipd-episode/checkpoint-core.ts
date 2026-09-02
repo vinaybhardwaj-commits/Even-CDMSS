@@ -12,42 +12,166 @@
  */
 
 import { extractJsonObject } from '../lvc-value-core';
-import { collapseSpaces, type EpisodeEvent } from './assemble-core';
+import { collapseSpaces, PHARMACY_SERVICE_TYPE, type EpisodeEvent } from './assemble-core';
 
 export const RETRIEVAL_TOP_K = 8;
 const NOTE_QUERY_CHARS = 400;
 
-// ── retrieval query (PRD §3.3.2) ─────────────────────────────────────────────────────────────
+// ── retrieval query (PRD §3.3.2, rebuilt 2026-09-02) ────────────────────────────────────────
+//
+// ⚠️ THE OLD QUERY RETRIEVED STAFFING LITERATURE, AND HERE IS EXACTLY WHY. It was built from
+// `treating_department_name`, `admission_type`, `admit_source` and the admission `remarks` — four
+// ADMINISTRATIVE fields. A hernia repair produced a query like "General Surgery direct_admission
+// OPD", and a corpus asked that question answers it honestly: it returns passages about
+// departments, rotations and staffing models. IP-1286 retrieved pediatric rotation and obstetric
+// staffing content for a hernia repair, and every downstream symptom — 42 of 42 entries uncited,
+// a divergence_index of 100 — descends from a query that never mentioned a clinical fact.
+//
+// The query is now built from CLINICAL CONTENT ONLY, in the priority below. Ward, doctor,
+// facility, admission type and admit source do not appear in it at all, and a test asserts they
+// cannot: they describe where care happened and who arranged it, never what was wrong.
+
+/** Cap per contributing source, so one long note cannot crowd out the rest of the query. */
+const Q_SURGERY_MAX = 3;
+const Q_NARRATIVE_CHARS = 400;
+const Q_DRUGS_MAX = 8;
+const Q_LABS_MAX = 8;
+const Q_TOTAL_CHARS = 1200;
 
 export interface RetrievalQueryInput {
-  treatingDepartmentName: string | null;
-  admissionType: string | null;
-  admitSource: string | null;
-  remarks: string | null;
-  /** Events already filtered to the checkpoint's cut-off — never the whole episode. */
+  /**
+   * Events ALREADY filtered to this checkpoint's cut-off. Every clinical term below is read off
+   * this list, so the query cannot describe something the checkpoint is not allowed to see.
+   */
   eventsBeforeCutoff: EpisodeEvent[];
+  /**
+   * ⚠️ THE ONLY TWO FIELDS OF THE EXTRACTED CASE THIS ENGINE'S BLINDED PASS MAY TOUCH, and they
+   * arrive pre-split so no other field can be reached from here. The DB addendum (§A4) classifies
+   * `diagnosis` and `procedure` as PRE-OUTCOME, against `disposition` / `followUp` / `aftercare` /
+   * `courseSummary` which are outcome-bearing and are never read.
+   *
+   * This is a deliberate, narrow relaxation of §3.3.3 ("the checkpoint never receives the extracted
+   * case"), made on V's instruction to fix retrieval topicality. Its blast radius is bounded: these
+   * strings steer WHICH PASSAGES ARE FETCHED and are never placed in the prompt, so the checkpoint
+   * still writes its expectations from the events alone. Flagged for the orchestrator.
+   */
+  extractedDiagnosis?: string | null;
+  extractedProcedure?: string | null;
 }
 
+const detailStr = (e: EpisodeEvent, key: string): string => {
+  const v = (e.detail as Record<string, unknown>)?.[key];
+  return v == null ? '' : String(v).trim();
+};
+
 /**
- * The retrieval query, built in the order §3.3.2 names: treating department, admission type,
- * admit source, admission remarks, then the first 400 characters of the MOST RECENT note or
- * initial assessment before the cut-off.
+ * The retrieval query, in the priority §1 of the 2026-09-02 review sets:
+ *   1. the OT note's `surgery_name` — the single most specific clinical fact an episode carries
+ *   2. the extracted case's `diagnosis` and `procedure` (pre-outcome fields only)
+ *   3. clinical narrative from progress notes and the initial assessment, most recent first
+ *   4. distinct `ordered_item_name` of the day's pharmacy orders
+ *   5. lab `service_name` values
  *
- * "Most recent before the cut-off" is read off the already-filtered list, so the query cannot
- * describe a note the checkpoint is not allowed to see.
+ * Every part is optional. An episode with no OT note and no extraction still gets a query built
+ * from its notes, drugs and labs — which is the point: this reaches for clinical words wherever
+ * the record actually holds them.
  */
 export function buildRetrievalQuery(input: RetrievalQueryInput): string {
+  const events = input.eventsBeforeCutoff;
   const parts: string[] = [];
-  for (const v of [input.treatingDepartmentName, input.admissionType, input.admitSource, input.remarks]) {
-    const t = (v ?? '').trim();
-    if (t) parts.push(t);
-  }
-  const narrative = [...input.eventsBeforeCutoff]
+  const push = (v: string | null | undefined) => { const t = (v ?? '').trim(); if (t) parts.push(t); };
+
+  // 1. what was operated on
+  const surgeries = Array.from(new Set(
+    events.filter((e) => e.event_type === 'ot_note').map((e) => detailStr(e, 'surgery_name')).filter(Boolean),
+  )).slice(0, Q_SURGERY_MAX);
+  for (const sx of surgeries) push(sx);
+
+  // 2. the two pre-outcome fields of the extracted case, and nothing else from it
+  push(input.extractedDiagnosis);
+  push(input.extractedProcedure);
+
+  // 3. the most recent clinical narrative before the cut-off
+  const narrative = [...events]
     .filter((e) => (e.event_type === 'note' || e.event_type === 'initial_assessment') && e.occurred_at && e.summary.trim())
     .sort((a, b) => String(a.occurred_at).localeCompare(String(b.occurred_at)))
     .pop();
-  if (narrative) parts.push(narrative.summary.slice(0, NOTE_QUERY_CHARS));
-  return collapseSpaces(parts.join(' ')).slice(0, 1200);
+  if (narrative) push(narrative.summary.slice(0, Q_NARRATIVE_CHARS));
+
+  // 4. the drugs actually ordered on the latest documented day — what is being treated, in the
+  //    only vocabulary this substrate reliably carries
+  const drugEvents = events.filter((e) => e.event_type === 'order' && detailStr(e, 'service_type') === PHARMACY_SERVICE_TYPE);
+  const latestDrugDay = drugEvents.reduce((m, e) => Math.max(m, e.day_index), -1);
+  const drugs = Array.from(new Set(
+    drugEvents.filter((e) => e.day_index === latestDrugDay).map((e) => detailStr(e, 'ordered_item_name')).filter(Boolean),
+  )).slice(0, Q_DRUGS_MAX);
+  for (const d of drugs) push(d);
+
+  // 5. what was investigated
+  const labs = Array.from(new Set(
+    events.filter((e) => e.event_type === 'lab_order').map((e) => detailStr(e, 'service_name')).filter(Boolean),
+  )).slice(0, Q_LABS_MAX);
+  for (const l of labs) push(l);
+
+  return collapseSpaces(parts.join(' ')).slice(0, Q_TOTAL_CHARS);
+}
+
+// ── topicality (item 3) ─────────────────────────────────────────────────────────────────────
+//
+// A query can be perfectly clinical and still retrieve nothing about the case. This does NOT block
+// generation — a checkpoint with off-topic excerpts still produces an expected course, and the
+// uncited cap already limits what a finding built on one may score. It records the fact, so a
+// topical failure is a column rather than something someone has to notice.
+
+/** Words that carry no clinical signal. Deliberately short: this is a stopword list, not a
+ *  vocabulary — anything not here counts as a clinical term, which errs toward "on topic" and so
+ *  toward NOT raising the flag. A false quiet is safer than a false alarm on a scoring surface. */
+const Q_STOPWORDS = new Set([
+  'the', 'a', 'an', 'and', 'or', 'of', 'for', 'to', 'in', 'on', 'at', 'by', 'with', 'without',
+  'from', 'as', 'is', 'was', 'are', 'were', 'be', 'been', 'this', 'that', 'these', 'those',
+  'not', 'no', 'nil', 'per', 'via', 'due', 'has', 'had', 'have', 'day', 'days', 'hour', 'hours',
+  'patient', 'patients', 'history', 'given', 'done', 'noted', 'seen', 'plan', 'advice', 'review',
+  'normal', 'stable', 'continue', 'continued', 'started', 'admitted', 'admission', 'discharge',
+  'mg', 'ml', 'gm', 'iv', 'po', 'bd', 'od', 'tds', 'qid', 'stat', 'inj', 'tab', 'cap', 'syp',
+]);
+
+/** Clinical terms of a text: lowercase words of 4+ characters that are not stopwords and not
+ *  bare numbers. Pure, and shared by both sides of the comparison so the test is symmetric. */
+export function clinicalTerms(text: string): Set<string> {
+  const out = new Set<string>();
+  for (const raw of (text || '').toLowerCase().split(/[^a-z0-9]+/)) {
+    if (raw.length < 4) continue;
+    if (Q_STOPWORDS.has(raw)) continue;
+    if (/^\d+$/.test(raw)) continue;
+    out.add(raw);
+  }
+  return out;
+}
+
+/**
+ * True when NO retrieved excerpt shares a clinical term with the query — the IP-1286 shape, where a
+ * hernia repair was answered with pediatric rotation content.
+ *
+ * Returns false when there is nothing to judge (no query, or no excerpts): an empty retrieval is
+ * already recorded by `retrieval_failed` and the citation counts, and calling it "off topic" would
+ * put two different failures in one column.
+ */
+export function retrievalIsOffTopic(query: string, excerpts: { label: string; text: string }[]): boolean {
+  const q = clinicalTerms(query);
+  if (q.size === 0 || excerpts.length === 0) return false;
+  for (const x of excerpts) {
+    const terms = clinicalTerms(`${x.label} ${x.text}`);
+    for (const t of terms) if (q.has(t)) return false;
+  }
+  return true;
+}
+
+/** First 100 chars of each excerpt, for the checkpoint row's `retrieved_titles` (item 2): what came
+ *  back, readable without opening jsonb. */
+export const RETRIEVED_TITLE_CHARS = 100;
+
+export function retrievedTitles(excerpts: { label: string; text: string }[]): string[] {
+  return excerpts.map((x) => collapseSpaces(`${x.label} — ${x.text}`).slice(0, RETRIEVED_TITLE_CHARS));
 }
 
 // ── the user message ─────────────────────────────────────────────────────────────────────────

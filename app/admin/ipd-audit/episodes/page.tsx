@@ -31,6 +31,7 @@ export default async function EpisodeAuditList({ searchParams }: {
 
   const sort = sp.sort === 'discharge' ? 'discharge' : sp.sort === 'divergence' ? 'divergence' : 'recent';
   const sorted = [...rows].sort((a, b) => {
+    // an unscorable episode sorts last on the divergence view — it has no number to rank
     if (sort === 'divergence') return (num(a.divergence_index) ?? 999) - (num(b.divergence_index) ?? 999);
     if (sort === 'discharge') {
       const av = sibling[String(a.encounter_id)]?.care_value_index ?? 999;
@@ -96,7 +97,7 @@ export default async function EpisodeAuditList({ searchParams }: {
                     <td className="px-3 py-2 text-slate-600">{str(r.speciality)}</td>
                     <td className="px-3 py-2 text-slate-600">{fmtDay(r.discharged_at)}</td>
                     <td className="px-3 py-2 tabular-nums text-slate-600">{r.los_days == null ? '—' : `${r.los_days}d`}</td>
-                    <td className="px-3 py-2"><DivergenceChip index={num(r.divergence_index)} /></td>
+                    <td className="px-3 py-2"><DivergenceChip index={num(r.divergence_index)} status={r.scoring_status as string | null} /></td>
                     <td className="px-3 py-2"><DischargeEngineScore cvi={sib.care_value_index} band={sib.band} /></td>
                     <td className="px-3 py-2 text-[12px] text-slate-600">
                       {String(r.n_findings ?? 0)} total · {String(r.n_divergent ?? 0)} divergent · {String(r.n_unassessable ?? 0)} unassessable

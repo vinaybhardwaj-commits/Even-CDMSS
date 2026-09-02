@@ -38,7 +38,8 @@ export async function POST(req: NextRequest) {
       los_days              INTEGER,
       discharge_type        TEXT,
       extraction_version    TEXT,
-      divergence_index      INTEGER DEFAULT 0,
+      divergence_index      INTEGER,
+      scoring_status        TEXT NOT NULL DEFAULT 'ok',
       completeness_pct      INTEGER DEFAULT 0,
       n_findings            INTEGER DEFAULT 0,
       n_divergence_pass     INTEGER DEFAULT 0,
@@ -75,13 +76,17 @@ export async function POST(req: NextRequest) {
     await sql`ALTER TABLE ipd_episode_audits ADD COLUMN IF NOT EXISTS error_detail TEXT`;
     await sql`ALTER TABLE ipd_episode_audits ADD COLUMN IF NOT EXISTS raw_judge_error JSONB`;
     await sql`ALTER TABLE ipd_episode_audits ADD COLUMN IF NOT EXISTS n_parse_failed INTEGER DEFAULT 0`;
+    await sql`ALTER TABLE ipd_episode_audits ADD COLUMN IF NOT EXISTS scoring_status TEXT NOT NULL DEFAULT 'ok'`;
     await sql`ALTER TABLE ipd_episode_audits ALTER COLUMN app_source SET DEFAULT 'standalone'`;
     steps.audits_columns = 'ok';
 
     // DEFAULT 0 on every counted column (see the DDL note): a null counter is not "zero findings",
     // it is "unknown", and it makes an aggregate skip the row instead of counting it.
+    // divergence_index is deliberately absent: it may be NULL under scoring_status
+    // 'no_expectations', and a DEFAULT 0 would make "not scorable" indistinguishable from "the
+    // worst episode we have ever seen".
     for (const col of [
-      'divergence_index', 'completeness_pct', 'n_findings', 'n_divergence_pass', 'n_fidelity_pass',
+      'completeness_pct', 'n_findings', 'n_divergence_pass', 'n_fidelity_pass',
       'n_omission', 'n_commission', 'n_timing', 'n_sequencing', 'n_divergent', 'n_context_dependent',
       'n_unassessable', 'n_concordant', 'n_low_value', 'n_dropped_invalid', 'n_parse_failed',
       'checkpoint_count',
@@ -90,6 +95,7 @@ export async function POST(req: NextRequest) {
       // request, so there is nothing here for a caller to influence.
       await sql(`ALTER TABLE ipd_episode_audits ALTER COLUMN ${col} SET DEFAULT 0`);
     }
+    await sql`ALTER TABLE ipd_episode_audits ALTER COLUMN divergence_index DROP DEFAULT`;
     steps.audits_defaults = 'ok';
 
     await sql`CREATE UNIQUE INDEX IF NOT EXISTS ipd_episode_audits_encounter_engine_uq ON ipd_episode_audits (encounter_id, engine_version)`;
@@ -116,12 +122,16 @@ export async function POST(req: NextRequest) {
       trace_id           TEXT,
       uncited_entry_count INTEGER DEFAULT 0,
       entry_count         INTEGER DEFAULT 0,
-      citation_sources    JSONB
+      citation_sources    JSONB,
+      retrieved_titles    TEXT[],
+      retrieval_offtopic  BOOLEAN DEFAULT FALSE
     )`;
     await sql`CREATE INDEX IF NOT EXISTS ipd_episode_checkpoints_audit_idx ON ipd_episode_checkpoints (episode_audit_id)`;
     await sql`ALTER TABLE ipd_episode_checkpoints ADD COLUMN IF NOT EXISTS uncited_entry_count INTEGER DEFAULT 0`;
     await sql`ALTER TABLE ipd_episode_checkpoints ADD COLUMN IF NOT EXISTS entry_count INTEGER DEFAULT 0`;
     await sql`ALTER TABLE ipd_episode_checkpoints ADD COLUMN IF NOT EXISTS citation_sources JSONB`;
+    await sql`ALTER TABLE ipd_episode_checkpoints ADD COLUMN IF NOT EXISTS retrieved_titles TEXT[]`;
+    await sql`ALTER TABLE ipd_episode_checkpoints ADD COLUMN IF NOT EXISTS retrieval_offtopic BOOLEAN DEFAULT FALSE`;
     steps.checkpoints_table = 'ok';
 
     // ── citation_ids must be INTEGER[] ────────────────────────────────────────────────────────
