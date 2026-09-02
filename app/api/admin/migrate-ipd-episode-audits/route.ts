@@ -115,11 +115,13 @@ export async function POST(req: NextRequest) {
       model              TEXT,
       trace_id           TEXT,
       uncited_entry_count INTEGER DEFAULT 0,
-      entry_count         INTEGER DEFAULT 0
+      entry_count         INTEGER DEFAULT 0,
+      citation_sources    JSONB
     )`;
     await sql`CREATE INDEX IF NOT EXISTS ipd_episode_checkpoints_audit_idx ON ipd_episode_checkpoints (episode_audit_id)`;
     await sql`ALTER TABLE ipd_episode_checkpoints ADD COLUMN IF NOT EXISTS uncited_entry_count INTEGER DEFAULT 0`;
     await sql`ALTER TABLE ipd_episode_checkpoints ADD COLUMN IF NOT EXISTS entry_count INTEGER DEFAULT 0`;
+    await sql`ALTER TABLE ipd_episode_checkpoints ADD COLUMN IF NOT EXISTS citation_sources JSONB`;
     steps.checkpoints_table = 'ok';
 
     // ── citation_ids must be INTEGER[] ────────────────────────────────────────────────────────

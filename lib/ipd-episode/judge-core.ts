@@ -54,6 +54,9 @@ export type AuditPass = (typeof PASSES)[number];
 
 export interface EvidenceBasisItem { source_table: string; source_record_id: string; source_timestamp: string | null }
 
+export const CITATION_PROVENANCES = ['normative', 'literature', 'mixed'] as const;
+export type CitationProvenance = (typeof CITATION_PROVENANCES)[number];
+
 export interface EpisodeFinding {
   finding_id: string;
   pass: AuditPass;
@@ -71,6 +74,16 @@ export interface EpisodeFinding {
   responsible_clinician_id: string | null;
   lvc_category: string | null;
   citation_ids: number[];
+  /**
+   * What KIND of source this finding stands on (V, 2026-09-02):
+   *   normative  — every citation is a guideline/standard source
+   *   literature — every citation is something else: a StatPearls chapter, a journal passage
+   *   mixed      — both
+   *   null       — no citations at all (every A2 finding, and any uncited A1 one)
+   * Stored so the UI can show it and so the cohort can be asked, later, how much of the score
+   * actually rests on guidelines rather than on literature that reads like one.
+   */
+  citation_provenance: CitationProvenance | null;
 }
 
 const oneOf = <T extends string>(allowed: readonly T[], v: unknown): T | null =>
@@ -277,6 +290,8 @@ export function parseFindings(text: string, opts: ParseFindingsOptions): ParseFi
       responsible_clinician_id: null,
       lvc_category,
       citation_ids,
+      // filled by classifyCitationProvenance once the chunk→source map is known (run.ts)
+      citation_provenance: null,
     });
   });
   return { findings, unparseable, repaired, failures };
@@ -397,6 +412,47 @@ export function resolveFindingCitations(
     }
     return { ...f, citation_ids: out };
   });
+}
+
+/**
+ * Classify a finding's citations by the KIND of source they stand on, and cap what literature
+ * alone may claim.
+ *
+ * ⚠️ WHY THIS EXISTS AT ALL. V widened retrieval on 2026-09-02: this engine may now cite anything
+ * the corpus returns, not only the normative allowlist. That is a real gain — most of what a
+ * physician would call the standard of care for a given admission is not in Choosing Wisely — but
+ * it changes what a citation MEANS. A guideline says "this is what should be done". A StatPearls
+ * chapter or a journal passage says "this is what is known", which is evidence for an expectation
+ * and not the same thing as a standard against which a clinician can be found to have diverged.
+ *
+ * So the difference is recorded per finding, and priced: a finding standing ONLY on literature may
+ * still be `divergent` — the record can genuinely show the course left the expected one — but it
+ * cannot be `major`, because major asserts plausible serious harm against a standard, and
+ * literature is not one. A single normative citation lifts the cap; that is what `mixed` is for.
+ */
+export function classifyCitationProvenance(
+  citationIds: readonly number[], sourceById: Map<number, string>, normativeSources: readonly string[],
+): CitationProvenance | null {
+  if (!citationIds.length) return null;
+  const normative = new Set(normativeSources.map((x) => x.trim()).filter(Boolean));
+  let n = 0;
+  let lit = 0;
+  for (const id of citationIds) {
+    const src = (sourceById.get(id) ?? '').trim();
+    // An id whose source we never recorded counts as literature: the conservative reading, since
+    // treating an unknown source as normative would lift a cap on no evidence at all.
+    if (src && normative.has(src)) n++; else lit++;
+  }
+  if (n > 0 && lit > 0) return 'mixed';
+  return n > 0 ? 'normative' : 'literature';
+}
+
+/** The literature cap: `major` becomes `moderate` when nothing normative backs the finding.
+ *  Verdict is untouched — this bounds how loudly a finding may speak, not whether it may. */
+export function applyLiteratureCap(f: EpisodeFinding): { finding: EpisodeFinding; capped: boolean } {
+  if (f.citation_provenance !== 'literature') return { finding: f, capped: false };
+  if (f.severity !== 'major') return { finding: f, capped: false };
+  return { finding: { ...f, severity: 'moderate' }, capped: true };
 }
 
 // ── attribution (PRD §5) ─────────────────────────────────────────────────────────────────────
@@ -537,6 +593,10 @@ export interface FinalizeResult {
   n_tier_c_rewritten: number;
   n_uncited_capped: number;
   n_fidelity_normalized: number;
+  /** Findings whose severity was cut from major because only literature backed them. */
+  n_literature_capped: number;
+  /** How the surviving findings' citations break down — the measurement V asked for. */
+  provenance_counts: Record<string, number>;
 }
 
 /** `parseFailed` is the count of findings the parser discarded; it joins the A2 domain drops in
@@ -544,17 +604,29 @@ export interface FinalizeResult {
 export function finalizeFindings(
   raw: EpisodeFinding[], entryRefs: Map<string, CheckpointEntryRef>, events: EpisodeEvent[],
   parseFailed = 0,
+  sourceById: Map<number, string> = new Map(),
+  normativeSources: readonly string[] = [],
 ): FinalizeResult {
   const { kept, dropped, normalized } = normalizeFidelityFindings(raw);
   let rewritten = 0;
   let capped = 0;
+  let litCapped = 0;
+  const provenance_counts: Record<string, number> = { normative: 0, literature: 0, mixed: 0, none: 0 };
   const findings = kept.map((f0) => {
     // Cap BEFORE the Tier C rewrite: the cap can move a divergent finding to context_dependent,
     // at which point the Tier C rule no longer applies to it — which is correct, since the rule
     // exists to stop an unsupported DIVERGENT claim, and a capped finding no longer makes one.
     const capRes = applyUncitedCap(f0, entryRefs);
     if (capRes.capped) capped++;
-    const tierRes = applyTierCRule(capRes.finding);
+    // Provenance is classified BEFORE the literature cap, because the cap reads it.
+    const provenance = classifyCitationProvenance(capRes.finding.citation_ids, sourceById, normativeSources);
+    const withProv: EpisodeFinding = { ...capRes.finding, citation_provenance: provenance };
+    provenance_counts[provenance ?? 'none']++;
+
+    const litRes = applyLiteratureCap(withProv);
+    if (litRes.capped) litCapped++;
+
+    const tierRes = applyTierCRule(litRes.finding);
     if (tierRes.rewritten) rewritten++;
     return attachAttribution(tierRes.finding, events);
   });
@@ -565,6 +637,8 @@ export function finalizeFindings(
     n_tier_c_rewritten: rewritten,
     n_uncited_capped: capped,
     n_fidelity_normalized: normalized,
+    n_literature_capped: litCapped,
+    provenance_counts,
   };
 }
 

@@ -12,7 +12,7 @@ import {
   applyTierCRule, applyUncitedCap, attachAttribution, attributedParty, completenessPct,
   countFindings, divergenceIndex, normalizeFidelityFindings, evidenceTiersOf, finalizeFindings,
   parseFindings, resolveFindingCitations, validateCommentary, asLvcCategory, SEVERITY_PENALTY,
-  PARSE_FRAGMENT_CHARS,
+  PARSE_FRAGMENT_CHARS, classifyCitationProvenance, applyLiteratureCap,
   type EpisodeFinding, type Severity, type Verdict, type Domain, type AuditPass,
 } from '../ipd-episode/judge-core';
 import {
@@ -32,7 +32,8 @@ const f = (o: Partial<EpisodeFinding> & { finding_id: string }): EpisodeFinding 
   domain: 'diagnostics' as Domain, day_index: 0, checkpoint_ref: null, statement: 'a statement',
   severity: 'minor' as Severity, evidence_tier: 'A',
   evidence_basis: [{ source_table: 'kx_clinical_template_progress_reports', source_record_id: 'n1', source_timestamp: null }],
-  author_name: null, author_role: null, responsible_clinician_id: null, lvc_category: null, citation_ids: [],
+  author_name: null, author_role: null, responsible_clinician_id: null, lvc_category: null,
+  citation_ids: [], citation_provenance: null,
   ...o,
 });
 
@@ -504,6 +505,85 @@ test('the four type counters exclude concordant findings, and sum to n_findings 
   assert.equal(c.n_omission, 1);
   assert.equal(c.n_concordant, 2);
   assert.equal(c.n_omission + c.n_commission + c.n_timing + c.n_sequencing, c.n_findings - c.n_concordant);
+});
+
+// ── item 8: provenance, and what literature alone may claim ──────────────────────────────────
+
+// choosing-wisely is normative (DEFAULT_NORMATIVE_SOURCES); statpearls and a journal are not
+const NORMATIVE = ['choosing-wisely', 'lab:guidelines-even-protocols'];
+const SOURCES = new Map<number, string>([
+  [4021, 'choosing-wisely'],
+  [7788, 'statpearls'],
+  [1503, 'lab:guidelines-even-protocols'],
+  [9001, 'surgical-journal'],
+]);
+
+test('citations are classified normative / literature / mixed, and no citations is null', () => {
+  const c = (ids: number[]) => classifyCitationProvenance(ids, SOURCES, NORMATIVE);
+  assert.equal(c([4021]), 'normative');
+  assert.equal(c([4021, 1503]), 'normative', 'both are on the allowlist');
+  assert.equal(c([7788]), 'literature');
+  assert.equal(c([7788, 9001]), 'literature');
+  assert.equal(c([4021, 7788]), 'mixed');
+  assert.equal(c([]), null, 'no citations is an absence, not a kind');
+});
+
+test('a chunk whose source was never recorded counts as literature, never as normative', () => {
+  // the conservative reading: treating an unknown source as a standard would lift a cap on nothing
+  assert.equal(classifyCitationProvenance([55555], SOURCES, NORMATIVE), 'literature');
+  assert.equal(classifyCitationProvenance([4021, 55555], SOURCES, NORMATIVE), 'mixed');
+});
+
+test('THE CAP: a major finding standing only on literature is cut to moderate, and stays divergent', () => {
+  const lit = f({ finding_id: 'x', severity: 'major', verdict: 'divergent', citation_ids: [7788], citation_provenance: 'literature' });
+  const res = applyLiteratureCap(lit);
+  assert.equal(res.capped, true);
+  assert.equal(res.finding.severity, 'moderate');
+  assert.equal(res.finding.verdict, 'divergent',
+    'the record can still show the course left the expected one — literature bounds how loudly, not whether');
+});
+
+test('the cap does not touch a normative or mixed finding, nor a finding already below major', () => {
+  for (const prov of ['normative', 'mixed'] as const) {
+    const r = applyLiteratureCap(f({ finding_id: 'x', severity: 'major', citation_provenance: prov }));
+    assert.equal(r.capped, false, prov);
+    assert.equal(r.finding.severity, 'major', `one normative citation is enough to lift the cap (${prov})`);
+  }
+  for (const sev of ['moderate', 'minor'] as const) {
+    const r = applyLiteratureCap(f({ finding_id: 'x', severity: sev, citation_provenance: 'literature' }));
+    assert.equal(r.capped, false);
+    assert.equal(r.finding.severity, sev);
+  }
+  // no citations at all: the uncited cap already owns that case
+  assert.equal(applyLiteratureCap(f({ finding_id: 'x', severity: 'major', citation_provenance: null })).capped, false);
+});
+
+test('the cap runs inside finalizeFindings, and shows up in the score', () => {
+  const map = refs([['cp-d0/diagnostics/1', [7788]], ['cp-d0/therapeutics/1', [4021]]]);
+  const res = finalizeFindings([
+    // grounded on a cited entry, but the citation is a StatPearls chunk → major becomes moderate
+    f({ finding_id: 'lit', severity: 'major', verdict: 'divergent', checkpoint_ref: 'cp-d0/diagnostics/1', citation_ids: [7788] }),
+    // grounded on a guideline → keeps its 8 points
+    f({ finding_id: 'norm', severity: 'major', verdict: 'divergent', checkpoint_ref: 'cp-d0/therapeutics/1', citation_ids: [4021] }),
+  ], map, [], 0, SOURCES, NORMATIVE);
+  assert.equal(res.n_literature_capped, 1);
+  assert.equal(res.findings.find((x) => x.finding_id === 'lit')!.severity, 'moderate');
+  assert.equal(res.findings.find((x) => x.finding_id === 'lit')!.citation_provenance, 'literature');
+  assert.equal(res.findings.find((x) => x.finding_id === 'norm')!.severity, 'major');
+  assert.equal(res.findings.find((x) => x.finding_id === 'norm')!.citation_provenance, 'normative');
+  // 8 for the guideline-backed major + 4 for the capped one
+  assert.equal(res.divergence_index, 100 - 12);
+});
+
+test('provenance_counts is the measurement V asked for: how much of the score rests on guidelines', () => {
+  const map = refs([['cp-d0/diagnostics/1', [4021]]]);
+  const res = finalizeFindings([
+    f({ finding_id: 'a', checkpoint_ref: 'cp-d0/diagnostics/1', citation_ids: [4021] }),
+    f({ finding_id: 'b', checkpoint_ref: 'cp-d0/diagnostics/1', citation_ids: [7788] }),
+    f({ finding_id: 'c', checkpoint_ref: 'cp-d0/diagnostics/1', citation_ids: [4021, 7788] }),
+    f({ finding_id: 'd', checkpoint_ref: 'cp-d0/diagnostics/1', citation_ids: [] }),
+  ], map, [], 0, SOURCES, NORMATIVE);
+  assert.deepEqual(res.provenance_counts, { normative: 1, literature: 1, mixed: 1, none: 1 });
 });
 
 // ── 9. completeness ──────────────────────────────────────────────────────────────────────────

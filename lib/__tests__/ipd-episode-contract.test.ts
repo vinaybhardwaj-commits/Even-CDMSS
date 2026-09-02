@@ -401,11 +401,69 @@ test('unparseable findings reach the trace, error_detail, raw_judge_error AND th
   assert.ok(run.includes('ipd_episode_unparseable_findings'), 'a trace event carries the fragments');
   assert.ok(run.includes('errorDetail'), 'prose reaches error_detail');
   assert.ok(run.includes('rawJudgeError'), 'the raw fragments reach raw_judge_error');
-  assert.ok(/finalizeFindings\(raw, entryRefs, events, unparseable\)/.test(run),
+  assert.ok(/finalizeFindings\(raw, entryRefs, events, unparseable,/.test(run),
     'and the count IS passed into the counters');
   const core = code('lib/ipd-episode/judge-core.ts');
   assert.ok(core.includes('countFindings(findings, dropped, parseFailed)'),
     'n_dropped_invalid is fed both causes; n_parse_failed isolates the second');
+});
+
+// ── V's 2026-09-02 widening: cite anything, but price it ─────────────────────────────────────
+
+test('retrieval is no longer restricted to the normative allowlist, and keeps the normative leg', () => {
+  const src = code('lib/ipd-episode/checkpoint.ts');
+  assert.ok(src.includes('useNormativeLeg: true'), 'the normative leg is ON so guideline text still ranks');
+  // the MAIN legs are unrestricted: neither knob that would fence the corpus is set
+  assert.ok(!src.includes('restrictSources'), 'the main legs are not restricted to a source list');
+  assert.ok(!/source:\s*'/.test(src), 'no single-source filter — StatPearls and journal content are citable');
+  assert.ok(src.includes('topK: RETRIEVAL_TOP_K'), 'k is still 8');
+});
+
+test('the normative source list is the shipped one, never a local copy that can drift', () => {
+  const src = code('lib/ipd-episode/checkpoint.ts');
+  assert.ok(src.includes("resolveNormativeSources") && src.includes("from '../retrieve'"),
+    'classification resolves against lib/retrieve.ts’s own helper');
+  // no hand-written allowlist anywhere in the engine
+  for (const f of ENGINE_FILES) {
+    const body = code(f);
+    assert.ok(!/\[\s*'choosing-wisely'/.test(body), `${f} must not hardcode a normative source list`);
+  }
+});
+
+test('each checkpoint row records the source of every cited chunk, as a fact not a verdict', () => {
+  const sqlText = read(join('migrations', '0052_ipd_episode_audits.sql'));
+  const route = read('app/api/admin/migrate-ipd-episode-audits/route.ts');
+  assert.ok(sqlText.includes('citation_sources    JSONB'), '.sql declares citation_sources');
+  assert.ok(route.includes('ADD COLUMN IF NOT EXISTS citation_sources JSONB'), 'and the route back-fills it');
+  const store = code('lib/ipd-episode/store.ts');
+  assert.ok(store.includes('citation_sources') && store.includes('$16::jsonb'), 'the insert writes it');
+  // the STORED value is the raw source string; the normative/literature split is derived later, so
+  // a change to the source list can be re-applied to old rows without re-running a model
+  const cp = code('lib/ipd-episode/checkpoint.ts');
+  assert.ok(cp.includes("sources[String(Number(h.id))] = String(h.source ?? '')"),
+    'the chunk’s own source value is stored verbatim');
+});
+
+test('the literature cap is enforced in code and runs inside the one finalise chain', () => {
+  const core = code('lib/ipd-episode/judge-core.ts');
+  assert.ok(core.includes('export function applyLiteratureCap('), 'the cap exists');
+  assert.ok(core.includes("if (f.citation_provenance !== 'literature') return { finding: f, capped: false };"));
+  assert.ok(core.includes("if (f.severity !== 'major') return { finding: f, capped: false };"),
+    'it caps major only — it never touches a verdict');
+  assert.ok(core.includes('applyLiteratureCap(withProv)'), 'and it runs inside finalizeFindings');
+  // provenance must be classified before the cap can read it
+  assert.ok(core.indexOf('classifyCitationProvenance(capRes.finding') < core.indexOf('applyLiteratureCap(withProv)'));
+});
+
+test('citation_provenance is stored on every finding so the cohort can be measured later', () => {
+  const core = code('lib/ipd-episode/judge-core.ts');
+  assert.ok(core.includes('citation_provenance: CitationProvenance | null'), 'it is part of the finding shape');
+  assert.ok(core.includes('provenance_counts'), 'and rolled up per episode');
+  const run = code('lib/ipd-episode/run.ts');
+  assert.ok(run.includes('citations by provenance:'), 'the run reports the breakdown');
+  const panels = read('app/admin/ipd-audit/episodes/[id]/panels.tsx');
+  assert.ok(panels.includes('citation_provenance') && panels.includes('literature only'),
+    'and the UI shows it, so a reader can see why a finding is not major');
 });
 
 // ── round 3: nothing this engine discards may disappear ─────────────────────────────────────

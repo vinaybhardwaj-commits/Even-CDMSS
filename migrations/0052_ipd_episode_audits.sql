@@ -126,7 +126,15 @@ CREATE TABLE IF NOT EXISTS ipd_episode_checkpoints (
   -- real citation_ids on the row itself. These two columns make "how many entries did this
   -- checkpoint actually ground?" answerable across the cohort in one query, with no jsonb parsing.
   uncited_entry_count INTEGER DEFAULT 0,
-  entry_count         INTEGER DEFAULT 0
+  entry_count         INTEGER DEFAULT 0,
+
+  -- Cited chunk id → the chunk's `source`, as a JSON object. Retrieval is no longer restricted to
+  -- the normative allowlist (V, 2026-09-02): this engine may cite StatPearls, journal content,
+  -- textbook passages. That is a gain in coverage and a change in what a citation MEANS, so the
+  -- source is stored per citation and the normative/literature split is DERIVED from it rather
+  -- than baked in — a later change to the normative source list can be re-applied to stored rows
+  -- without re-running a single model call.
+  citation_sources    JSONB
 );
 
 CREATE INDEX IF NOT EXISTS ipd_episode_checkpoints_audit_idx ON ipd_episode_checkpoints (episode_audit_id);

@@ -26,7 +26,7 @@ import {
 } from './assemble-core';
 import { assembleEpisode, type AssembledEpisode } from './assemble';
 import { admissionContextLine, renderExpectedCourse, type CheckpointEntryRef } from './checkpoint-core';
-import { checkpointModel, runCheckpoint, type CheckpointResult } from './checkpoint';
+import { checkpointModel, normativeSourcesForProvenance, runCheckpoint, type CheckpointResult } from './checkpoint';
 import { judgeModel, runCommentaryPass, runDiffPass, runFidelityPass } from './judge';
 import {
   evidenceTiersOf, finalizeFindings, completenessPct, resolveFindingCitations,
@@ -284,6 +284,13 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
     const checkpointChunkIds = new Map<string, readonly number[]>(
       checkpoints.map((c) => [c.checkpointId, c.citationIds] as const),
     );
+    // chunk id → source, pooled across every checkpoint. One episode's checkpoints can retrieve the
+    // same chunk more than once; the source is a property of the chunk, so a flat map is right.
+    const sourceById = new Map<number, string>();
+    for (const c of checkpoints) {
+      for (const [id, src] of Object.entries(c.citationSources)) sourceById.set(Number(id), src);
+    }
+    const normativeSources = normativeSourcesForProvenance();
 
     // ── 4. diff (A1) — blind: the discharge event is filtered out ──
     const a1 = await runDiffPass({
@@ -315,7 +322,7 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
     // drops in n_dropped_invalid and are reported alone in n_parse_failed, so no discard can leave
     // every counter reading 0 the way IP-1286's five did.
     const unparseable = a1.unparseable + a2.unparseable;
-    const final = finalizeFindings(raw, entryRefs, events, unparseable);
+    const final = finalizeFindings(raw, entryRefs, events, unparseable, sourceById, normativeSources);
     const repaired = a1.repaired + a2.repaired;
     // Every discarded fragment, tagged with the pass that produced it. This is the record that did
     // not exist when IP-1286 lost 5 of its 15 A1 findings with nothing written down anywhere.
@@ -381,6 +388,7 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
       traceId: traceId ?? null,
       uncitedEntryCount: c.uncitedEntryCount,
       entryCount: c.entryCount,
+      citationSources: c.citationSources,
     }));
 
     const saved = await saveEpisodeAudit({
@@ -438,6 +446,8 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
         ...(final.n_tier_c_rewritten ? [`${final.n_tier_c_rewritten} finding(s) rewritten to unassessable by the Tier C rule`] : []),
         ...(final.n_uncited_capped ? [`${final.n_uncited_capped} finding(s) capped by the uncited-expectation rule`] : []),
         ...(final.n_fidelity_normalized ? [`${final.n_fidelity_normalized} fidelity finding(s) normalised to commission / no checkpoint`] : []),
+        ...(final.n_literature_capped ? [`${final.n_literature_capped} finding(s) capped from major to moderate — literature only, no normative citation`] : []),
+        `citations by provenance: ${Object.entries(final.provenance_counts).filter(([, n]) => n > 0).map(([k, n]) => `${k} ${n}`).join(', ') || 'none'}`,
         ...(repaired ? [`${repaired} finding(s) kept by the enum repair pass`] : []),
         ...(unparseable ? [`${unparseable} finding(s) discarded — see raw_judge_error and the trace`] : []),
         ...(totalEntries && uncitedEntries === totalEntries ? [`all ${totalEntries} expected-course entries are uncited`] : []),

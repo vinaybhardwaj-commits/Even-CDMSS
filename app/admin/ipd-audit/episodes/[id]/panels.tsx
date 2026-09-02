@@ -68,6 +68,16 @@ function FindingCard({ f }: { f: Row }) {
         <Tag>{s(f.verdict)}</Tag>
         <Tag>tier {s(f.evidence_tier)}</Tag>
         {f.lvc_category ? <Tag tone="amber">low value · {s(f.lvc_category)}</Tag> : null}
+        {/* What KIND of source this finding stands on. A guideline is a standard; a journal
+            passage is evidence. A finding backed only by literature is capped at moderate in
+            code, so the reader can see why a serious-sounding finding is not marked major. */}
+        {f.citation_provenance ? (
+          <Tag tone={s(f.citation_provenance) === 'literature' ? 'amber' : 'slate'}>
+            {s(f.citation_provenance) === 'normative' ? 'guideline-backed'
+              : s(f.citation_provenance) === 'mixed' ? 'guideline + literature'
+              : 'literature only'}
+          </Tag>
+        ) : null}
       </div>
       <div className="mt-1 text-[13px] leading-snug text-slate-800">{s(f.statement)}</div>
       <div className="mt-1 text-[10.5px] text-slate-400">
@@ -223,7 +233,12 @@ export function CheckpointPanels({ checkpoints }: { checkpoints: Row[] }) {
                     </div>
                   ) : null}
                   <div className="mt-2 text-[10.5px] text-slate-400">
-                    {ids.length ? `Retrieved chunk ids: ${ids.join(', ')}` : 'No normative excerpts were retrieved for this checkpoint.'}
+                    {ids.length
+                      ? `Retrieved chunk ids: ${ids.map((id) => {
+                          const src = (c.citation_sources as Record<string, string> | null)?.[String(id)];
+                          return src ? `${id} (${src})` : String(id);
+                        }).join(', ')}`
+                      : 'No excerpts were retrieved for this checkpoint.'}
                   </div>
                   {ids.length > 0 && Number(c.entry_count ?? 0) > 0 && Number(c.uncited_entry_count ?? 0) === Number(c.entry_count)
                     ? (

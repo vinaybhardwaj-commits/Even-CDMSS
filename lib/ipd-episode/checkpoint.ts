@@ -14,7 +14,7 @@
  */
 
 import { governedChat } from '../trace';
-import { retrieve } from '../retrieve';
+import { retrieve, resolveNormativeSources } from '../retrieve';
 import { assertKnownBedrockModel } from '../bedrock-core';
 import {
   buildCheckpointUser, buildRetrievalQuery, checkpointEntryRefs, countUncitedEntries,
@@ -57,6 +57,8 @@ export interface CheckpointResult {
   retrievalQuery: string;
   retrievalFailed: boolean;
   citationIds: number[];
+  /** Cited chunk id → the `source` value of that chunk, verbatim. */
+  citationSources: Record<string, string>;
   expectedCourse: ExpectedCourse | null;
   entryRefs: CheckpointEntryRef[];
   status: 'ok' | 'error';
@@ -70,16 +72,38 @@ export interface CheckpointResult {
   retriedForCitations: boolean;
 }
 
-/** Retrieval, degraded to "no excerpts" on any fault. Never throws. */
-async function retrieveExcerpts(query: string): Promise<{ excerpts: RetrievedExcerpt[]; ids: number[]; failed: boolean }> {
-  if (!query.trim()) return { excerpts: [], ids: [], failed: false };
+/**
+ * Retrieval, degraded to "no excerpts" on any fault. Never throws.
+ *
+ * ⚠️ WIDE CORPUS PLUS THE NORMATIVE LEG (V, 2026-09-02). The main legs are unrestricted, so this
+ * engine may cite anything retrieval returns — StatPearls chapters, surgical journal content,
+ * textbook passages. `useNormativeLeg` adds a THIRD leg restricted to the normative sources into
+ * the same RRF union, so a terse guideline statement still earns a pool seat instead of being
+ * outranked by dense literature that happens to share more vocabulary with the query.
+ *
+ * The two are not in tension: widening decides what MAY be cited, the normative leg decides what
+ * ranks. What keeps them honest is that the difference is recorded rather than assumed — every
+ * cited chunk's `source` is stored on the checkpoint row, and a finding standing only on
+ * literature is capped in code (see `applyLiteratureCap`). A journal abstract is evidence; a
+ * guideline is a standard; the score should be able to tell you which one it rests on.
+ */
+async function retrieveExcerpts(query: string): Promise<{
+  excerpts: RetrievedExcerpt[]; ids: number[]; sources: Record<string, string>; failed: boolean;
+}> {
+  if (!query.trim()) return { excerpts: [], ids: [], sources: {}, failed: false };
   try {
-    const res = await retrieve(query, { topK: RETRIEVAL_TOP_K });
+    const res = await retrieve(query, { topK: RETRIEVAL_TOP_K, useNormativeLeg: true });
     // ⚠️ ONE FILTERED LIST, TWO VIEWS OF IT. `excerpts` is what the prompt numbers [1]…[k] and
     // `ids` is what those ordinals resolve to, so they MUST stay index-aligned. Filtering a hit
     // out of one list and not the other would silently shift every ordinal after it onto the wrong
     // passage — a citation that points at real text nobody was shown.
     const hits = (res?.hits ?? []).slice(0, RETRIEVAL_TOP_K).filter((h) => Number.isFinite(Number(h.id)));
+    // chunk id → its `source` value, verbatim from the row. The classification into
+    // normative/literature happens later, against the shipped source list, so this map records the
+    // FACT and nothing derived from it — a source list that changes later can be re-applied to
+    // stored rows without re-running any model.
+    const sources: Record<string, string> = {};
+    for (const h of hits) sources[String(Number(h.id))] = String(h.source ?? '');
     return {
       excerpts: hits.map((h) => ({
         id: Number(h.id),
@@ -87,11 +111,18 @@ async function retrieveExcerpts(query: string): Promise<{ excerpts: RetrievedExc
         text: String(h.text ?? '').slice(0, EXCERPT_CHARS),
       })),
       ids: hits.map((h) => Number(h.id)),
+      sources,
       failed: false,
     };
   } catch {
-    return { excerpts: [], ids: [], failed: true };
+    return { excerpts: [], ids: [], sources: {}, failed: true };
   }
+}
+
+/** The normative source allowlist this engine classifies against — resolved from the SHIPPED
+ *  helper so the definition never forks from the retrieval leg's own. */
+export function normativeSourcesForProvenance(env: Record<string, string | undefined> = process.env): string[] {
+  return resolveNormativeSources(undefined, env.NORMATIVE_LEG_SOURCES);
 }
 
 /**
@@ -102,7 +133,7 @@ async function retrieveExcerpts(query: string): Promise<{ excerpts: RetrievedExc
  */
 export async function runCheckpoint(input: RunCheckpointInput): Promise<CheckpointResult> {
   const query = buildRetrievalQuery(input.retrievalQueryInput);
-  const { excerpts, ids, failed } = await retrieveExcerpts(query);
+  const { excerpts, ids, sources, failed } = await retrieveExcerpts(query);
 
   const base: Omit<CheckpointResult, 'expectedCourse' | 'entryRefs' | 'status' | 'errorDetail' | 'uncitedEntryCount' | 'entryCount' | 'retriedForCitations'> = {
     checkpointId: input.checkpointId,
@@ -113,6 +144,7 @@ export async function runCheckpoint(input: RunCheckpointInput): Promise<Checkpoi
     retrievalQuery: query,
     retrievalFailed: failed,
     citationIds: ids,
+    citationSources: sources,
     model: input.model,
   };
 

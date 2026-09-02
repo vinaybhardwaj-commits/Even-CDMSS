@@ -239,6 +239,9 @@ export interface CheckpointWriteRow {
    *  IP-1286 run exposed is queryable without parsing expected_course. */
   uncitedEntryCount: number;
   entryCount: number;
+  /** Cited chunk id → its `source`. Records the FACT; the normative/literature split is derived
+   *  from it at finalise time, so a later change to the source list can be re-applied to old rows. */
+  citationSources: Record<string, string>;
 }
 
 /**
@@ -318,14 +321,14 @@ export async function saveEpisodeAudit(row: EpisodeAuditRow, checkpoints: Checkp
         `INSERT INTO ipd_episode_checkpoints (
            episode_audit_id, day_index, checkpoint_type, input_cutoff_at, input_event_count,
            retrieval_query, retrieval_failed, citation_ids, expected_course, status, error_detail,
-           model, trace_id, uncited_entry_count, entry_count)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8::int[],$9::jsonb,$10,$11,$12,$13,$14,$15)`,
+           model, trace_id, uncited_entry_count, entry_count, citation_sources)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8::int[],$9::jsonb,$10,$11,$12,$13,$14,$15,$16::jsonb)`,
         [
           auditId, cp.dayIndex, cp.checkpointType, cp.inputCutoffAt, cp.inputEventCount,
           cp.retrievalQuery, cp.retrievalFailed, cp.citationIds,
           cp.expectedCourse == null ? null : JSON.stringify(cp.expectedCourse),
           cp.status, cp.errorDetail, cp.model, cp.traceId,
-          num(cp.uncitedEntryCount), num(cp.entryCount),
+          num(cp.uncitedEntryCount), num(cp.entryCount), JSON.stringify(cp.citationSources ?? {}),
         ],
       ).catch((e: unknown) => {
         warn(`saveEpisodeAudit checkpoint day ${cp.dayIndex} (${cp.checkpointType})`, e);
@@ -372,7 +375,7 @@ export async function checkpointsForAudit(auditId: string): Promise<EpisodeListR
   return run(
     `SELECT day_index, checkpoint_type, generated_at, input_cutoff_at, input_event_count,
             retrieval_query, retrieval_failed, citation_ids, expected_course, status, error_detail, model,
-            uncited_entry_count, entry_count
+            uncited_entry_count, entry_count, citation_sources
      FROM ipd_episode_checkpoints
      WHERE episode_audit_id = $1
      ORDER BY (checkpoint_type = 'episode'), day_index ASC`, [auditId],
