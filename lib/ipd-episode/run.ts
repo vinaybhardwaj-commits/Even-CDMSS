@@ -27,7 +27,7 @@ import {
 import { assembleEpisode, type AssembledEpisode } from './assemble';
 import { admissionContextLine, renderExpectedCourse, type CheckpointEntryRef } from './checkpoint-core';
 import { checkpointModel, normativeSourcesForProvenance, runCheckpoint, type CheckpointResult } from './checkpoint';
-import { judgeModel, runCommentaryPass, runDiffPass, runFidelityPass, JUDGE_TEMPERATURE } from './judge';
+import { judgeModel, runDiffPass, runFidelityPass, JUDGE_TEMPERATURE } from './judge';
 import {
   evidenceTiersOf, finalizeFindings, completenessPct, resolveFindingCitations,
   scoringStatusFor, storedDivergenceIndex, findingsFromResolved, domainForSection,
@@ -169,22 +169,6 @@ export async function runEpisodeBatch(
       capReached: examined >= examineCap && entered < max,
     },
   };
-}
-
-/**
- * The outcome line handed to pass B and to NOBODY else. It is built here, at the last stage, from
- * the discharge event — deliberately not carried through the pipeline in a variable that an
- * earlier pass could read.
- */
-function outcomeLineFrom(events: EpisodeEvent[], losDays: number | null): string {
-  const d = events.find(isDischargeEvent);
-  if (!d) return 'The record carries no discharge event for this admission.';
-  const type = (d.detail as Record<string, unknown>)?.discharge_type;
-  return [
-    `Discharged ${d.occurred_at ?? 'at a time the record does not give'}`,
-    type ? `discharge type: ${String(type)}` : 'discharge type not recorded',
-    losDays == null ? 'length of stay not computable' : `length of stay ${losDays} day(s)`,
-  ].join(' · ');
 }
 
 /**
@@ -546,16 +530,17 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
       errorDetail.push(`${final.n_fidelity_normalized} fidelity finding(s) had finding_type or checkpoint_ref normalised to the values §3.5 fixes`);
     }
 
-    // ── 6. comment (B) — outcome-aware, prose only, never fatal ──
-    const tComm = Date.now();
-    const b = await runCommentaryPass({
-      traceId, admissionContext, events: summariseEventsForPrompt(events), findings: final.findings,
-      outcomeLine: outcomeLineFrom(events, envelope.losDays),
-      expectedCourses: checkpointBlocks, model: modelJudge,
-    });
-    const commentaryMs = Date.now() - tComm;
-
-    if (!b.commentary && b.error) errorDetail.push(`commentary not stored: ${b.error}`);
+    // ── 6. comment (B) — NO LONGER IN THIS PIPELINE (V, 2026-09-03: PRD decision 35) ─────────
+    // Pass B used to run here. It cost 107 s of IPNO-416's 314 s — a third of the run — for output
+    // that scores nothing, it failed on both of the last two episodes, and it is only ever read by
+    // someone who has opened one episode's detail page. So it moved out: the pipeline now ENDS at
+    // the fidelity pass, the audit row is written with `commentary` NULL, and pass B runs on demand
+    // the first time that page is opened (app/api/ipd-episode/commentary).
+    //
+    // ⚠️ A NULL COMMENTARY IS NOT A FAILURE AND NEVER BLOCKS SCORING. Every episode below is
+    // complete and scorable without it. Nothing here may push a commentary error into errorDetail
+    // any more, because there is no longer a commentary attempt at this point to have failed.
+    const commentaryMs = 0;
 
     // ── 7. persist ──
     const checkpointRows: CheckpointWriteRow[] = checkpoints.map((c) => ({
@@ -627,7 +612,10 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
       evidenceTiers: evidenceTiersOf(sourcesPresent),
       realCourse: events,
       findings: final.findings,
-      commentary: b.commentary,
+      // NULL by construction now — filled in later, on demand, by the commentary route.
+      commentary: null,
+      // Pass B's one input that cannot be rebuilt from the stored row (decision 35).
+      admissionContext,
       modelCheckpoint,
       modelJudge,
       traceId: traceId ?? null,
@@ -662,7 +650,6 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
       latencyMs: Date.now() - t0,
       notes: [
         ...assemblyNotes,
-        ...(b.commentary ? [] : [`commentary was not stored: ${b.error ?? 'rejected'}`]),
         ...(final.n_tier_c_rewritten ? [`${final.n_tier_c_rewritten} finding(s) rewritten to unassessable by the Tier C rule`] : []),
         ...(final.n_uncited_capped ? [`${final.n_uncited_capped} finding(s) capped by the uncited-expectation rule`] : []),
         ...(final.n_fidelity_normalized ? [`${final.n_fidelity_normalized} fidelity finding(s) normalised to commission / no checkpoint`] : []),
@@ -675,6 +662,12 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
         `citations by provenance: ${Object.entries(final.provenance_counts).filter(([, n]) => n > 0).map(([k, n]) => `${k} ${n}`).join(', ') || 'none'}`,
         `resolver: ${Object.entries(resolution_counts).map(([k, n]) => `${k} ${n}`).join(', ')}`,
         `pass contribution: resolver ${resolverFindings.length}, diff ${a1.findings.length}, fidelity ${a2.findings.length}`,
+        // ROUND 12 ITEM 2: both halves, always. The ratio is the measurement.
+        `resolver findings grouped: ${final.counters.n_resolver_grouped} class(es) standing for ${final.counters.n_resolver_ungrouped} expected-course entr(ies)`,
+        ...(final.counters.n_resolver_ungrouped > final.counters.n_resolver_grouped
+          ? [`largest group: ${Math.max(...final.findings.filter((f) => f.resolution != null).map((f) => f.group_size), 1)} checkpoint(s) of the same expectation class`]
+          : []),
+        'commentary: not generated in the pipeline (decision 35) — it is written on first open of the detail page',
         ...(a1.findingsTruncated + a2.findingsTruncated ? [`${a1.findingsTruncated + a2.findingsTruncated} finding(s) dropped by the per-pass output cap`] : []),
         `judge finish_reason: diff=${a1.finishReason ?? 'none'}, fidelity=${a2.finishReason ?? 'none'}`,
         ...(final.counters.n_judged_omissions_dropped ? [`${final.counters.n_judged_omissions_dropped} omission finding(s) from the diff pass dropped — code owns omissions now`] : []),

@@ -135,44 +135,10 @@ export function UnassessablePanel({ findings }: { findings: Row[] }) {
 }
 
 // ── 5. commentary ────────────────────────────────────────────────────────────────────────────
-
-export function CommentaryPanel({ commentary, findings }: { commentary: Row | null; findings: Row[] }) {
-  const ctx = Array.isArray(commentary?.findings_context) ? (commentary!.findings_context as Row[]) : [];
-  const byId = new Map(findings.map((f) => [s(f.finding_id), f]));
-  return (
-    <details className="mt-6 rounded-xl border border-amber-200 bg-amber-50/40 px-4 py-3">
-      <summary className="cursor-pointer text-[13px] font-semibold text-slate-800">Outcome-aware commentary</summary>
-      <p className="mt-2 rounded-md bg-amber-100/70 px-3 py-2 text-[12px] font-medium text-amber-900">{OUTCOME_AWARE_NOTICE}</p>
-      {!commentary ? (
-        <p className="mt-3 text-[12.5px] text-slate-500">No commentary was stored for this episode.</p>
-      ) : (
-        <div className="mt-3 space-y-3 text-[13px] leading-relaxed text-slate-700">
-          {commentary.narrative ? <p className="whitespace-pre-wrap">{s(commentary.narrative)}</p> : null}
-          {commentary.outcome_context ? (
-            <div>
-              <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">What the outcome adds</div>
-              <p className="mt-0.5 whitespace-pre-wrap">{s(commentary.outcome_context)}</p>
-            </div>
-          ) : null}
-          {ctx.length ? (
-            <div>
-              <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">Notes on individual findings</div>
-              <ul className="mt-1 space-y-1">
-                {ctx.map((c, i) => (
-                  <li key={i} className="text-[12.5px]">
-                    <span className="text-slate-400">{s(c.finding_id)}</span>
-                    {byId.has(s(c.finding_id)) ? <span className="text-slate-500"> · {s(byId.get(s(c.finding_id))!.statement).slice(0, 120)}</span> : null}
-                    <div className="text-slate-700">{s(c.note)}</div>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ) : null}
-        </div>
-      )}
-    </details>
-  );
-}
+// Moved to a client component under decision 35: the panel now generates the commentary on the
+// first open instead of reading one the pipeline wrote. Re-exported from here so the page's
+// import list still reads as one set of panels.
+export { CommentaryPanel } from './commentary-client';
 
 // ── 6. checkpoints ───────────────────────────────────────────────────────────────────────────
 

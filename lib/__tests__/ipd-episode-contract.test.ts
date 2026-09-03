@@ -75,12 +75,22 @@ test('the blinded layers never name an outcome field', () => {
   }
 });
 
-test('the outcome line handed to commentary is built at the last stage, not carried through the pipeline', () => {
+test('the outcome line reaches pass B and NOTHING else, wherever pass B now runs', () => {
+  // DECISION 35 moved pass B out of the pipeline, so this fact moved with it: `outcomeLineFrom`
+  // now lives in judge-core and is called by the on-demand route. What must not change is that
+  // the outcome reaches exactly one pass — the scored passes stay blind to how the admission ended.
+  const core = code('lib/ipd-episode/judge-core.ts');
+  assert.ok(/export function outcomeLineFrom/.test(core), 'defined once, in judge-core');
+
   const run = code('lib/ipd-episode/run.ts');
-  assert.ok(/function outcomeLineFrom/.test(run));
-  assert.equal((run.match(/outcomeLineFrom\(/g) ?? []).length, 2, 'defined once, called once — only for pass B');
-  const call = run.slice(run.indexOf('runCommentaryPass('), run.indexOf('runCommentaryPass(') + 400);
-  assert.ok(call.includes('outcomeLineFrom('), 'the outcome reaches pass B and nothing else');
+  assert.ok(!run.includes('outcomeLineFrom'), 'the audit pipeline never builds the outcome line at all');
+  assert.ok(!run.includes('runCommentaryPass'), 'and never runs pass B');
+
+  const route = code('app/api/ipd-episode/commentary/route.ts');
+  const at = route.indexOf('runCommentaryPass(');
+  assert.ok(at > 0, 'the on-demand route is the one caller');
+  assert.ok(route.slice(at, at + 700).includes('outcomeLineFrom('), 'and it is where the outcome enters');
+  assert.equal((route.match(/outcomeLineFrom\(/g) ?? []).length, 1, 'called once');
 });
 
 // ── one model path ───────────────────────────────────────────────────────────────────────────
@@ -175,8 +185,15 @@ test('the commentary block carries PRD §10 item 5 verbatim, and the empty-findi
   assert.equal(OUTCOME_AWARE_NOTICE, 'This commentary was written with knowledge of the patient outcome. The scores above were not.');
   assert.equal(NO_DIVERGENCE_COPY, 'No divergence found against the expected course.');
   const panels = read('app/admin/ipd-audit/episodes/[id]/panels.tsx');
-  assert.ok(panels.includes('OUTCOME_AWARE_NOTICE'), 'the panel renders the constant, not a retyped copy');
-  assert.ok(panels.includes('Outcome-aware commentary') && panels.includes('Could not assess'));
+  const commentary = read('app/admin/ipd-audit/episodes/[id]/commentary-client.tsx');
+  assert.ok(commentary.includes('OUTCOME_AWARE_NOTICE'), 'the panel renders the constant, not a retyped copy');
+  assert.ok(commentary.includes('Outcome-aware commentary'));
+  assert.ok(panels.includes('Could not assess'));
+  // decision 35: the notice sits above the block in EVERY state, including while generating and
+  // after a failure — it is not conditional on there being text to caveat.
+  const notice = commentary.indexOf('OUTCOME_AWARE_NOTICE');
+  assert.ok(notice > 0 && notice < commentary.indexOf('Generating commentary'),
+    'the outcome-aware label precedes the generating state, not only the finished text');
 });
 
 test('the sibling score is read at the pinned discharge engine version and always labelled as its own', () => {
@@ -543,8 +560,10 @@ test('checkpoints run concurrently and the judge passes stay sequential', () => 
   assert.ok(!/Promise\.all\([^)]*runDiffPass|Promise\.all\([^)]*runFidelityPass/.test(run));
   const diffAt = run.indexOf('runDiffPass(');
   const fidAt = run.indexOf('runFidelityPass(');
-  const commAt = run.indexOf('runCommentaryPass(');
-  assert.ok(diffAt < fidAt && fidAt < commAt, 'A1 then A2 then B, in order');
+  assert.ok(diffAt > 0 && diffAt < fidAt, 'A1 then A2, in order');
+  // DECISION 35: the pipeline ENDS at the fidelity pass. B is not last here any more — it is
+  // not here at all, and a re-added call would put a 107 s model call back on the audit path.
+  assert.ok(!run.includes('runCommentaryPass('), 'pass B does not run in the pipeline');
 });
 
 test('PROMPT shaping never touches real_course or the resolver', () => {
@@ -558,10 +577,15 @@ test('PROMPT shaping never touches real_course or the resolver', () => {
   assert.ok(!run.includes('resolveAll(resolvableEntries, summariseEventsForPrompt'),
     'a drug ordered once must still be findable by the resolver');
   // and the prompts get the summary
-  for (const pass of ['runDiffPass', 'runFidelityPass', 'runCommentaryPass']) {
+  for (const pass of ['runDiffPass', 'runFidelityPass']) {
     const at = run.indexOf(pass + '(');
     assert.ok(run.slice(at, at + 320).includes('summariseEventsForPrompt'), `${pass} reads the summary`);
   }
+  // pass B reads the summary too — it just reads it from the stored real_course now (decision 35)
+  const route = code('app/api/ipd-episode/commentary/route.ts');
+  const bAt = route.indexOf('runCommentaryPass(');
+  assert.ok(route.slice(bAt, bAt + 700).includes('summariseEventsForPrompt'),
+    'the on-demand pass B is shaped the same way the in-pipeline one was');
   assert.ok(run.includes('promptEvents:') && run.includes('assembledEvents:'), 'both counts recorded');
 });
 
@@ -582,6 +606,140 @@ test('a timeout is not silent: an in_progress marker is written before any model
   const worker = code('app/api/ipd-episode/worker/route.ts');
   assert.ok(worker.includes('running.has(c.encounterId)'), 'a live in_progress episode is not re-picked');
   assert.ok(worker.includes('inProgressIsStale(s.last_seen)'), 'but a dead one is');
+});
+
+/**
+ * ROUND 12 ITEM 1. The defect this pins: round 11 added `n_findings_truncated` to the audits
+ * INSERT. Every column, every `$n` and every parameter was renumbered correctly — and all three
+ * COUNTS still agreed, so the count-based check I had run since round 2 stayed green. What did not
+ * move was the `::jsonb` cast: it sat on `$35`, which had become `judge_temperature`, and Postgres
+ * refused the whole statement with `column "judge_temperature" is of type double precision but
+ * expression is of type jsonb`. IPNO-416 ran the full 314 s pipeline and persisted nothing.
+ *
+ * Counting is not alignment. This pairs each column with its value token and checks the CAST
+ * POSITION — and the expected type comes from the DDL in migrations/0052, not from a list written
+ * out by hand here. A hand list is the same class of mistake one level up: it would have to be
+ * edited in step with the DDL, and the whole lesson of this defect is that a thing which must be
+ * edited in step with another thing eventually is not.
+ */
+const DDL_TYPES = (() => {
+  // column → declared type, parsed out of every CREATE TABLE in the reference migration.
+  const sqlText = read(join('migrations', '0052_ipd_episode_audits.sql'));
+  const byTable = new Map<string, Map<string, string>>();
+  for (const m of sqlText.matchAll(/CREATE TABLE IF NOT EXISTS (\w+) \(([\s\S]*?)\n\);/g)) {
+    const cols = new Map<string, string>();
+    for (const raw of m[2].split('\n')) {
+      const line = raw.replace(/--.*$/, '').trim().replace(/,$/, '');
+      // a column line is `name TYPE ...`; table-level constraints and index bodies are not
+      const col = /^([a-z_][a-z0-9_]*)\s+(JSONB|INTEGER\[\]|TEXT\[\]|TEXT|INTEGER|BOOLEAN|UUID|TIMESTAMPTZ|DOUBLE PRECISION|NUMERIC)(?![A-Za-z_])/i.exec(line);
+      if (col && !/^(primary|foreign|unique|constraint|check)$/i.test(col[1])) {
+        cols.set(col[1], col[2].toUpperCase());
+      }
+    }
+    byTable.set(m[1], cols);
+  }
+  return byTable;
+})();
+
+/** The cast a column of this declared type requires in an INSERT — '' means no cast. */
+function castForType(t: string | undefined): string {
+  if (t === 'JSONB') return '::jsonb';
+  if (t === 'INTEGER[]') return '::int[]';
+  if (t === 'TEXT[]') return '::text[]';
+  return '';
+}
+
+for (const [table, insertMarker] of [
+  ['ipd_episode_audits', 'INSERT INTO ipd_episode_audits'],
+  ['ipd_episode_checkpoints', 'INSERT INTO ipd_episode_checkpoints'],
+] as const) {
+  test(`every cast in the ${table} INSERT sits on the placeholder whose column has that type`, () => {
+    const ddl = DDL_TYPES.get(table);
+    assert.ok(ddl && ddl.size > 0, `${table} is declared in migrations/0052`);
+
+    const src = code('lib/ipd-episode/store.ts');
+    const from = src.indexOf(insertMarker);
+    const to = src.indexOf(')', src.indexOf('VALUES', from) + 'VALUES'.length);
+    assert.ok(from > 0, `${insertMarker} is findable`);
+    const block = src.slice(from, src.indexOf('`', from) > 0 ? to + 1 : to + 1);
+
+    const columns = block.slice(block.indexOf('(') + 1, block.indexOf('VALUES'))
+      .replace(/\)/g, '').split(',').map((c) => c.trim()).filter(Boolean);
+    const tokens = block.slice(block.indexOf('VALUES') + 'VALUES'.length)
+      .replace(/[()]/g, '').split(',').map((t) => t.trim()).filter(Boolean);
+
+    assert.equal(columns.length, tokens.length, 'one value token per column');
+    assert.ok(columns.length > 10, 'the column list parsed');
+
+    for (let i = 0; i < columns.length; i++) {
+      const col = columns[i];
+      const token = tokens[i];
+      // A literal (TRUE) is not a placeholder and carries no cast.
+      if (!token.startsWith('$')) { assert.ok(!token.includes('::'), `${col}: literal ${token} is cast`); continue; }
+      const declared = ddl.get(col);
+      assert.ok(declared, `${col} is declared in the DDL for ${table}`);
+      const want = castForType(declared);
+      const got = token.includes('::') ? token.slice(token.indexOf('::')) : '';
+      assert.equal(got, want,
+        `${col} is ${declared} in the DDL, so its token must be ${want ? `$n${want}` : '$n with no cast'} — found ${token}`);
+    }
+
+    // And the placeholders must still run 1..N with no gap or repeat: that is what a renumber breaks.
+    const nums = tokens.filter((t) => t.startsWith('$')).map((t) => Number(t.replace(/\D+/g, '')));
+    assert.deepEqual(nums, nums.map((_, i) => i + 1), 'placeholders are sequential from $1');
+  });
+}
+
+// ── round 12 / decision 35: commentary is on demand ─────────────────────────────────────────
+
+test('the audit row is complete and scorable with commentary NULL', () => {
+  const run = code('lib/ipd-episode/run.ts');
+  // The pipeline writes null and says why. Nothing downstream may treat that as a failure:
+  // no skip, no error detail, no effect on scoring_status.
+  assert.ok(run.includes('commentary: null'), 'the pipeline writes null by construction');
+  assert.ok(!/commentary[^\n]*recordSkip|recordSkip[^\n]*commentary/.test(run),
+    'a missing commentary never writes a skip row');
+  const scoring = code('lib/ipd-episode/judge-core.ts');
+  assert.ok(!/scoringStatusFor[\s\S]{0,400}commentary/.test(scoring),
+    'scoring status cannot depend on the commentary');
+});
+
+test('the on-demand commentary route is admin-gated, idempotent, and never fatal', () => {
+  const route = code('app/api/ipd-episode/commentary/route.ts');
+
+  // admin-gated, the same pair every admin route in this repo uses
+  assert.ok(route.includes('requireAdmin(req)') && route.includes('isAdminUnlocked()'),
+    'ADMIN_TOKEN or an admin session, like the rest');
+
+  // idempotent on BOTH sides: the cheap read-side early return, and the write-side guard that
+  // survives two simultaneous first opens. The read alone is not idempotency, it is a race.
+  assert.ok(route.includes('row.commentary != null'), 'an existing commentary never reaches the model');
+  const store = code('lib/ipd-episode/store.ts');
+  assert.ok(/UPDATE ipd_episode_audits SET commentary[\s\S]{0,120}WHERE id = \$1 AND commentary IS NULL/.test(store),
+    'the write itself refuses to overwrite an existing commentary');
+
+  // never fatal: a failed generation is a 200 with a null commentary and a reason
+  assert.ok(/status: 'failed', commentary: null/.test(route), 'failure is a state, not an error page');
+  assert.ok(!route.includes('status: 500'), 'a commentary that will not generate is not a server error');
+});
+
+test('pass B is given the FULL finding list with the real ids it is asked to annotate', () => {
+  // IPNO-416 rejected two commentaries for annotating 'r-13'. That was not an invented id: resolver
+  // ids read `r-13-cp-d1/diagnostics/3` and the model cut them at the natural break. The ref was
+  // already carried in checkpoint_ref, so the id never needed to contain it.
+  const core = code('lib/ipd-episode/judge-core.ts');
+  assert.ok(core.includes('finding_id: `r-${i + 1}`'), 'resolver ids are short and whole');
+  assert.ok(!core.includes('`r-${i + 1}-${entry.ref}`'), 'the truncatable form is gone');
+
+  const route = code('app/api/ipd-episode/commentary/route.ts');
+  // the full stored list, unfiltered — resolver findings included
+  assert.ok(/findings = Array\.isArray\(row\.findings\)/.test(route), 'the list comes from the row');
+  assert.ok(!/findings\.filter\(/.test(route), 'nothing is filtered out of what pass B is shown');
+
+  // and validation still checks every annotation against exactly that list
+  const judge = code('lib/ipd-episode/judge.ts');
+  assert.ok(judge.includes('const knownIds = a.findings.map((f) => f.finding_id)'), 'ids come from the same list');
+  assert.ok(judge.includes('validateCommentary(text, knownIds)'), 'and every annotation is checked against it');
 });
 
 test('stage timings are recorded so the slow stage is a fact, not a guess', () => {

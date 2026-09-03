@@ -1808,6 +1808,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "app/api",
     "to": "ipd-episode",
+    "kind": "type"
+  },
+  {
+    "from": "app/api",
+    "to": "ipd-episode",
     "kind": "value"
   },
   {

@@ -87,7 +87,7 @@ export default async function EpisodeAuditDetail({ params, searchParams }: {
       <TimelinePanel events={events} />
       <FindingsPanel findings={findings} />
       <UnassessablePanel findings={findings} />
-      <CommentaryPanel commentary={commentary} findings={findings} />
+      <CommentaryPanel auditId={id} commentary={commentary} findings={findings} />
       <CheckpointPanels checkpoints={checkpoints} />
     </div>
   );

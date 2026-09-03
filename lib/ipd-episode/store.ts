@@ -266,6 +266,8 @@ export interface EpisodeAuditRow {
   assembledEvents?: number | null;
   /** Per-stage wall times, so the next investigation does not have to guess which stage is slow. */
   timings?: unknown;
+  /** Pass B's one un-rederivable input, persisted for the on-demand run (decision 35). */
+  admissionContext?: string | null;
   /** present / absent_class_present / absent_class_missing / ambiguous_confounded counts. */
   resolutionCounts?: unknown;
   checkpointCount: number;
@@ -374,17 +376,22 @@ export async function saveEpisodeAudit(row: EpisodeAuditRow, checkpoints: Checkp
          n_sequencing, n_divergent, n_context_dependent, n_unassessable, n_concordant,
          n_low_value, n_dropped_invalid, n_parse_failed,
          n_unassessable_rejected, n_judged_omissions_dropped, n_findings_truncated,
+         n_resolver_grouped, n_resolver_ungrouped,
          judge_temperature, resolution_counts,
          checkpoint_policy, checkpoint_concurrency, checkpoint_wall_ms,
          prompt_events, assembled_events, stage_timings,
-         capped_count, checkpoint_count, evidence_tiers, real_course, findings, commentary,
+         capped_count, checkpoint_count, evidence_tiers, real_course, findings, admission_context, commentary,
          model_checkpoint, model_judge, trace_id, error_detail, raw_judge_error)
-       VALUES ($1,TRUE,
-               $2,$3,$4,$5,$6,$7, $8,$9,$10,$11,$12, $13,$14,$15,$16,$17,
-               $18,$19,$20,$21,$22,$23, $24,$25,$26,$27,$28, $29,$30,$31,
-               $32,$33, $34,$35::jsonb,
-               $36, $37,$38,$39, $40,$41,$42::jsonb,
-               $43,$44,$45::jsonb,$46::jsonb,$47::jsonb,$48::jsonb, $49,$50,$51,$52,$53::jsonb)
+       VALUES ($1,TRUE,$2,$3,$4,$5,
+               $6,$7,$8,$9,$10,$11,
+               $12,$13,$14,$15,$16,$17,
+               $18,$19,$20,$21,$22,$23,
+               $24,$25,$26,$27,$28,$29,
+               $30,$31,$32,$33,$34,$35,
+               $36,$37,$38::jsonb,$39,$40,$41,
+               $42,$43,$44::jsonb,$45,$46,$47::jsonb,
+               $48::jsonb,$49::jsonb,$50,$51::jsonb,$52,$53,
+               $54,$55,$56::jsonb)
        RETURNING id`,
       [
         runSeq,
@@ -403,11 +410,13 @@ export async function saveEpisodeAudit(row: EpisodeAuditRow, checkpoints: Checkp
         num(c.n_context_dependent), num(c.n_unassessable), num(c.n_concordant),
         num(c.n_low_value), num(c.n_dropped_invalid), num(c.n_parse_failed),
         num(c.n_unassessable_rejected), num(c.n_judged_omissions_dropped), num(c.n_findings_truncated),
+        num(c.n_resolver_grouped), num(c.n_resolver_ungrouped),
         row.judgeTemperature ?? null, JSON.stringify(row.resolutionCounts ?? null),
         row.checkpointPolicy ?? 'standard', row.checkpointConcurrency ?? null, row.checkpointWallMs ?? null,
         row.promptEvents ?? null, row.assembledEvents ?? null, JSON.stringify(row.timings ?? null),
         num(row.cappedCount), num(row.checkpointCount), JSON.stringify(row.evidenceTiers ?? null), JSON.stringify(row.realCourse ?? null),
-        JSON.stringify(row.findings ?? []), row.commentary == null ? null : JSON.stringify(row.commentary),
+        JSON.stringify(row.findings ?? []), row.admissionContext ?? null,
+        row.commentary == null ? null : JSON.stringify(row.commentary),
         row.modelCheckpoint, row.modelJudge, row.traceId, row.errorDetail ?? null,
         row.rawJudgeError == null ? null : JSON.stringify(row.rawJudgeError),
       ],
@@ -484,6 +493,55 @@ export async function episodeAuditById(id: string): Promise<EpisodeListRow | nul
   const rows = await run(`SELECT * FROM ipd_episode_audits WHERE id = $1 LIMIT 1`, [id])
     .catch((e: unknown) => { warn('episodeAuditById', e); return [] as Record<string, unknown>[]; });
   return rows[0] ?? null;
+}
+
+/**
+ * ROUND 12 / DECISION 35 — the on-demand commentary pair.
+ *
+ * `commentaryInputsFor` reads back everything pass B needs and NOTHING else, so the route cannot
+ * quietly acquire a wider view of the episode than the pipeline gave it. `checkpoint_id` is
+ * rebuilt from the stored day_index/type rather than stored twice.
+ *
+ * The `commentary` column comes back too, because "already generated" is the idempotency check and
+ * it must be read in the same statement that reads the inputs — checking in one query and writing
+ * after another is how two concurrent page-opens both decide they are the first.
+ */
+export async function commentaryInputsFor(auditId: string): Promise<{
+  auditId: string; encounterId: string; admissionContext: string | null;
+  losDays: number | null; findings: unknown; realCourse: unknown;
+  commentary: unknown; modelJudge: string | null;
+} | null> {
+  if (!/^[0-9a-fA-F-]{10,64}$/.test(auditId)) return null;
+  const rows = await run(
+    `SELECT id, encounter_id, admission_context, los_days, findings, real_course, commentary, model_judge
+     FROM ipd_episode_audits WHERE id = $1 LIMIT 1`, [auditId],
+  ).catch((e: unknown) => { warn('commentaryInputsFor', e); return [] as Record<string, unknown>[]; });
+  const r = rows[0];
+  if (!r) return null;
+  return {
+    auditId: String(r.id), encounterId: String(r.encounter_id),
+    admissionContext: r.admission_context == null ? null : String(r.admission_context),
+    losDays: r.los_days == null ? null : Number(r.los_days),
+    findings: r.findings, realCourse: r.real_course, commentary: r.commentary,
+    modelJudge: r.model_judge == null ? null : String(r.model_judge),
+  };
+}
+
+/**
+ * Write the generated commentary back. `WHERE commentary IS NULL` makes the write itself the
+ * idempotency guard: if another request got there first its text stands, and this one reports
+ * `already` rather than overwriting a good commentary with a second, differently-worded one.
+ */
+export async function saveCommentary(auditId: string, commentary: unknown): Promise<'saved' | 'already' | 'failed'> {
+  if (!/^[0-9a-fA-F-]{10,64}$/.test(auditId)) return 'failed';
+  try {
+    const rows = await run(
+      `UPDATE ipd_episode_audits SET commentary = $2::jsonb
+       WHERE id = $1 AND commentary IS NULL RETURNING id`,
+      [auditId, JSON.stringify(commentary)],
+    );
+    return rows.length ? 'saved' : 'already';
+  } catch (e) { warn('saveCommentary', e); return 'failed'; }
 }
 
 export async function checkpointsForAudit(auditId: string): Promise<EpisodeListRow[]> {

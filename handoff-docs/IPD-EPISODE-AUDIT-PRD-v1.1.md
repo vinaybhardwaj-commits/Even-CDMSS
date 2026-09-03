@@ -79,6 +79,38 @@ This PRD specifies a second IPD engine. It assembles the whole episode, builds a
 
 **Consequences.** §3.4's diff pass no longer emits `omission` findings; it keeps `commission`, `timing` and `sequencing`, and the appropriateness judgement on those. §3.5's fidelity pass is unchanged. §4.2 is additionally enforced as a postcondition in the other direction (§4.2a below), and is exempted for resolver findings, since an absence has nothing to cite by definition.
 
+### 1.6 Decision 35 — commentary leaves the pipeline (V, 2026-09-03, after fix round 11)
+
+**Amends decision 2.** Pass B no longer runs as stage 6 of the audit. The pipeline ENDS at the fidelity pass; the audit row is written with `commentary` NULL; pass B runs **on demand**, the first time an episode's detail page is opened, and caches to the `commentary` column.
+
+**The evidence for the change.** On IPNO-416 pass B cost **107 s of a 314 s run** — 57.5 s plus a 49.4 s retry — and produced nothing: both attempts were rejected. It had also failed on the preceding episode. It is the only pass whose output does not enter the score, and the only one that is read exclusively on drill-in. A third of the audit's wall clock was being spent, on every episode in a 446-episode cohort, generating prose that most episodes will never have read.
+
+**What this decision does NOT change.** Pass B is still the outcome-aware pass (§3.6) and still the only one that may read how the admission ended. Its validation rules from decision 2 are unchanged: **no scores, no verdicts, no new findings** — every annotation is checked against the stored finding ids and a commentary that invents one is refused whole.
+
+**The properties the on-demand path must have:**
+
+| property | where it is enforced |
+|---|---|
+| a NULL commentary is never a failure and never blocks scoring | the audit row is written complete without it; nothing reads `commentary` to decide `scoring_status` |
+| idempotent | an existing commentary never reaches the model, **and** the write is `WHERE commentary IS NULL`, so two simultaneous first opens cannot produce two commentaries |
+| admin-gated | `ADMIN_TOKEN` or an admin session, as every other admin route here |
+| never fatal | a failed generation is a 200 with `commentary: null` and a reason, not an error page |
+| the outcome-aware label (§10 item 5) is shown verbatim | above the block in **every** state — generating, generated and failed |
+
+**One input had to be persisted.** Pass B runs long after assembly has exited, and `admission_context` was the only input it needed that was built during assembly and never stored. It is now a column on `ipd_episode_audits`. A row audited before this decision has none, and the route says so plainly rather than reaching back into db13 to reconstruct one.
+
+### 1.7 Resolver findings are grouped, never truncated (round 12 item 2, V's instruction 2026-09-03)
+
+*Not numbered as a decision: V gave this as a round-12 item, not as a numbered decision, and I am not going to assign one on V's behalf.*
+
+IPNO-416 produced **112 findings, 79 of them from the resolver** — 71%. `MAX_FINDINGS_PER_PASS = 30` caps the two model passes and neither reached it, so the cap did not bind where the volume was. The resolver is deterministic code: capping it by truncation would drop real findings silently, which is the one thing a deterministic layer must never do.
+
+Instead, **one finding per expectation CLASS**. A daily checkpoint re-states the same standing expectation every day; those members collapse into a single finding that states how often it recurred, and every member stays addressable on `grouped_refs` / `grouped_days`. **Nothing is discarded.**
+
+The grouping key is `section | matcher (kind + lowercased, de-duplicated, sorted terms) | resolution | verdict`, with an entry that carries no matcher falling back to its normalised item text. `resolution` and `verdict` are in the key deliberately: a matcher-only key would merge a day the thing happened into a group saying it did not, the moment the resolver becomes day-aware — concordant-erasure, which this engine has already had to fix once.
+
+Both counts are stored, `n_resolver_grouped` and `n_resolver_ungrouped`. Reporting only the first hides the collapse; reporting only the second describes an episode nobody is shown.
+
 ### 4.2a `unassessable` must be earned (added 2026-09-02, decision 33)
 
 A finding may carry `unassessable` only if its `evidence_basis` is empty or every cited source is Tier C. Anything else is rewritten to `context_dependent` in code and counted in `n_unassessable_rejected`. Resolver findings with `resolution = 'absent_class_missing'` are exempt: that gap was established by code rather than claimed by a model.
@@ -546,6 +578,9 @@ Entry point: a link `Episode audits` on `app/admin/ipd-audit/page.tsx`, rendered
 - `lib/ipd-episode/run.ts` — pipeline orchestrator for one episode.
 - `app/api/ipd-episode/worker/route.ts` — mirrors `app/api/ipd-audit/worker/route.ts`: `maxDuration = 800`, `runtime = 'nodejs'`, `dynamic = 'force-dynamic'`, auth by `x-vercel-cron` or `CRON_SECRET` or admin cookie, `?max=` default 2 cap 5, sequential processing, `app_settings` lock key `ipd_episode_lock` with the same TTL mechanics as the IPD worker, `?encounter=` to run one named episode.
 - `app/admin/ipd-audit/episodes/page.tsx` and `ui.tsx`.
+- `app/api/ipd-episode/commentary/route.ts` — **added by decision 35 (2026-09-03).** Not in the
+  original contract, because pass B was stage 6 of the pipeline when this list was written. The
+  decision that moved it out of the pipeline is what requires a route for it to run on.
 - `app/admin/ipd-audit/episodes/[id]/page.tsx` and panel components in that folder.
 - `lib/__tests__/ipd-episode-*.test.ts` — tests per §13.
 

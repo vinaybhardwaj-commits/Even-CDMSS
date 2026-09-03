@@ -62,6 +62,11 @@ export async function POST(req: NextRequest) {
       n_unassessable_rejected INTEGER DEFAULT 0,
       n_judged_omissions_dropped INTEGER DEFAULT 0,
       n_findings_truncated  INTEGER DEFAULT 0,
+      -- ROUND 12 ITEM 2. Both halves of the grouping, always: how many resolver findings
+      -- are PRESENTED, and how many expected-course entries they stand for. One without
+      -- the other either hides the collapse or describes an episode nobody is shown.
+      n_resolver_grouped    INTEGER DEFAULT 0,
+      n_resolver_ungrouped  INTEGER DEFAULT 0,
       judge_temperature     DOUBLE PRECISION,
       resolution_counts     JSONB,
       capped_count          INTEGER DEFAULT 0,
@@ -75,6 +80,12 @@ export async function POST(req: NextRequest) {
       evidence_tiers        JSONB,
       real_course           JSONB,
       findings              JSONB,
+      -- ROUND 12 / DECISION 35. Commentary is generated ON DEMAND now, the first time an episode's
+      -- detail page is opened, so pass B runs long after the pipeline has exited and cannot rebuild
+      -- its own inputs from memory. Everything else it needs is already on this row or on the
+      -- checkpoint rows; the admission context was the one input built during assembly and never
+      -- persisted. NULL commentary is a normal, complete, scorable episode — never a failure.
+      admission_context     TEXT,
       commentary            JSONB,
       model_checkpoint      TEXT,
       model_judge           TEXT,
@@ -234,6 +245,9 @@ export async function POST(req: NextRequest) {
     await sql`ALTER TABLE ipd_episode_skips ADD COLUMN IF NOT EXISTS diagnostics JSONB`;
     await sql`ALTER TABLE ipd_episode_skips ADD COLUMN IF NOT EXISTS detail TEXT`;
     await sql`ALTER TABLE ipd_episode_audits ADD COLUMN IF NOT EXISTS n_findings_truncated INTEGER DEFAULT 0`;
+    await sql`ALTER TABLE ipd_episode_audits ADD COLUMN IF NOT EXISTS n_resolver_grouped INTEGER DEFAULT 0`;
+    await sql`ALTER TABLE ipd_episode_audits ADD COLUMN IF NOT EXISTS n_resolver_ungrouped INTEGER DEFAULT 0`;
+    await sql`ALTER TABLE ipd_episode_audits ADD COLUMN IF NOT EXISTS admission_context TEXT`;
     steps.skips_table = 'ok';
 
     const counts = (await sql`SELECT count(*)::int AS n FROM ipd_episode_audits`) as Array<{ n: number }>;

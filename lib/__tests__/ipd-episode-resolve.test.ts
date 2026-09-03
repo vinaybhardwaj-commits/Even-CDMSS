@@ -14,6 +14,7 @@ import {
   resolveEntry, resolveAll, resolutionCounts,
   type ExpectationMatcher, type ResolvableEntry,
 } from '../ipd-episode/resolve-core';
+import { findingsFromResolved, domainForSection, countFindings, resolverGroupKey } from '../ipd-episode/judge-core';
 import type { EpisodeEvent } from '../ipd-episode/assemble-core';
 
 const ev = (o: Partial<EpisodeEvent> & { event_id: string }): EpisodeEvent => ({
@@ -186,4 +187,90 @@ test('every outcome carries the four fields a reader needs to re-run the lookup 
   assert.ok(r.resolution && r.verdict && r.severity && r.statement);
   assert.equal(r.matchedEvent?.provenance.source_table, 'kx_billing_records');
   assert.equal(r.matchedTerm, 'enoxaparin');
+});
+
+// ── ROUND 12 ITEM 2: GROUPING, NOT TRUNCATION ────────────────────────────────────────────────
+//
+// IPNO-416 produced 112 findings, 79 of them from the resolver — 71% — because a daily checkpoint
+// re-states the same standing expectation every day. Capping that by truncation would drop real
+// findings silently, so the members of one expectation class become ONE finding instead. These
+// tests pin the two properties that makes acceptable: nothing is lost, and nothing is merged that
+// a reader would need kept apart.
+
+const resolvedFor = (entries: ResolvableEntry[], events: EpisodeEvent[]) =>
+  findingsFromResolved(resolveAll(entries, events), domainForSection);
+
+const dayEntry = (day: number, terms: string[], section = 'therapeutics') =>
+  entry({ ref: `cp-d${day}/${section}/1`, checkpointId: `cp-d${day}`, dayIndex: day, section,
+          matcher: { kind: 'drug', terms } });
+
+test('GROUPING: the same expectation across four days becomes one finding that says so', () => {
+  const entries = [0, 1, 2, 3].map((d) => dayEntry(d, ['enoxaparin']));
+  const out = resolvedFor(entries, [labOrder('Complete Blood Count')]);
+  assert.equal(out.length, 1, 'four days, one expectation class, one finding');
+  const f = out[0];
+  assert.equal(f.group_size, 4);
+  assert.deepEqual(f.grouped_days, [0, 1, 2, 3]);
+  assert.equal(f.grouped_refs.length, 4, 'every member stays addressable — nothing is discarded');
+  assert.equal(f.day_index, 0, 'dated to the day the question was FIRST asked');
+  assert.ok(/expected at 4 checkpoints/.test(f.statement), 'the recurrence is in the statement, not hidden in a field');
+  assert.equal(f.finding_id, 'r-1', 'short, whole ids — the id the model is asked to annotate');
+});
+
+test('GROUPING: term order and case do not split a class, but a different drug does', () => {
+  const entries = [
+    dayEntry(0, ['Enoxaparin', 'heparin']),
+    dayEntry(1, ['heparin', 'ENOXAPARIN']),
+    dayEntry(2, ['cefazolin']),
+  ];
+  const out = resolvedFor(entries, []);
+  assert.equal(out.length, 2, 'the same matcher written differently is the same class');
+  assert.equal(out.find((f) => f.group_size === 2)?.grouped_days.length, 2);
+});
+
+test('GROUPING NEVER MERGES A DONE DAY INTO A MISSED ONE — that is concordant-erasure', () => {
+  // The resolver asks its question of the WHOLE episode, so today two entries with the same
+  // matcher always resolve alike and this case cannot arise through resolveAll. Resolution and
+  // verdict are in the grouping key anyway, and this test pins the key directly — because the
+  // day the resolver becomes day-aware (an expectation "by day 2" that was met on day 4 is a
+  // timing finding waiting to be written) is the day a matcher-only key would silently merge a
+  // day it happened into a group that says it did not. That is concordant-erasure, which this
+  // engine has already had to fix once.
+  const e = dayEntry(0, ['enoxaparin']);
+  const done = { resolution: 'present' as const, verdict: 'concordant' as const };
+  const missed = { resolution: 'absent_class_present' as const, verdict: 'divergent' as const };
+  const key = (o: { resolution: 'present' | 'absent_class_present'; verdict: 'concordant' | 'divergent' }) =>
+    resolverGroupKey(e, { ...o, severity: 'major', statement: 's', matchedEvent: null, matchedTerm: null, confound: null });
+  assert.notEqual(key(done), key(missed), 'the same expectation with two different answers is two findings');
+});
+
+test('GROUPING: sections never merge, and severity takes the WORST member', () => {
+  const a = entry({ ref: 'cp-d0/therapeutics/1', dayIndex: 0, section: 'therapeutics',
+                    proposedSeverity: 'minor', matcher: { kind: 'drug', terms: ['enoxaparin'] } });
+  const b = entry({ ref: 'cp-d1/therapeutics/1', checkpointId: 'cp-d1', dayIndex: 1, section: 'therapeutics',
+                    proposedSeverity: 'major', matcher: { kind: 'drug', terms: ['enoxaparin'] } });
+  const c = entry({ ref: 'cp-d0/diagnostics/1', dayIndex: 0, section: 'diagnostics',
+                    proposedSeverity: 'major', matcher: { kind: 'drug', terms: ['enoxaparin'] } });
+  const out = resolvedFor([a, b, c], []);
+  assert.equal(out.length, 2, 'therapeutics and diagnostics are different questions');
+  const ther = out.find((f) => f.domain === 'therapeutics')!;
+  assert.equal(ther.group_size, 2);
+  assert.equal(ther.severity, 'major', 'a major day must not hide behind a minor one by checkpoint order');
+});
+
+test('GROUPING: an entry with no matcher only ever groups with identical text', () => {
+  const noMatch = (day: number, item: string) =>
+    entry({ ref: `cp-d${day}/monitoring/1`, checkpointId: `cp-d${day}`, dayIndex: day,
+            section: 'monitoring', item, matcher: null });
+  const out = resolvedFor([noMatch(0, 'watch  the  patient'), noMatch(1, 'Watch the patient'), noMatch(2, 'something else')], []);
+  assert.equal(out.length, 2, 'normalised text groups; different text does not');
+});
+
+test('GROUPING: the two counts describe the same list, and neither can be read alone', () => {
+  const entries = [0, 1, 2, 3, 4].map((d) => dayEntry(d, ['enoxaparin']));
+  const out = resolvedFor(entries, []);
+  const counters = countFindings(out, 0, 0);
+  assert.equal(counters.n_resolver_grouped, 1, 'what the reader is shown');
+  assert.equal(counters.n_resolver_ungrouped, 5, 'what it stands for');
+  assert.equal(counters.n_findings, 1, 'the headline count is the presented one');
 });

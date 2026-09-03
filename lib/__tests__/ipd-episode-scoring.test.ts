@@ -36,6 +36,7 @@ import type { EpisodeEvent } from '../ipd-episode/assemble-core';
 const f = (o: Partial<EpisodeFinding> & { finding_id: string }): EpisodeFinding => ({
   // NB: defaults to `commission` since decision 33 — a JUDGED omission is dropped, so an
   // omission-by-default fixture would silently test nothing. Resolver findings set `resolution`.
+  group_size: 1, grouped_refs: [], grouped_days: [],
   pass: 'divergence' as AuditPass, finding_type: 'commission', verdict: 'divergent' as Verdict,
   domain: 'diagnostics' as Domain, day_index: 0, checkpoint_ref: null, statement: 'a statement',
   severity: 'minor' as Severity, evidence_tier: 'A',

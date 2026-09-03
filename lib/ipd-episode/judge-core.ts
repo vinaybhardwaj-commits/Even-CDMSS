@@ -32,7 +32,7 @@
 import { extractJsonObject } from '../lvc-value-core';
 import { LVC_CATEGORIES } from '../opd-lvc-classify-core';
 import {
-  COMPLETENESS_SOURCES, collapseSpaces, tierForTable,
+  COMPLETENESS_SOURCES, collapseSpaces, tierForTable, isDischargeEvent,
   type EpisodeEvent, type EvidenceTier,
 } from './assemble-core';
 import { renderEvent, type CheckpointEntryRef, type ExpectedCourse } from './checkpoint-core';
@@ -107,6 +107,20 @@ export interface EpisodeFinding {
   matcher_terms: string[] | null;
   matched_term: string | null;
   confound: string | null;
+  /**
+   * ROUND 12 ITEM 2 — GROUPING, NOT TRUNCATION. A daily checkpoint regenerates a similar expected
+   * course every day, so one standing expectation ("daily CBC") becomes one resolver finding PER
+   * DAY. IPNO-416 produced 79 resolver findings that way, 71% of its 112. Capping them by
+   * truncation would drop real findings silently, so instead the members of one expectation class
+   * collapse into ONE finding that says how often it recurred, and these three fields keep every
+   * member addressable: nothing is discarded, only stated once.
+   *
+   * `group_size` is 1 and `grouped_refs` holds the single ref for an ungrouped finding, so the
+   * shape is uniform and a reader never has to branch on "was this grouped".
+   */
+  group_size: number;
+  grouped_refs: string[];
+  grouped_days: number[];
 }
 
 const oneOf = <T extends string>(allowed: readonly T[], v: unknown): T | null =>
@@ -330,6 +344,11 @@ export function parseFindings(text: string, opts: ParseFindingsOptions): ParseFi
     const lvc_category = lvcEligible ? asLvcCategory(f.lvc_category) : null;
 
     findings.push({
+      // A judged finding is its own group of one: `group_size` 1 keeps the shape uniform so no
+      // reader has to branch on which pass produced the finding (round 12 item 2).
+      group_size: 1,
+      grouped_refs: [],
+      grouped_days: [],
       finding_id: `${opts.idPrefix}-${rawId || String(i + 1)}`,
       pass: opts.pass,
       finding_type,
@@ -708,6 +727,15 @@ export interface FindingCounters {
   n_judged_omissions_dropped: number;
   /** Findings dropped by the per-pass output cap. */
   n_findings_truncated: number;
+  /**
+   * ROUND 12 ITEM 2 — BOTH COUNTS, ALWAYS. `n_resolver_grouped` is how many resolver findings are
+   * actually presented; `n_resolver_ungrouped` is how many expected-course entries they stand for.
+   * Reporting only the first would hide the collapse, and reporting only the second would describe
+   * an episode nobody is shown. On IPNO-416 these read 79 ungrouped against whatever the classes
+   * collapse to — the ratio IS the measurement this item exists to produce.
+   */
+  n_resolver_grouped: number;
+  n_resolver_ungrouped: number;
 }
 
 /**
@@ -732,6 +760,12 @@ export function countFindings(findings: EpisodeFinding[], domainDropped: number,
     n_unassessable_rejected: 0,
     n_judged_omissions_dropped: 0,
     n_findings_truncated: 0,
+    // Derived from the findings themselves: a resolver finding is one with a `resolution`, and it
+    // carries the size of the class it stands for. Nothing has to be plumbed in beside them, so
+    // the two counts cannot drift from the list they describe.
+    n_resolver_grouped: findings.filter((f) => f.resolution != null).length,
+    n_resolver_ungrouped: findings.filter((f) => f.resolution != null)
+      .reduce((n, f) => n + Math.max(1, f.group_size), 0),
   };
   for (const f of findings) {
     if (f.pass === 'divergence') c.n_divergence_pass++; else c.n_fidelity_pass++;
@@ -981,12 +1015,65 @@ export function storedDivergenceIndex(index: number, status: ScoringStatus): num
  * it up would be worse than an empty basis. §4.2's Tier C rule does not fire on these because
  * their verdicts are set by lookup, not asserted from evidence.
  */
+const SEVERITY_RANK: Record<Severity, number> = { minor: 0, moderate: 1, major: 2 };
+const TIER_RANK: Record<EvidenceTier, number> = { A: 0, B: 1, C: 2 };
+
+/**
+ * ROUND 12 ITEM 2 — THE GROUPING KEY, stated once so the report and the code cannot disagree.
+ *
+ * Two resolved entries belong to the same expectation class when all four of these match:
+ *   1. `section`     — diagnostics / therapeutics / monitoring / escalation. Never merge across.
+ *   2. the MATCHER   — its kind plus its terms, lowercased, de-duplicated and sorted. The matcher
+ *                      is the machine-checkable definition of the expectation, so two entries with
+ *                      the same matcher are, to the resolver, literally the same question.
+ *                      An entry with NO matcher falls back to its normalised item text, and can
+ *                      only ever group with another entry whose text is identical.
+ *   3. `resolution`  — present / absent_class_present / absent_class_missing / ambiguous_confounded
+ *   4. `verdict`
+ *
+ * (3) and (4) are in the key deliberately. "CBC expected on four days, done on two" is TWO
+ * statements, not one: collapsing a present day into an absent group would erase the day it
+ * happened, which is the concordant-erasure defect under another name.
+ *
+ * Grouping never drops a member. Every ref, every day and every citation survives on the group.
+ */
+export function resolverGroupKey(entry: ResolvableEntry, outcome: ResolvedOutcome): string {
+  const matcher = entry.matcher
+    ? `${entry.matcher.kind}:${[...new Set(entry.matcher.terms.map((t) => t.trim().toLowerCase()).filter(Boolean))].sort().join('+')}`
+    : `text:${entry.item.trim().toLowerCase().split(/\s+/).join(' ')}`;
+  return `${entry.section}|${matcher}|${outcome.resolution}|${outcome.verdict}`;
+}
+
+/**
+ * One finding per expectation CLASS, not per checkpoint-day. Order is the order the classes first
+ * appear, so the output is as deterministic as the resolver that fed it.
+ */
 export function findingsFromResolved(
   resolved: readonly { entry: ResolvableEntry; outcome: ResolvedOutcome }[],
   domainForSection: (section: string) => Domain,
 ): EpisodeFinding[] {
-  return resolved.map((r, i) => {
-    const { entry, outcome } = r;
+  const groups = new Map<string, { entry: ResolvableEntry; outcome: ResolvedOutcome }[]>();
+  for (const r of resolved) {
+    const k = resolverGroupKey(r.entry, r.outcome);
+    const g = groups.get(k);
+    if (g) g.push(r); else groups.set(k, [r]);
+  }
+
+  return [...groups.values()].map((members, i) => {
+    // The member that carries the evidence: the first one that actually matched an event. A group
+    // of absences has none, and its basis is empty — the same as before grouping.
+    const withEvent = members.find((m) => m.outcome.matchedEvent) ?? members[0];
+    const { entry, outcome } = withEvent;
+    const days = [...new Set(members.map((m) => m.entry.dayIndex))].sort((a, b) => a - b);
+    const refs = members.map((m) => m.entry.ref);
+    // The worst severity any member proposed. Taking the first would let a major day hide behind a
+    // minor one purely because of checkpoint order.
+    const severity = members.reduce<Severity>((worst, m) =>
+      SEVERITY_RANK[m.outcome.severity] > SEVERITY_RANK[worst] ? m.outcome.severity : worst, members[0].outcome.severity);
+    const tier = members.reduce<EvidenceTier>((best, m) => {
+      const t: EvidenceTier = m.outcome.matchedEvent ? m.outcome.matchedEvent.evidence_tier : 'C';
+      return TIER_RANK[t] < TIER_RANK[best] ? t : best;
+    }, 'C');
     const basis: EvidenceBasisItem[] = outcome.matchedEvent
       ? [{
           source_table: outcome.matchedEvent.provenance.source_table,
@@ -994,32 +1081,42 @@ export function findingsFromResolved(
           source_timestamp: outcome.matchedEvent.provenance.source_timestamp,
         }]
       : [];
+    // The recurrence is part of the statement, because "expected on four days" and "expected once"
+    // are different clinical claims and the reader must not have to open a field to tell them apart.
+    const statement = members.length > 1
+      ? `${outcome.statement} (expected at ${members.length} checkpoints, day${days.length === 1 ? '' : 's'} ${days.join(', ')})`
+      : outcome.statement;
     return {
-      finding_id: `r-${i + 1}-${entry.ref}`,
+      finding_id: `r-${i + 1}`,
       pass: 'divergence',
       // The resolver answers "did the expected thing happen", so every finding it makes is an
       // omission question — including the ones where the answer is "yes".
       finding_type: 'omission',
       verdict: outcome.verdict,
       domain: domainForSection(entry.section),
-      day_index: entry.dayIndex,
+      // The EARLIEST day the class was expected — the day the question was first asked.
+      day_index: days[0],
       checkpoint_ref: entry.ref,
-      statement: outcome.statement,
-      severity: outcome.severity,
-      evidence_tier: outcome.matchedEvent ? outcome.matchedEvent.evidence_tier : 'C',
+      statement,
+      severity,
+      evidence_tier: tier,
       evidence_basis: basis,
       author_name: null, author_role: null, responsible_clinician_id: null,
       lvc_category: null,
-      citation_ids: entry.citationIds,
+      // Every member's citations, deduplicated: a group is grounded if ANY member was.
+      citation_ids: [...new Set(members.flatMap((m) => m.entry.citationIds))].sort((a, b) => a - b),
       citation_provenance: null,
       verdict_before_cap: outcome.verdict,
-      severity_before_cap: outcome.severity,
+      severity_before_cap: severity,
       capped: false,
       resolution: outcome.resolution,
       matcher_kind: entry.matcher?.kind ?? null,
       matcher_terms: entry.matcher?.terms ?? null,
       matched_term: outcome.matchedTerm,
       confound: outcome.confound,
+      group_size: members.length,
+      grouped_refs: refs,
+      grouped_days: days,
     };
   });
 }
@@ -1033,6 +1130,26 @@ export function domainForSection(section: string): Domain {
     case 'escalation': return 'escalation';
     default: return 'documentation';
   }
+}
+
+/**
+ * The outcome line handed to pass B and to NOBODY else. It is built here, at the last stage, from
+ * the discharge event — deliberately not carried through the pipeline in a variable that an
+ * earlier pass could read.
+ *
+ * ROUND 12 / DECISION 35: it lives here, not in run.ts, because pass B now runs on demand from
+ * the commentary route, long after the pipeline has exited. Both callers must build the same line
+ * from the same events, so there is exactly one of it.
+ */
+export function outcomeLineFrom(events: EpisodeEvent[], losDays: number | null): string {
+  const d = events.find(isDischargeEvent);
+  if (!d) return 'The record carries no discharge event for this admission.';
+  const type = (d.detail as Record<string, unknown>)?.discharge_type;
+  return [
+    `Discharged ${d.occurred_at ?? 'at a time the record does not give'}`,
+    type ? `discharge type: ${String(type)}` : 'discharge type not recorded',
+    losDays == null ? 'length of stay not computable' : `length of stay ${losDays} day(s)`,
+  ].join(' · ');
 }
 
 // ── commentary (PRD §3.6) ────────────────────────────────────────────────────────────────────
