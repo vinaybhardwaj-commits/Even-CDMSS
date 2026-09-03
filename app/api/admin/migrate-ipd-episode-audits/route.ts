@@ -64,6 +64,12 @@ export async function POST(req: NextRequest) {
       judge_temperature     DOUBLE PRECISION,
       resolution_counts     JSONB,
       capped_count          INTEGER DEFAULT 0,
+      checkpoint_policy     TEXT DEFAULT 'standard',
+      checkpoint_concurrency INTEGER,
+      checkpoint_wall_ms    INTEGER,
+      prompt_events         INTEGER,
+      assembled_events      INTEGER,
+      stage_timings         JSONB,
       checkpoint_count      INTEGER DEFAULT 0,
       evidence_tiers        JSONB,
       real_course           JSONB,
@@ -93,6 +99,12 @@ export async function POST(req: NextRequest) {
     await sql`ALTER TABLE ipd_episode_audits ADD COLUMN IF NOT EXISTS resolution_counts JSONB`;
     await sql`ALTER TABLE ipd_episode_audits ADD COLUMN IF NOT EXISTS divergence_band TEXT`;
     await sql`ALTER TABLE ipd_episode_audits ADD COLUMN IF NOT EXISTS band_uncertain BOOLEAN DEFAULT FALSE`;
+    await sql`ALTER TABLE ipd_episode_audits ADD COLUMN IF NOT EXISTS checkpoint_policy TEXT DEFAULT 'standard'`;
+    await sql`ALTER TABLE ipd_episode_audits ADD COLUMN IF NOT EXISTS checkpoint_concurrency INTEGER`;
+    await sql`ALTER TABLE ipd_episode_audits ADD COLUMN IF NOT EXISTS checkpoint_wall_ms INTEGER`;
+    await sql`ALTER TABLE ipd_episode_audits ADD COLUMN IF NOT EXISTS prompt_events INTEGER`;
+    await sql`ALTER TABLE ipd_episode_audits ADD COLUMN IF NOT EXISTS assembled_events INTEGER`;
+    await sql`ALTER TABLE ipd_episode_audits ADD COLUMN IF NOT EXISTS stage_timings JSONB`;
     await sql`ALTER TABLE ipd_episode_audits ALTER COLUMN app_source SET DEFAULT 'standalone'`;
     steps.audits_columns = 'ok';
 

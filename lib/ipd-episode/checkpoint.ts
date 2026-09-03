@@ -22,7 +22,7 @@ import {
   RETRIEVAL_TOP_K, type CheckpointEntryRef, type ExpectedCourse, type RetrievedExcerpt,
 } from './checkpoint-core';
 import { IPD_EPISODE_CHECKPOINT_SYSTEM } from './prompts';
-import type { EpisodeEvent } from './assemble-core';
+import { summariseEventsForPrompt, type EpisodeEvent } from './assemble-core';
 
 /** `lib/bedrock-core.ts` BEDROCK_MODELS. Overridable by IPD_EPISODE_CHECKPOINT_MODEL; an unlisted
  *  id is refused there, so a mistyped variable costs one string comparison, not a wrong grader. */
@@ -127,8 +127,14 @@ export interface CheckpointResult {
    *  a truncated answer, which is how five runs lost their day-2 checkpoint in silence. */
   finishReason: string | null;
   attempts: number;
-  /** Entries discarded by the per-category cap (item 4). */
+  /** Entries discarded by the per-category cap. */
   entriesTruncated: number;
+  /** Wall time of this checkpoint's retrieval leg, and of the whole checkpoint. */
+  retrievalMs: number;
+  wallMs: number;
+  /** Events this checkpoint's PROMPT carried, against what its filtered window held. */
+  promptEvents: number;
+  inputEventsRaw: number;
   expectedCourse: ExpectedCourse | null;
   entryRefs: CheckpointEntryRef[];
   status: 'ok' | 'error';
@@ -243,13 +249,17 @@ export function normativeSourcesForProvenance(env: Record<string, string | undef
  * that did not arrive.
  */
 export async function runCheckpoint(input: RunCheckpointInput): Promise<CheckpointResult> {
+  const tStart = Date.now();
   const { query, day0FromOt } = buildRetrievalQuery(input.retrievalQueryInput);
+  const tRetrieval = Date.now();
   const { excerpts, ids, sources, normativeDropped, failed } = await retrieveExcerpts(query);
+  const retrievalMs = Date.now() - tRetrieval;
   const topicality = assessTopicality(query, excerpts);
 
   const base: Omit<CheckpointResult, 'expectedCourse' | 'entryRefs' | 'status' | 'errorDetail'
     | 'uncitedEntryCount' | 'entryCount' | 'retriedForCitations'
-    | 'maxTokens' | 'finishReason' | 'attempts' | 'entriesTruncated'> = {
+    | 'maxTokens' | 'finishReason' | 'attempts' | 'entriesTruncated'
+    | 'retrievalMs' | 'wallMs' | 'promptEvents' | 'inputEventsRaw'> = {
     checkpointId: input.checkpointId,
     dayIndex: input.dayIndex,
     checkpointType: input.checkpointType,
@@ -270,13 +280,16 @@ export async function runCheckpoint(input: RunCheckpointInput): Promise<Checkpoi
     model: input.model,
   };
 
+  // PROMPT SHAPING (item 2): the model reads a rolled-up order stream; input_event_count on the
+  // row still records the real filtered window, because that is the blinding proof.
+  const promptEvents = summariseEventsForPrompt(input.events);
   const user = buildCheckpointUser({
     checkpointId: input.checkpointId,
     checkpointType: input.checkpointType,
     dayIndex: input.dayIndex,
     cutoffAt: input.cutoffAt,
     admissionContext: input.admissionContext,
-    events: input.events,
+    events: promptEvents,
     excerpts,
   });
 
@@ -327,7 +340,8 @@ export async function runCheckpoint(input: RunCheckpointInput): Promise<Checkpoi
       ...base, expectedCourse: null, entryRefs: [], status: 'error', errorDetail: first.error,
       uncitedEntryCount: 0, entryCount: 0, retriedForCitations: false,
       maxTokens: CHECKPOINT_MAX_TOKENS, finishReason: lastFinishReason, attempts: attemptsUsed,
-      entriesTruncated: 0,
+      entriesTruncated: 0, retrievalMs, wallMs: Date.now() - tStart,
+      promptEvents: promptEvents.length, inputEventsRaw: input.events.length,
     };
   }
 
@@ -363,6 +377,10 @@ export async function runCheckpoint(input: RunCheckpointInput): Promise<Checkpoi
     finishReason: lastFinishReason,
     attempts: attemptsUsed,
     entriesTruncated: capped.truncated,
+    retrievalMs,
+    wallMs: Date.now() - tStart,
+    promptEvents: promptEvents.length,
+    inputEventsRaw: input.events.length,
     expectedCourse: course,
     entryRefs: checkpointEntryRefs(input.checkpointId, course),
     status: 'ok',

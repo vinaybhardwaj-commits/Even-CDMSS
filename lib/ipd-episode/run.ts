@@ -22,7 +22,7 @@ import { assertKnownBedrockModel } from '../bedrock-core';
 import { startTrace, finishTraceIfRunning, logEvent } from '../trace';
 import {
   checkpointPlan, dayStartIso, diffPassEvents, episodeLevelEvents, eventsBeforeDayStart,
-  fidelityPassEvents, isDischargeEvent, type EpisodeEvent,
+  fidelityPassEvents, isDischargeEvent, summariseEventsForPrompt, type EpisodeEvent,
 } from './assemble-core';
 import { assembleEpisode, type AssembledEpisode } from './assemble';
 import { admissionContextLine, renderExpectedCourse, type CheckpointEntryRef } from './checkpoint-core';
@@ -40,6 +40,24 @@ import {
   IPD_EPISODE_ENGINE_VERSION, fetchExtractionByIpUid, recordSkip, clearSkip, saveEpisodeAudit,
   type CheckpointWriteRow,
 } from './store';
+
+/**
+ * How many checkpoints may be in flight at once. Three, not more: each is a Haiku call and the
+ * episode still has three Opus passes to pay for after them, so the point is to remove the serial
+ * wall time, not to saturate the provider and collect 429s.
+ */
+export const CHECKPOINT_CONCURRENCY = 3;
+
+/** Bounded-concurrency map that PRESERVES INPUT ORDER — checkpoints are written and rendered in
+ *  plan order, and a reordered list would scramble day indices against their expected courses. */
+async function mapWithLimit<T, R>(items: T[], limit: number, fn: (it: T) => Promise<R>): Promise<R[]> {
+  const out: R[] = new Array(items.length);
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) { const i = next++; out[i] = await fn(items[i]); }
+  }));
+  return out;
+}
 
 export interface RunEpisodeInput {
   encounterId: string;
@@ -219,7 +237,16 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
 
     traceId = await startTrace('ipd_episode_audit', { encounter_id: encounterId, engine_version: engineVersion });
 
+    // ⚠️ THE IN-PROGRESS MARKER, WRITTEN BEFORE ANY MODEL WORK (item 3). IPNO-416 hit the 800 s
+    // invocation cap and left NOTHING — no audit row, no skip row — so the episode was
+    // indistinguishable from one never attempted, and the next tick would have spent another whole
+    // invocation failing the same way. This row survives the process dying. It is cleared on
+    // success and overwritten by a real skip reason on a real skip; an `in_progress` row older
+    // than IN_PROGRESS_STALE_MS is a dead invocation and becomes retryable again.
+    await recordSkip({ encounterId, reason: 'in_progress', dischargedAt: dischargedAtHint, engineVersion });
+
     // ── 2. assemble: ONE list, built once ──
+    const tAssemble = Date.now();
     const assembled: AssembledEpisode | null = await assembleEpisode({
       encounterId,
       extractedCase: extraction.extractedJson,
@@ -229,6 +256,7 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
       await finishTraceIfRunning(traceId, 'error', 'assembly produced no episode');
       return { encounterId, error: 'assembly produced no episode (no admission row, or no readable admission_date_time)', traceId, latencyMs: Date.now() - t0 };
     }
+    const assembleMs = Date.now() - tAssemble;
     const { envelope, events, sourcesPresent, notes: assemblyNotes } = assembled;
     const admissionContext = admissionContextLine({
       treatingDepartmentName: envelope.treatingDepartmentName,
@@ -254,8 +282,16 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
 
     const plan = checkpointPlan(envelope.losDays);
     const admittedAt = envelope.admittedAt as string;
-    const checkpoints: CheckpointResult[] = [];
-    for (const entry of plan) {
+    // ── item 1: CHECKPOINTS RUN CONCURRENTLY, 3 AT A TIME ────────────────────────────────────
+    // They are independent BY CONSTRUCTION: each is handed a list produced by filtering the single
+    // assembled course to its own cut-off, and none reads another's output. There is no ordering
+    // dependency to preserve, so the only reason they ran in series was that nobody had said
+    // otherwise — and it cost IPNO-416 the whole invocation.
+    //
+    // The JUDGE PASSES STAY STRICTLY SEQUENTIAL after every checkpoint completes: A1 reads all the
+    // expected courses, A2 reads the summary, B reads A1 and A2's findings. Those genuinely depend
+    // on each other and are left alone.
+    const buildCheckpoint = (entry: (typeof plan)[number]) => {
       // THE FILTER IS THE BLINDING. Both branches return a subset of `events`; neither can
       // produce an event the other pass would not have had.
       const input_events = entry.checkpoint_type === 'episode'
@@ -265,7 +301,7 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
         ? (input_events.filter((e) => e.occurred_at).slice(-1)[0]?.occurred_at ?? admittedAt)
         : dayStartIso(admittedAt, entry.day_index);
 
-      checkpoints.push(await runCheckpoint({
+      return runCheckpoint({
         traceId,
         checkpointId: entry.checkpoint_id,
         checkpointType: entry.checkpoint_type,
@@ -293,8 +329,15 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
             .filter(Boolean),
         },
         model: modelCheckpoint,
-      }));
-    }
+      });
+    };
+
+    const tCheckpoints = Date.now();
+    const checkpoints: CheckpointResult[] = await mapWithLimit(plan, CHECKPOINT_CONCURRENCY, buildCheckpoint);
+    const checkpointWallMs = Date.now() - tCheckpoints;
+    const checkpointMsTotal = checkpoints.reduce((n, c) => n + c.wallMs, 0);
+    const checkpointMsMax = checkpoints.reduce((n, c) => Math.max(n, c.wallMs), 0);
+    const retrievalMsTotal = checkpoints.reduce((n, c) => n + c.retrievalMs, 0);
 
     // Every checkpoint errored ⇒ there is no expected course to diff against (§8).
     if (checkpoints.length && checkpoints.every((c) => c.status === 'error')) {
@@ -352,9 +395,14 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
     const resolution_counts = resolutionCounts(resolved);
 
     // ── 4. diff (A1) — blind: the discharge event is filtered out ──
+    const tDiff = Date.now();
     const a1 = await runDiffPass({
-      traceId, admissionContext, events: diffPassEvents(events), checkpointBlocks, model: modelJudge,
+      traceId, admissionContext,
+      // PROMPT SHAPING: the judge reads the rolled-up order stream too (item 2)
+      events: summariseEventsForPrompt(diffPassEvents(events)),
+      checkpointBlocks, model: modelJudge,
     });
+    const diffMs = Date.now() - tDiff;
     if (!a1.ok) {
       await recordSkip({ encounterId, reason: 'diff_failed', dischargedAt: envelope.dischargedAt, engineVersion });
       await finishTraceIfRunning(traceId, 'error', a1.error ?? 'diff pass failed');
@@ -362,10 +410,12 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
     }
 
     // ── 5. fidelity (A2) — the only pass that reads the summary ──
+    const tFid = Date.now();
     const a2 = await runFidelityPass({
-      traceId, admissionContext, events: fidelityPassEvents(events),
+      traceId, admissionContext, events: summariseEventsForPrompt(fidelityPassEvents(events)),
       extractedCase: extraction.extractedJson, extractionVersion: extraction.extractionVersion, model: modelJudge,
     });
+    const fidelityMs = Date.now() - tFid;
     if (!a2.ok) {
       await recordSkip({ encounterId, reason: 'fidelity_failed', dischargedAt: envelope.dischargedAt, engineVersion });
       await finishTraceIfRunning(traceId, 'error', a2.error ?? 'fidelity pass failed');
@@ -470,11 +520,13 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
     }
 
     // ── 6. comment (B) — outcome-aware, prose only, never fatal ──
+    const tComm = Date.now();
     const b = await runCommentaryPass({
-      traceId, admissionContext, events, findings: final.findings,
+      traceId, admissionContext, events: summariseEventsForPrompt(events), findings: final.findings,
       outcomeLine: outcomeLineFrom(events, envelope.losDays),
       expectedCourses: checkpointBlocks, model: modelJudge,
     });
+    const commentaryMs = Date.now() - tComm;
 
     if (!b.commentary && b.error) errorDetail.push(`commentary not stored: ${b.error}`);
 
@@ -508,6 +560,7 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
       entriesTruncated: c.entriesTruncated,
     }));
 
+    const tPersist = Date.now();
     const saved = await saveEpisodeAudit({
       engineVersion,
       encounterId,
@@ -532,6 +585,17 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
       cappedCount: final.capped_finding_ids.size,
       judgeTemperature: JUDGE_TEMPERATURE,
       resolutionCounts: resolution_counts,
+      checkpointPolicy: 'standard',
+      checkpointConcurrency: CHECKPOINT_CONCURRENCY,
+      checkpointWallMs,
+      promptEvents: summariseEventsForPrompt(diffPassEvents(events)).length,
+      assembledEvents: events.length,
+      timings: {
+        assemble_ms: assembleMs, retrieval_ms: retrievalMsTotal,
+        checkpoint_ms: checkpointMsTotal, checkpoint_max_ms: checkpointMsMax,
+        checkpoint_wall_ms: checkpointWallMs,
+        diff_ms: diffMs, fidelity_ms: fidelityMs, commentary_ms: commentaryMs,
+      },
       checkpointCount: checkpoints.length,
       evidenceTiers: evidenceTiersOf(sourcesPresent),
       realCourse: events,
@@ -543,6 +607,7 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
       errorDetail: errorDetail.length ? errorDetail.join(' · ') : null,
       rawJudgeError: failures.length ? failures : null,
     }, checkpointRows);
+    const persistMs = Date.now() - tPersist;
     if (saved.failedCheckpoints > 0) {
       // The checkpoint rows carry the blinding proof, so a write that failed is worth a trace
       // event even though the audit row itself landed.

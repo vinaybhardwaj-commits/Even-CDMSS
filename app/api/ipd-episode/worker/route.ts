@@ -1,30 +1,47 @@
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 /**
- * 800 s, matching app/api/ipd-audit/worker/route.ts (PRD §11). THE BATCH MUST FIT THE BOX, and
- * this engine's arithmetic is different from the discharge worker's because its unit of work is
- * an ADMISSION, not a document:
+ * 800 s, matching app/api/ipd-audit/worker/route.ts. THE ARITHMETIC BELOW IS MEASURED, NOT
+ * ESTIMATED, and it replaces a set of guesses that were wrong in the dangerous direction.
  *
- *   per episode, worst case:
- *     up to 8 checkpoints (7 daily + 1 episode-level) × Haiku ≈ 8 × ~25 s   =  200 s
- *     A1 diff        × Opus                                                 ≈  100 s
- *     A2 fidelity    × Opus                                                 ≈  100 s
- *     B commentary   × Opus (up to 2 validation attempts)                   ≈   80 s
- *     db13 assembly (9 reads) + retrieval (8 calls) + persist               ≈   40 s
- *                                                                             ------
- *     one episode                                                            ~520 s
- *     box                                                                      800 s
+ * ⚠️ WHAT THE OLD COMMENT SAID, AND WHAT IT COST. It claimed "~520 s worst case per episode" from
+ * an invented ~25 s per checkpoint. On 2026-09-03 IPNO-416 (LOS 3, 5 checkpoints, 269 billing
+ * rows, 17 labs) hit FUNCTION_INVOCATION_TIMEOUT at the 800 s cap and left NO audit row and NO
+ * skip row — the episode vanished. The stale number had silently capped which episodes this engine
+ * could audit, and nothing re-derived it when round 8 raised max_tokens from 3000 to 8000, which
+ * made every checkpoint response longer and therefore slower to generate.
  *
- * ⚠️ SO max DEFAULTS TO 2 AND CAPS AT 5, AND PROCESSING IS SEQUENTIAL. Two episodes at ~520 s
- * worst case do not both fit, which is deliberate and safe: an episode that does not finish
- * writes no row, and the NEXT TICK SWEEPS IT AGAIN because un-audited episodes are selected by
- * their absence from ipd_episode_audits. The sweep is the retry. What must never happen is
- * CONCURRENT episodes — three Opus calls each — which is why there is no ?conc= here at all and
- * why the lock below exists.
+ * MEASURED, same deployment, same day:
  *
- * ⚠️ maxDuration, max, and the leg count are coupled. Changing one without redoing this
- * arithmetic is how a route ends up in a box it cannot fit. There is NO CRON ENTRY (decision 19):
- * vercel.json is untouched and the orchestrator triggers this by hand for the validation run.
+ *   IP-1313   LOS 0   2 checkpoints    ~60 billing rows    156 s   completed
+ *   IP-1286   LOS 2   4 checkpoints   ~204 billing rows    227 s   completed
+ *   IPNO-416  LOS 3   5 checkpoints   ~269 billing rows   >800 s   TIMED OUT
+ *
+ * One extra checkpoint cannot cost 3.5×, so the driver is EVENT VOLUME, not checkpoint count:
+ * every checkpoint re-rendered the entire order stream, making the prompt cost O(checkpoints ×
+ * events) — quadratic in an episode's size.
+ *
+ * TWO CHANGES ADDRESS IT, and the ceiling must be re-derived after either one moves:
+ *   · checkpoints now run 3 AT A TIME (they are independent by construction), so checkpoint wall
+ *     time is roughly ceil(n/3) × the slowest one rather than the sum;
+ *   · the PROMPTS read a rolled-up order stream — pharmacy and consumable lines collapse to one
+ *     line per day — so per-checkpoint prompt size stops scaling with billing volume. real_course
+ *     and the resolver still see every event.
+ *
+ * THE CEILING, STATED IN THE UNITS THAT ACTUALLY BIND:
+ *   · checkpoints: 8 is the maximum the plan can produce (7 daily + 1 episode, decision 24).
+ *     At 3-way concurrency that is 3 waves.
+ *   · events: the prompt-side count, not the assembled count. `prompt_events` and
+ *     `assembled_events` are both recorded on every audit row; if prompt_events climbs back above
+ *     ~150 for a large episode, this arithmetic needs redoing before the next cohort run.
+ *   · the three judge passes remain STRICTLY SEQUENTIAL and are not bounded by any of this.
+ *
+ * ⚠️ AND A TIMEOUT IS NO LONGER SILENT. An `in_progress` skip row is written before the model work
+ * starts and survives the invocation dying, so an episode that vanished mid-flight is visible in
+ * the data and retryable once the marker goes stale.
+ *
+ * ⚠️ maxDuration, max, the concurrency and the leg count are coupled. Changing any one without
+ * redoing the measurements above is how this route ended up in a box it could not fit.
  */
 export const maxDuration = 800;
 
@@ -33,7 +50,7 @@ import { isAdminUnlocked } from '@/lib/admin-cookie';
 import { getSettings, setSetting } from '@/lib/mini-backfill';
 import { fetchClosedEpisodes, isEncounterId } from '@/lib/ipd-episode/db13';
 import {
-  IPD_EPISODE_ENGINE_VERSION, auditedEncounterIds, skipIsRetryable, skipRows,
+  IPD_EPISODE_ENGINE_VERSION, auditedEncounterIds, skipIsRetryable, skipRows, inProgressIsStale,
 } from '@/lib/ipd-episode/store';
 import { runEpisodeAudit, runEpisodeBatch, MAX_CANDIDATES_EXAMINED } from '@/lib/ipd-episode/run';
 
@@ -44,7 +61,8 @@ import { runEpisodeAudit, runEpisodeBatch, MAX_CANDIDATES_EXAMINED } from '@/lib
  * ⚠️ ITS OWN TTL, AND THE ARITHMETIC IS THE WHOLE REASON. The IPD module's shared helper
  * (lib/mini-backfill's `lockHeld` / MB_LOCK_TTL_MS) uses 210 s, sized for a tick that audits two
  * OPD notes inside a 300 s function cap. THIS route's box is 800 s and one episode can legitimately
- * run ~520 s — so a shared 210 s TTL declared a perfectly healthy tick dead at the four-minute mark
+ * run past 400 s (and IPNO-416 ran past 800) — so a shared 210 s TTL declared a perfectly healthy
+ * tick dead at the four-minute mark
  * and let a second tick start beside it. Two ticks each holding three Opus calls is exactly the
  * request storm the IPD discharge worker's header documents at length.
  *
@@ -107,9 +125,14 @@ async function candidateQueue(): Promise<{ encounterId: string; dischargedAt: st
   ]);
   const done = new Set(audited);
   const stale = new Set(skips.filter((s) => !skipIsRetryable(s.discharged_at)).map((s) => s.encounter_id));
+  // An episode marked in_progress is either RUNNING RIGHT NOW in another invocation or was killed
+  // by one. Skip it until the marker is stale; then it is a dead invocation and worth retrying.
+  const running = new Set(
+    skips.filter((s) => s.reason === 'in_progress' && !inProgressIsStale(s.last_seen)).map((s) => s.encounter_id),
+  );
   const out: { encounterId: string; dischargedAt: string | null }[] = [];
   for (const c of closed) {
-    if (done.has(c.encounterId) || stale.has(c.encounterId)) continue;
+    if (done.has(c.encounterId) || stale.has(c.encounterId) || running.has(c.encounterId)) continue;
     out.push({ encounterId: c.encounterId, dischargedAt: c.dischargeDateTime });
   }
   return out;

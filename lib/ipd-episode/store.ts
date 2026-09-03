@@ -53,7 +53,29 @@ export const IPD_EPISODE_ENGINE_VERSION = 'ipd-episode-audit/0.1';
 export const IPD_DISCHARGE_ENGINE_VERSION_FOR_JOIN = 'ipd-discharge-audit/0.2';
 
 /** Skip reasons (§3.1). A closed set — a reason outside it is a bug, not a new category. */
-export const SKIP_REASONS = ['no_discharge_summary', 'no_notes', 'no_extraction', 'diff_failed', 'fidelity_failed'] as const;
+/**
+ * ⚠️ `in_progress` AND `timed_out` EXIST BECAUSE A TIMEOUT LEFT NOTHING BEHIND. IPNO-416 hit the
+ * 800 s invocation cap and wrote NO audit row and NO skip row — the episode simply vanished, and
+ * the next tick would have picked it up as never-attempted and burned another invocation the same
+ * way. An `in_progress` row is written BEFORE the model work starts, so if the invocation dies the
+ * row survives and says so.
+ */
+export const SKIP_REASONS = [
+  'no_discharge_summary', 'no_notes', 'no_extraction', 'diff_failed', 'fidelity_failed',
+  'in_progress', 'timed_out',
+] as const;
+
+/** An `in_progress` row older than this is a dead invocation, not a running one, and is retryable.
+ *  Comfortably above the 800 s function cap so a LIVE episode is never treated as abandoned. */
+export const IN_PROGRESS_STALE_MS = 30 * 60 * 1000;
+
+/** True when an in_progress marker is stale enough to retry. */
+export function inProgressIsStale(lastSeen: string | null, now: Date = new Date()): boolean {
+  if (!lastSeen) return true;
+  const t = Date.parse(lastSeen);
+  if (!Number.isFinite(t)) return true;
+  return now.getTime() - t > IN_PROGRESS_STALE_MS;
+}
 export type SkipReason = (typeof SKIP_REASONS)[number];
 
 /** A skipped episode is retried each tick until this many days after discharge, then left alone. */
@@ -69,17 +91,18 @@ export async function auditedEncounterIds(engineVersion = IPD_EPISODE_ENGINE_VER
   return rows.map((r) => String(r.encounter_id));
 }
 
-export interface SkipRow { encounter_id: string; reason: string; attempts: number; discharged_at: string | null }
+export interface SkipRow { encounter_id: string; reason: string; attempts: number; discharged_at: string | null; last_seen: string | null }
 
 export async function skipRows(engineVersion = IPD_EPISODE_ENGINE_VERSION): Promise<SkipRow[]> {
   const rows = await run(
-    `SELECT encounter_id, reason, attempts, discharged_at FROM ipd_episode_skips WHERE engine_version = $1`, [engineVersion],
+    `SELECT encounter_id, reason, attempts, discharged_at, last_seen FROM ipd_episode_skips WHERE engine_version = $1`, [engineVersion],
   ).catch((e: unknown) => { warn('skipRows', e); return [] as Record<string, unknown>[]; });
   return rows.map((r) => ({
     encounter_id: String(r.encounter_id),
     reason: String(r.reason),
     attempts: Number(r.attempts ?? 0),
     discharged_at: r.discharged_at == null ? null : String(r.discharged_at),
+    last_seen: r.last_seen == null ? null : String(r.last_seen),
   }));
 }
 
@@ -214,8 +237,16 @@ export interface EpisodeAuditRow {
   counters: FindingCounters;
   /** How many findings any cap touched — recountable from `findings[].capped`. */
   cappedCount: number;
-  /** The diff pass's temperature, recorded so the claim is checkable from the row (item 9). */
+  /** The diff pass's temperature, recorded so the claim is checkable from the row. */
   judgeTemperature?: number | null;
+  checkpointPolicy?: string | null;
+  checkpointConcurrency?: number | null;
+  checkpointWallMs?: number | null;
+  /** Events the PROMPTS carried, against what assembly produced — the roll-up ratio. */
+  promptEvents?: number | null;
+  assembledEvents?: number | null;
+  /** Per-stage wall times, so the next investigation does not have to guess which stage is slow. */
+  timings?: unknown;
   /** present / absent_class_present / absent_class_missing / ambiguous_confounded counts. */
   resolutionCounts?: unknown;
   checkpointCount: number;
@@ -325,13 +356,16 @@ export async function saveEpisodeAudit(row: EpisodeAuditRow, checkpoints: Checkp
          n_low_value, n_dropped_invalid, n_parse_failed,
          n_unassessable_rejected, n_judged_omissions_dropped,
          judge_temperature, resolution_counts,
+         checkpoint_policy, checkpoint_concurrency, checkpoint_wall_ms,
+         prompt_events, assembled_events, stage_timings,
          capped_count, checkpoint_count, evidence_tiers, real_course, findings, commentary,
          model_checkpoint, model_judge, trace_id, error_detail, raw_judge_error)
        VALUES ($1,TRUE,
                $2,$3,$4,$5,$6,$7, $8,$9,$10,$11,$12, $13,$14,$15,$16,$17,
                $18,$19,$20,$21,$22,$23, $24,$25,$26,$27,$28, $29,$30,$31,
                $32,$33, $34,$35::jsonb,
-               $36,$37,$38::jsonb,$39::jsonb,$40::jsonb,$41::jsonb, $42,$43,$44,$45,$46::jsonb)
+               $36,$37,$38, $39,$40,$41::jsonb,
+               $42,$43,$44::jsonb,$45::jsonb,$46::jsonb,$47::jsonb, $48,$49,$50,$51,$52::jsonb)
        RETURNING id`,
       [
         runSeq,
@@ -351,6 +385,8 @@ export async function saveEpisodeAudit(row: EpisodeAuditRow, checkpoints: Checkp
         num(c.n_low_value), num(c.n_dropped_invalid), num(c.n_parse_failed),
         num(c.n_unassessable_rejected), num(c.n_judged_omissions_dropped),
         row.judgeTemperature ?? null, JSON.stringify(row.resolutionCounts ?? null),
+        row.checkpointPolicy ?? 'standard', row.checkpointConcurrency ?? null, row.checkpointWallMs ?? null,
+        row.promptEvents ?? null, row.assembledEvents ?? null, JSON.stringify(row.timings ?? null),
         num(row.cappedCount), num(row.checkpointCount), JSON.stringify(row.evidenceTiers ?? null), JSON.stringify(row.realCourse ?? null),
         JSON.stringify(row.findings ?? []), row.commentary == null ? null : JSON.stringify(row.commentary),
         row.modelCheckpoint, row.modelJudge, row.traceId, row.errorDetail ?? null,

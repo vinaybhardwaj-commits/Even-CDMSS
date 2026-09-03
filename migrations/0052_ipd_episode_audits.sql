@@ -97,6 +97,16 @@ CREATE TABLE IF NOT EXISTS ipd_episode_audits (
   -- the point being that "5 capped" is now a number in the row rather than a sentence in a
   -- response body that nobody can check.
   capped_count          INTEGER DEFAULT 0,
+  -- Which checkpoints were run, and how. 'standard' is every day boundary plus the episode.
+  checkpoint_policy     TEXT DEFAULT 'standard',
+  checkpoint_concurrency INTEGER,
+  checkpoint_wall_ms    INTEGER,
+  -- Events the PROMPTS carried vs what assembly produced. IPNO-416 timed out because every
+  -- checkpoint re-rendered 269 billing lines; the ratio makes that visible before it is a failure.
+  prompt_events         INTEGER,
+  assembled_events      INTEGER,
+  -- Per-stage wall times. Without these, "which stage is superlinear" is a guess.
+  stage_timings         JSONB,
   checkpoint_count      INTEGER DEFAULT 0,
   evidence_tiers        JSONB,
   real_course           JSONB,

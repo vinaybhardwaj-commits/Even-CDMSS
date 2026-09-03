@@ -463,6 +463,87 @@ test('the extracted case is UNREACHABLE from the checkpoint retrieval path (§3.
   }
 });
 
+// ── round 10: the timeout ───────────────────────────────────────────────────────────────────
+
+test('checkpoints run concurrently and the judge passes stay sequential', () => {
+  const run = code('lib/ipd-episode/run.ts');
+  assert.ok(run.includes('export const CHECKPOINT_CONCURRENCY = 3'));
+  assert.ok(run.includes('await mapWithLimit(plan, CHECKPOINT_CONCURRENCY, buildCheckpoint)'));
+  // order preserved: a reordered list would scramble day indices against expected courses
+  assert.ok(run.includes('out[i] = await fn(items[i])'), 'the helper writes by index');
+  // the three judge passes must NOT be parallelised — they depend on each other
+  assert.ok(!/Promise\.all\([^)]*runDiffPass|Promise\.all\([^)]*runFidelityPass/.test(run));
+  const diffAt = run.indexOf('runDiffPass(');
+  const fidAt = run.indexOf('runFidelityPass(');
+  const commAt = run.indexOf('runCommentaryPass(');
+  assert.ok(diffAt < fidAt && fidAt < commAt, 'A1 then A2 then B, in order');
+});
+
+test('PROMPT shaping never touches real_course or the resolver', () => {
+  const core = code('lib/ipd-episode/assemble-core.ts');
+  assert.ok(core.includes('export function summariseEventsForPrompt('));
+  const run = code('lib/ipd-episode/run.ts');
+  // the stored course and the resolver both get the FULL list
+  assert.ok(run.includes('realCourse: events'), 'real_course is stored as assembled');
+  assert.ok(run.includes('const resolverEvents = diffPassEvents(events);'),
+    'the resolver matches the full filtered list, not the summary');
+  assert.ok(!run.includes('resolveAll(resolvableEntries, summariseEventsForPrompt'),
+    'a drug ordered once must still be findable by the resolver');
+  // and the prompts get the summary
+  for (const pass of ['runDiffPass', 'runFidelityPass', 'runCommentaryPass']) {
+    const at = run.indexOf(pass + '(');
+    assert.ok(run.slice(at, at + 320).includes('summariseEventsForPrompt'), `${pass} reads the summary`);
+  }
+  assert.ok(run.includes('promptEvents:') && run.includes('assembledEvents:'), 'both counts recorded');
+});
+
+test('a timeout is not silent: an in_progress marker is written before any model work', () => {
+  const run = code('lib/ipd-episode/run.ts');
+  const markerAt = run.indexOf("reason: 'in_progress'");
+  assert.ok(markerAt > 0, 'the marker exists');
+  // NB: search CALL SITES, not bare names — the import line at the top of the file would match
+  for (const later of ['assembleEpisode({', 'return runCheckpoint({', 'runDiffPass({']) {
+    const at = run.indexOf(later);
+    assert.ok(at > 0, `${later} exists`);
+    assert.ok(markerAt < at, `the marker must precede ${later}`);
+  }
+  const store = code('lib/ipd-episode/store.ts');
+  assert.ok(store.includes("'in_progress'") && store.includes("'timed_out'"), 'both reasons declared');
+  assert.ok(store.includes('export function inProgressIsStale('));
+  assert.ok(store.includes('IN_PROGRESS_STALE_MS = 30 * 60 * 1000'), '30 minutes, above the 800 s cap');
+  const worker = code('app/api/ipd-episode/worker/route.ts');
+  assert.ok(worker.includes('running.has(c.encounterId)'), 'a live in_progress episode is not re-picked');
+  assert.ok(worker.includes('inProgressIsStale(s.last_seen)'), 'but a dead one is');
+});
+
+test('stage timings are recorded so the slow stage is a fact, not a guess', () => {
+  const run = code('lib/ipd-episode/run.ts');
+  for (const t of ['assemble_ms', 'retrieval_ms', 'checkpoint_ms', 'checkpoint_max_ms',
+                   'checkpoint_wall_ms', 'diff_ms', 'fidelity_ms', 'commentary_ms']) {
+    assert.ok(run.includes(t), `${t} is measured`);
+  }
+  const sqlText = read(join('migrations', '0052_ipd_episode_audits.sql'));
+  const route = read('app/api/admin/migrate-ipd-episode-audits/route.ts');
+  for (const col of ['stage_timings', 'checkpoint_wall_ms', 'checkpoint_concurrency',
+                     'prompt_events', 'assembled_events', 'checkpoint_policy']) {
+    assert.ok(sqlText.includes(col), `.sql declares ${col}`);
+    assert.ok(route.includes(`ADD COLUMN IF NOT EXISTS ${col}`), `the route back-fills ${col}`);
+  }
+});
+
+test('the worker header carries MEASURED figures, not the stale estimate', () => {
+  const raw = read('app/api/ipd-episode/worker/route.ts');
+  assert.ok(raw.includes('IPNO-416') && raw.includes('FUNCTION_INVOCATION_TIMEOUT'),
+    'the failure that disproved the old number is named');
+  assert.ok(raw.includes('227 s') && raw.includes('156 s'), 'the two completions are cited');
+  assert.ok(raw.includes('O(checkpoints ×'), 'and the shape of the cost is stated');
+  // the ceiling is stated in checkpoints and events, not only seconds
+  assert.ok(raw.includes('checkpoints: 8 is the maximum') && raw.includes('prompt_events'));
+  // the old estimate survives only as the thing being corrected
+  const claims = raw.split('~520 s worst case').length - 1;
+  assert.equal(claims, 1, 'mentioned once, as the error');
+});
+
 // ── round 9: the point score is not shown ───────────────────────────────────────────────────
 
 test('the band is stored, and the reason is recorded in the code where the next reader will find it', () => {
@@ -1075,16 +1156,25 @@ test('the lock TTL is 780 s — its own, not the 210 s helper sized for a 300 s 
 
 // ── engine identity ──────────────────────────────────────────────────────────────────────────
 
-test('the engine version and the closed set of skip reasons are exactly what the PRD ratified', () => {
+test('the engine version and the closed set of skip reasons', () => {
   assert.equal(IPD_EPISODE_ENGINE_VERSION, 'ipd-episode-audit/0.1');
-  assert.deepEqual([...SKIP_REASONS], ['no_discharge_summary', 'no_notes', 'no_extraction', 'diff_failed', 'fidelity_failed']);
+  // the PRD's five, plus the two lifecycle markers round 10 added so a dead invocation is visible
+  assert.deepEqual([...SKIP_REASONS], [
+    'no_discharge_summary', 'no_notes', 'no_extraction', 'diff_failed', 'fidelity_failed',
+    'in_progress', 'timed_out',
+  ]);
 });
 
-test('every skip reason the pipeline can write is one of the five, and each of the five is reachable', () => {
+test('every skip reason the pipeline writes is declared, and the PRD five are all reachable', () => {
   const run = code('lib/ipd-episode/run.ts');
   const written = new Set([...run.matchAll(/reason: '([a-z_]+)'/g)].map((m) => m[1]));
   for (const r of written) assert.ok((SKIP_REASONS as readonly string[]).includes(r), `'${r}' is not a declared skip reason`);
-  for (const r of SKIP_REASONS) assert.ok(written.has(r), `'${r}' is declared but never written`);
+  for (const r of ['no_discharge_summary', 'no_notes', 'no_extraction', 'diff_failed', 'fidelity_failed', 'in_progress']) {
+    assert.ok(written.has(r), `'${r}' is declared but never written`);
+  }
+  // 'timed_out' is deliberately NOT written by the pipeline: the process is dead by then. It is
+  // the reason a SWEEP would stamp on a stale in_progress marker it reclaims.
+  assert.ok(!written.has('timed_out'), 'a dying invocation cannot write its own epitaph');
 });
 
 test('a db13 fault writes NO audit row and NO skip row — a transport failure is not a fact about an episode', () => {

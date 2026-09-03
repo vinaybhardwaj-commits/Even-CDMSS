@@ -489,6 +489,68 @@ export function buildOrderEvents(rows: BillingOrderRow[], admissionIso: string):
 }
 
 /**
+ * ⚠️ PROMPT SHAPING ONLY. THIS NEVER TOUCHES `real_course` OR THE RESOLVER.
+ *
+ * IPNO-416 (LOS 3, 5 checkpoints, 269 billing rows, 17 labs) hit the 800 s invocation cap and left
+ * nothing behind; IP-1286 (LOS 2, 4 checkpoints, 204 billing rows) ran in 227 s. One extra
+ * checkpoint cannot cost 3.5×, so the driver is EVENT VOLUME — every checkpoint re-renders the
+ * whole order stream, and the cost is quadratic in an episode's billing lines because each of N
+ * checkpoints reads O(N) of them.
+ *
+ * So the PROMPTS get a rolled-up view: pharmacy and consumable billing lines collapse to one line
+ * per day carrying the count and the distinct item names. Everything a clinician would reason about
+ * individually — notes, labs, procedures, transfers, OT notes, the admission and the discharge —
+ * stays one event per record.
+ *
+ * WHAT IS NOT AFFECTED, and this is the whole safety of it: `real_course` is stored as assembled,
+ * every event intact; the deterministic resolver matches against that full list, so a drug matcher
+ * still finds a drug ordered once on day 2. Only what the MODEL READS is condensed. `prompt_events`
+ * and `assembled_events` are both recorded so the ratio is visible rather than assumed.
+ */
+const PROMPT_ROLLUP_SERVICE = /pharmacy|consumable|surgical|implant|consignment|fmcg|general|room|bed|nursing|laundry|kit|linen|attendant/i;
+
+function rollupServiceType(e: EpisodeEvent): boolean {
+  if (e.event_type !== 'order') return false;
+  const st = String((e.detail as Record<string, unknown>)?.service_type ?? '');
+  // an unnamed service_type rolls up too: an order this engine cannot classify is not one a
+  // clinician can reason about from its name either
+  return !st.trim() || PROMPT_ROLLUP_SERVICE.test(st);
+}
+
+/**
+ * The event list as the PROMPTS see it. Order events of the rolled-up classes collapse to one
+ * synthetic event per day; everything else passes through untouched and in order.
+ */
+export function summariseEventsForPrompt(events: EpisodeEvent[]): EpisodeEvent[] {
+  const kept: EpisodeEvent[] = [];
+  const byDay = new Map<number, EpisodeEvent[]>();
+  for (const e of events) {
+    if (rollupServiceType(e)) byDay.set(e.day_index, [...(byDay.get(e.day_index) ?? []), e]);
+    else kept.push(e);
+  }
+  for (const [day, group] of byDay) {
+    const names = Array.from(new Set(group
+      .map((e) => String((e.detail as Record<string, unknown>)?.ordered_item_name
+        ?? (e.detail as Record<string, unknown>)?.service_item_name ?? '').trim())
+      .filter(Boolean)));
+    const first = group.map((e) => e.occurred_at).filter(Boolean).sort()[0] ?? null;
+    kept.push({
+      event_id: `orders-day-${day}`,
+      occurred_at: first,
+      day_index: day,
+      event_type: 'order',
+      summary: `${group.length} pharmacy/consumable billing line${group.length === 1 ? '' : 's'} on day ${day}`
+        + (names.length ? `: ${names.slice(0, 60).join(', ')}` : ''),
+      detail: { rolled_up_for_prompt: true, line_count: group.length, distinct_items: names.length },
+      author_name: null, author_role: null, responsible_clinician_id: null,
+      provenance: { source_table: 'kx_billing_records', source_record_id: `day-${day}-rollup`, source_timestamp: first },
+      evidence_tier: 'A',
+    });
+  }
+  return sortEvents(kept);
+}
+
+/**
  * A filename-safe slug for an EVENT ID SEGMENT built from an item NAME — never from an id.
  * Ids are copied verbatim everywhere in this engine; this touches drug names only.
  */
