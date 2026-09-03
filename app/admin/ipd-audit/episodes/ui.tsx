@@ -23,26 +23,61 @@ export const NO_DIVERGENCE_COPY = 'No divergence found against the expected cour
  * `scoring_status` is anything but 'ok', this renders "not scorable" and says why, instead of a
  * figure someone might act on.
  */
-export function DivergenceChip({ index, status }: { index: number | null; status?: string | null }) {
+/**
+ * ⚠️ THE BAND IS WHAT IS REPORTED. THE NUMBER IS NOT SHOWN HERE, AND THAT IS A MEASUREMENT
+ * DECISION, NOT A PRESENTATION ONE. `divergence_index` has a measured ±5 repeat-run spread on
+ * identical input — five consecutive runs of one admission scored 40, 37, 36, 41, 36 — so a figure
+ * on this row would claim a precision the engine cannot support, and two episodes five points
+ * apart would look ranked when they are not distinguishable. The index is stored, and available on
+ * drill-in labelled as internal with its spread stated.
+ *
+ * A number is also shown when there is NO number: `scoring_status` other than `ok` renders "not
+ * scorable" and the reason, so an unscorable episode can never acquire a reassuring band.
+ */
+export function DivergenceChip({ band, uncertain, status }: {
+  band: string | null; uncertain?: boolean; status?: string | null;
+}) {
   const st = status ?? 'ok';
-  if (st !== 'ok' || index == null) {
+  if (st !== 'ok' || !band) {
     const why = st === 'no_expectations' ? 'no checkpoint produced an expected course, so nothing could be measured'
       : st === 'incomplete_checkpoints' ? 'a checkpoint failed or produced no entries — part of the expected course is missing, so there is nothing to score against'
       : st === 'all_capped' ? 'every finding was capped — nothing survived at full weight'
-      : 'no score was stored for this episode';
+      : 'no band was stored for this episode';
     return (
       <span className="inline-flex items-baseline gap-1" title={why}>
         <span className="text-[13px] font-semibold text-amber-700">not scorable</span>
         <span className="text-[10px] font-medium uppercase tracking-wide text-slate-400">
-          {st === 'ok' ? 'no score' : st.replace(/_/g, ' ')}
+          {st === 'ok' ? 'no band' : st.replace(/_/g, ' ')}
         </span>
       </span>
     );
   }
+  const tone = band === 'substantial divergence' ? 'text-red-800'
+    : band === 'moderate divergence' ? 'text-amber-800'
+    : band === 'minor divergence' ? 'text-slate-700' : 'text-emerald-800';
   return (
-    <span className="inline-flex items-baseline gap-1" title="100 minus 8·major + 4·moderate + 1·minor over divergent findings from both passes">
-      <span className="text-[15px] font-semibold tabular-nums text-slate-900">{index}</span>
-      <span className="text-[10px] font-medium uppercase tracking-wide text-slate-400">divergence</span>
+    <span className="inline-flex flex-wrap items-baseline gap-x-1.5"
+      title="Reported as a band because the underlying index has a measured ±5 repeat-run spread on identical input">
+      <span className={`text-[13.5px] font-semibold ${tone}`}>{band}</span>
+      {uncertain ? (
+        <span className="text-[10.5px] font-medium text-amber-700" title="within 5 points of a band threshold — a re-run could land this either side">
+          (near boundary)
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
+/**
+ * The raw index, on drill-in only, labelled for what it is. Never on the list.
+ */
+export function InternalIndex({ index, uncertain }: { index: number | null; uncertain?: boolean }) {
+  if (index == null) return null;
+  return (
+    <span className="inline-flex items-baseline gap-1.5 text-[11px] text-slate-400">
+      <span className="font-medium uppercase tracking-wide">Internal index</span>
+      <span className="font-semibold tabular-nums text-slate-500">{index}</span>
+      <span>± 5 repeat-run spread on identical input — not a per-case ranking{uncertain ? ', and within 5 of a band threshold' : ''}</span>
     </span>
   );
 }

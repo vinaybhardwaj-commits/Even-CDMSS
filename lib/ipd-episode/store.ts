@@ -204,6 +204,9 @@ export interface EpisodeAuditRow {
   dischargeType: string | null;
   extractionVersion: string | null;
   divergenceIndex: number | null;
+  /** The reported figure. The index is internal — see judge-core's note on the ±5 spread. */
+  divergenceBand?: string | null;
+  bandUncertain?: boolean;
   /** 'ok' | 'no_expectations' | 'all_capped'. Anything but 'ok' means the number beside it is not
    *  a score, and the UI must not render one. */
   scoringStatus?: string | null;
@@ -316,7 +319,7 @@ export async function saveEpisodeAudit(row: EpisodeAuditRow, checkpoints: Checkp
          run_seq, is_current,
          engine_version, encounter_id, ip_uid, member_id, facility_name, speciality,
          admitted_at, discharged_at, los_days, discharge_type, extraction_version,
-         divergence_index, scoring_status, completeness_pct,
+         divergence_index, divergence_band, band_uncertain, scoring_status, completeness_pct,
          n_findings, n_divergence_pass, n_fidelity_pass, n_omission, n_commission, n_timing,
          n_sequencing, n_divergent, n_context_dependent, n_unassessable, n_concordant,
          n_low_value, n_dropped_invalid, n_parse_failed,
@@ -325,10 +328,10 @@ export async function saveEpisodeAudit(row: EpisodeAuditRow, checkpoints: Checkp
          capped_count, checkpoint_count, evidence_tiers, real_course, findings, commentary,
          model_checkpoint, model_judge, trace_id, error_detail, raw_judge_error)
        VALUES ($1,TRUE,
-               $2,$3,$4,$5,$6,$7, $8,$9,$10,$11,$12, $13,$14,$15,
-               $16,$17,$18,$19,$20,$21, $22,$23,$24,$25,$26, $27,$28,$29,
-               $30,$31, $32,$33::jsonb,
-               $34,$35,$36::jsonb,$37::jsonb,$38::jsonb,$39::jsonb, $40,$41,$42,$43,$44::jsonb)
+               $2,$3,$4,$5,$6,$7, $8,$9,$10,$11,$12, $13,$14,$15,$16,$17,
+               $18,$19,$20,$21,$22,$23, $24,$25,$26,$27,$28, $29,$30,$31,
+               $32,$33, $34,$35::jsonb,
+               $36,$37,$38::jsonb,$39::jsonb,$40::jsonb,$41::jsonb, $42,$43,$44,$45,$46::jsonb)
        RETURNING id`,
       [
         runSeq,
@@ -340,7 +343,8 @@ export async function saveEpisodeAudit(row: EpisodeAuditRow, checkpoints: Checkp
         // ⚠️ divergence_index is the ONE counted column that may legitimately be null: under
         // scoring_status 'no_expectations' there is no score, and 0 would read as a catastrophic
         // episode while null reads as "not scorable", which is what actually happened.
-        row.divergenceIndex, row.scoringStatus ?? 'ok', num(row.completenessPct),
+        row.divergenceIndex, row.divergenceBand ?? null, row.bandUncertain ?? false,
+        row.scoringStatus ?? 'ok', num(row.completenessPct),
         num(c.n_findings), num(c.n_divergence_pass), num(c.n_fidelity_pass), num(c.n_omission),
         num(c.n_commission), num(c.n_timing), num(c.n_sequencing), num(c.n_divergent),
         num(c.n_context_dependent), num(c.n_unassessable), num(c.n_concordant),

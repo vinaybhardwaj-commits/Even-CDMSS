@@ -14,6 +14,7 @@ import {
   parseFindings, resolveFindingCitations, validateCommentary, asLvcCategory, SEVERITY_PENALTY,
   PARSE_FRAGMENT_CHARS, classifyCitationProvenance, applyLiteratureCap, scoringStatusFor,
   storedDivergenceIndex, impliedFindingType, capSeverityAt, CAP_SEVERITY_CEILING,
+  divergenceBandFor, bandIsUncertain, DIVERGENCE_BANDS, BAND_THRESHOLDS, INDEX_REPEAT_SPREAD,
   dropJudgedOmissions, enforceUnassessable, findingsFromResolved, domainForSection,
   type EpisodeFinding, type Severity, type Verdict, type Domain, type AuditPass,
 } from '../ipd-episode/judge-core';
@@ -407,6 +408,68 @@ test('everyEntryUncited detects the IP-1286 shape, and only that shape', () => {
   }), CHUNKS);
   assert.equal(everyEntryUncited(some, 3), false, 'one grounded entry is not the failure');
   assert.equal(everyEntryUncited(null, 3), false);
+});
+
+// ── round 9: the band, and why the number is not shown ──────────────────────────────────────
+
+test('the four bands and their thresholds', () => {
+  assert.deepEqual([...DIVERGENCE_BANDS],
+    ['no divergence found', 'minor divergence', 'moderate divergence', 'substantial divergence']);
+  assert.deepEqual(BAND_THRESHOLDS, { minor: 90, moderate: 70, substantial: 45 });
+  assert.equal(divergenceBandFor(100), 'no divergence found');
+  assert.equal(divergenceBandFor(90), 'no divergence found', 'inclusive lower bound');
+  assert.equal(divergenceBandFor(89), 'minor divergence');
+  assert.equal(divergenceBandFor(70), 'minor divergence');
+  assert.equal(divergenceBandFor(69), 'moderate divergence');
+  assert.equal(divergenceBandFor(45), 'moderate divergence');
+  assert.equal(divergenceBandFor(44), 'substantial divergence');
+  assert.equal(divergenceBandFor(0), 'substantial divergence');
+});
+
+test('the bands are NOT the discharge engine’s A–E letters — both appear on one screen', () => {
+  for (const b of DIVERGENCE_BANDS) {
+    assert.ok(!/^[A-E]$/.test(b), `${b} must not collide with ipd_discharge_audits.band`);
+    assert.ok(b.includes(' '), 'named in words, so two bands on one row cannot be confused');
+  }
+});
+
+test('an unscorable episode has NO band — a null index must not acquire a reassuring word', () => {
+  assert.equal(divergenceBandFor(null), null);
+  assert.equal(bandIsUncertain(null), false);
+  // and the pipeline derives the band from the STORED index, which is null under these statuses
+  assert.equal(divergenceBandFor(storedDivergenceIndex(100, 'no_expectations')), null);
+  assert.equal(divergenceBandFor(storedDivergenceIndex(41, 'incomplete_checkpoints')), null);
+  assert.equal(divergenceBandFor(storedDivergenceIndex(41, 'ok')), 'substantial divergence');
+});
+
+test('band_uncertain fires within the MEASURED repeat-run spread of any threshold', () => {
+  assert.equal(INDEX_REPEAT_SPREAD, 5, 'IP-1286: 40, 37, 36, 41, 36 on identical input');
+  for (const t of [90, 70, 45]) {
+    assert.equal(bandIsUncertain(t), true, `${t} is a threshold`);
+    assert.equal(bandIsUncertain(t + 5), true, 'the far edge is still uncertain');
+    assert.equal(bandIsUncertain(t - 5), true);
+    assert.equal(bandIsUncertain(t + 6), false, 'six points clear is confident');
+    assert.equal(bandIsUncertain(t - 6), false);
+  }
+});
+
+test('the IP-1286 five-run readings all band the same way, and all read as near-boundary', () => {
+  // 36–41 sits 4–9 under the 45 threshold, which is exactly the case the flag exists for
+  const readings = [40, 37, 36, 41, 36];
+  const bands = new Set(readings.map((r) => divergenceBandFor(r)));
+  assert.equal(bands.size, 1, 'the band is stable across the spread that moves the number');
+  assert.equal([...bands][0], 'substantial divergence');
+  // 40 is 5 from the 45 threshold and 41 is 4 — both uncertain. 37 (8 clear) and 36 (9 clear)
+  // are confidently inside the band. Three of five readings of ONE admission are confident, two
+  // are not, which is the honest picture of an instrument with this spread.
+  assert.deepEqual(readings.map(bandIsUncertain), [true, false, false, true, false]);
+});
+
+test('the band survives the whole spread only because it is wider than the spread', () => {
+  // a reading at a threshold moves band on a re-run — which is what band_uncertain is for
+  assert.equal(divergenceBandFor(44), 'substantial divergence');
+  assert.equal(divergenceBandFor(46), 'moderate divergence');
+  assert.equal(bandIsUncertain(44) && bandIsUncertain(46), true);
 });
 
 // ── round 8: a missing checkpoint must not score, and the course is bounded ──────────────────

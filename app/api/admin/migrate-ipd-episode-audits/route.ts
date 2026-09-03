@@ -41,6 +41,8 @@ export async function POST(req: NextRequest) {
       discharge_type        TEXT,
       extraction_version    TEXT,
       divergence_index      INTEGER,
+      divergence_band       TEXT,
+      band_uncertain        BOOLEAN DEFAULT FALSE,
       scoring_status        TEXT NOT NULL DEFAULT 'ok',
       completeness_pct      INTEGER DEFAULT 0,
       n_findings            INTEGER DEFAULT 0,
@@ -89,6 +91,8 @@ export async function POST(req: NextRequest) {
     await sql`ALTER TABLE ipd_episode_audits ADD COLUMN IF NOT EXISTS n_judged_omissions_dropped INTEGER DEFAULT 0`;
     await sql`ALTER TABLE ipd_episode_audits ADD COLUMN IF NOT EXISTS judge_temperature DOUBLE PRECISION`;
     await sql`ALTER TABLE ipd_episode_audits ADD COLUMN IF NOT EXISTS resolution_counts JSONB`;
+    await sql`ALTER TABLE ipd_episode_audits ADD COLUMN IF NOT EXISTS divergence_band TEXT`;
+    await sql`ALTER TABLE ipd_episode_audits ADD COLUMN IF NOT EXISTS band_uncertain BOOLEAN DEFAULT FALSE`;
     await sql`ALTER TABLE ipd_episode_audits ALTER COLUMN app_source SET DEFAULT 'standalone'`;
     steps.audits_columns = 'ok';
 

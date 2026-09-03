@@ -31,6 +31,7 @@ import { judgeModel, runCommentaryPass, runDiffPass, runFidelityPass, JUDGE_TEMP
 import {
   evidenceTiersOf, finalizeFindings, completenessPct, resolveFindingCitations,
   scoringStatusFor, storedDivergenceIndex, findingsFromResolved, domainForSection,
+  divergenceBandFor, bandIsUncertain,
   type EpisodeFinding,
 } from './judge-core';
 import { resolveAll, resolutionCounts, type ResolvableEntry } from './resolve-core';
@@ -53,6 +54,8 @@ export interface RunEpisodeResult {
   skip?: string;
   error?: string;
   divergenceIndex?: number;
+  divergenceBand?: string;
+  bandUncertain?: boolean;
   scoringStatus?: string;
   completenessPct?: number;
   nFindings?: number;
@@ -519,6 +522,10 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
       dischargeType: envelope.dischargeType,
       extractionVersion: extraction.extractionVersion,
       divergenceIndex: storedDivergenceIndex(final.divergence_index, scoringStatus),
+      // The band is derived from the STORED index, so an unscorable episode has no band either —
+      // "not scorable" must not acquire a reassuring word through a null slipping into a bucket.
+      divergenceBand: divergenceBandFor(storedDivergenceIndex(final.divergence_index, scoringStatus)),
+      bandUncertain: bandIsUncertain(storedDivergenceIndex(final.divergence_index, scoringStatus)),
       scoringStatus,
       completenessPct: completenessPct(sourcesPresent),
       counters: final.counters,
@@ -553,6 +560,8 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
       encounterId,
       status: saved.status,
       divergenceIndex: storedDivergenceIndex(final.divergence_index, scoringStatus) ?? undefined,
+      divergenceBand: divergenceBandFor(storedDivergenceIndex(final.divergence_index, scoringStatus)) ?? undefined,
+      bandUncertain: bandIsUncertain(storedDivergenceIndex(final.divergence_index, scoringStatus)),
       scoringStatus,
       completenessPct: completenessPct(sourcesPresent),
       nFindings: final.counters.n_findings,

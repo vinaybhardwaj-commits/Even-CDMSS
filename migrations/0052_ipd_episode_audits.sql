@@ -57,6 +57,13 @@ CREATE TABLE IF NOT EXISTS ipd_episode_audits (
   divergence_index      INTEGER,
   -- 'ok' | 'no_expectations' | 'all_capped'. Anything but 'ok' means the number beside it is not a
   -- score and no surface may render it as one.
+  -- THE REPORTED FIGURE. The index above is internal: it has a MEASURED ±5 repeat-run spread on
+  -- identical input (IP-1286, five runs at 40/37/36/41/36 on sha 334ed090), so showing a number
+  -- implies a precision this engine does not have. Deliberately NOT the discharge engine's A–E
+  -- letters, which appear on the same screen meaning something else.
+  divergence_band       TEXT,
+  -- The index is within 5 points of a band threshold, so a re-run could land it either side.
+  band_uncertain        BOOLEAN DEFAULT FALSE,
   scoring_status        TEXT NOT NULL DEFAULT 'ok',
   completeness_pct      INTEGER DEFAULT 0,
 

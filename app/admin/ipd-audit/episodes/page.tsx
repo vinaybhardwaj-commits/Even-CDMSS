@@ -12,6 +12,7 @@ import { notFound } from 'next/navigation';
 import { isAdminUnlocked, adminTokenConfigured } from '@/lib/admin-cookie';
 import { episodeWorklist, dischargeEngineScores, IPD_EPISODE_ENGINE_VERSION } from '@/lib/ipd-episode/store';
 import { DischargeEngineScore, DivergenceChip, EpisodeTabs, Locked, fmtDay } from './ui';
+import { DIVERGENCE_BANDS } from '@/lib/ipd-episode/judge-core';
 
 export const dynamic = 'force-dynamic';
 
@@ -29,10 +30,21 @@ export default async function EpisodeAuditList({ searchParams }: {
   const encounterIds = rows.map((r) => String(r.encounter_id));
   const sibling = await dischargeEngineScores(encounterIds);
 
-  const sort = sp.sort === 'discharge' ? 'discharge' : sp.sort === 'divergence' ? 'divergence' : 'recent';
+  // ⚠️ THE INDEX IS NOT SORTABLE. Ordering rows by a figure with a ±5 repeat-run spread would
+  // present a ranking the measurement cannot support — the list would reorder itself on a re-run of
+  // the same episodes. Sorting is by BAND (worst first), then by divergent-finding COUNT within
+  // the band, which is a count and does not move the way the index does.
+  const bandRank = (r: Record<string, unknown>): number => {
+    const i = (DIVERGENCE_BANDS as readonly string[]).indexOf(String(r.divergence_band ?? ''));
+    return i < 0 ? 99 : DIVERGENCE_BANDS.length - 1 - i;   // substantial first, unscorable last
+  };
+  const sort = sp.sort === 'discharge' ? 'discharge' : sp.sort === 'band' ? 'band' : 'recent';
   const sorted = [...rows].sort((a, b) => {
-    // an unscorable episode sorts last on the divergence view — it has no number to rank
-    if (sort === 'divergence') return (num(a.divergence_index) ?? 999) - (num(b.divergence_index) ?? 999);
+    if (sort === 'band') {
+      const d = bandRank(a) - bandRank(b);
+      if (d !== 0) return d;
+      return (num(b.n_divergent) ?? 0) - (num(a.n_divergent) ?? 0);
+    }
     if (sort === 'discharge') {
       const av = sibling[String(a.encounter_id)]?.care_value_index ?? 999;
       const bv = sibling[String(b.encounter_id)]?.care_value_index ?? 999;
@@ -60,7 +72,7 @@ export default async function EpisodeAuditList({ searchParams }: {
       <div className="mt-5 flex items-center gap-2">
         <span className="text-[11px] font-medium uppercase tracking-wide text-slate-400">Sort</span>
         {sortLink('recent', 'Most recent')}
-        {sortLink('divergence', 'Divergence index')}
+        {sortLink('band', 'Divergence band')}
         {sortLink('discharge', 'Discharge engine score')}
       </div>
 
@@ -97,7 +109,7 @@ export default async function EpisodeAuditList({ searchParams }: {
                     <td className="px-3 py-2 text-slate-600">{str(r.speciality)}</td>
                     <td className="px-3 py-2 text-slate-600">{fmtDay(r.discharged_at)}</td>
                     <td className="px-3 py-2 tabular-nums text-slate-600">{r.los_days == null ? '—' : `${r.los_days}d`}</td>
-                    <td className="px-3 py-2"><DivergenceChip index={num(r.divergence_index)} status={r.scoring_status as string | null} /></td>
+                    <td className="px-3 py-2"><DivergenceChip band={r.divergence_band as string | null} uncertain={!!r.band_uncertain} status={r.scoring_status as string | null} /></td>
                     <td className="px-3 py-2"><DischargeEngineScore cvi={sib.care_value_index} band={sib.band} /></td>
                     <td className="px-3 py-2 text-[12px] text-slate-600">
                       {String(r.n_findings ?? 0)} total · {String(r.n_divergent ?? 0)} divergent · {String(r.n_unassessable ?? 0)} unassessable

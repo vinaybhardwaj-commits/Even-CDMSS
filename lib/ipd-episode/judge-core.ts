@@ -824,6 +824,70 @@ export function finalizeFindings(
   };
 }
 
+// ── the band (V, 2026-09-02) ─────────────────────────────────────────────────────────────────
+
+/**
+ * ⚠️ THE POINT SCORE IS NOT SHOWN. A BAND IS. AND THE REASON IS MEASURED, NOT AESTHETIC.
+ *
+ * `divergence_index` has a REPEAT-RUN SPREAD OF ±5 POINTS ON IDENTICAL INPUT. Five consecutive
+ * runs of IP-1286 — same admission, same events, same engine, same deployment
+ * (334ed090 / dpl_2FVKBmbCcxcMQncNWCAmYMn6ijN9, 2026-09-03) — scored:
+ *
+ *     40, 37, 36, 41, 36
+ *
+ * with the resolver breakdown near-frozen across all five (present 9/8/8/9/8,
+ * absent_class_present 18/17/19/16/19, absent_class_missing 19/20/19/19/19,
+ * ambiguous_confounded 7/7/7/7/7) and divergent findings 17–19. The remaining movement is the
+ * checkpoint model's choice of WHICH expectations to state — day 2 produced five distinct expected
+ * courses in five runs at a constant 15 entries.
+ *
+ * ⚠️ THE NEXT PERSON TO READ THIS MUST NOT MISTAKE THE BAND FOR COARSENESS OF AMBITION. It is not
+ * a decision to report less than we could. It is a refusal to report more than we can support:
+ * showing "38" implies a precision the engine does not have, and two admissions five points apart
+ * are not distinguishable by this instrument. The band is the honest resolution of the measurement.
+ * If the spread is ever measured smaller, on more than one episode, the bands can narrow — and
+ * that is the only thing that should ever narrow them.
+ *
+ * ⚠️ NOT THE DISCHARGE ENGINE'S A–E LETTERS, deliberately. `ipd_discharge_audits.band` uses A–E and
+ * appears on the SAME SCREEN as this one (decision 14). Reusing those letters for a different
+ * quantity, on a different scale, measured by a different engine, would produce two "B"s on one row
+ * that mean unrelated things. These bands are named in words for that reason.
+ */
+export const DIVERGENCE_BANDS = [
+  'no divergence found', 'minor divergence', 'moderate divergence', 'substantial divergence',
+] as const;
+export type DivergenceBand = (typeof DIVERGENCE_BANDS)[number];
+
+/**
+ * The thresholds, as V proposed them. KEPT UNCHANGED, and the reason is that the data cannot yet
+ * argue: one episode has been measured repeatedly, and its five readings (36–41) all sit in one
+ * band. Moving a threshold on the strength of a single admission's noise would be fitting the
+ * scale to the only case we have looked at, which is worse than using a stated prior.
+ */
+export const BAND_THRESHOLDS = { minor: 90, moderate: 70, substantial: 45 } as const;
+
+/** The measured repeat-run spread, in points. The band widths and the boundary rule both derive
+ *  from this one number, so it lives in one place. */
+export const INDEX_REPEAT_SPREAD = 5;
+
+export function divergenceBandFor(index: number | null): DivergenceBand | null {
+  if (index == null || !Number.isFinite(index)) return null;
+  if (index >= BAND_THRESHOLDS.minor) return 'no divergence found';
+  if (index >= BAND_THRESHOLDS.moderate) return 'minor divergence';
+  if (index >= BAND_THRESHOLDS.substantial) return 'moderate divergence';
+  return 'substantial divergence';
+}
+
+/**
+ * True when the index sits within the repeat-run spread of ANY threshold — i.e. a re-run could
+ * plausibly have landed it in the neighbouring band. The UI says "(near boundary)" and means it:
+ * IP-1286's five readings straddle exactly this case, sitting 4–9 points under the 45 threshold.
+ */
+export function bandIsUncertain(index: number | null): boolean {
+  if (index == null || !Number.isFinite(index)) return false;
+  return Object.values(BAND_THRESHOLDS).some((t) => Math.abs(index - t) <= INDEX_REPEAT_SPREAD);
+}
+
 // ── scoring status (item 5) ──────────────────────────────────────────────────────────────────
 
 export const SCORING_STATUSES = ['ok', 'no_expectations', 'all_capped', 'incomplete_checkpoints'] as const;

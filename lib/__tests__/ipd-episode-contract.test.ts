@@ -463,6 +463,52 @@ test('the extracted case is UNREACHABLE from the checkpoint retrieval path (§3.
   }
 });
 
+// ── round 9: the point score is not shown ───────────────────────────────────────────────────
+
+test('the band is stored, and the reason is recorded in the code where the next reader will find it', () => {
+  const core = code('lib/ipd-episode/judge-core.ts');
+  assert.ok(core.includes('export function divergenceBandFor('));
+  assert.ok(core.includes('export function bandIsUncertain('));
+  // the WHY, with the evidence, per item 4
+  const doc = read('lib/ipd-episode/judge-core.ts');
+  assert.ok(doc.includes('40, 37, 36, 41, 36'), 'the five readings are cited');
+  assert.ok(doc.includes('334ed090'), 'and the sha they came from');
+  assert.ok(doc.includes('MUST NOT MISTAKE THE BAND FOR COARSENESS OF AMBITION'),
+    'the next reader must know this is a refusal to overclaim, not a lowering of sights');
+  const sqlText = read(join('migrations', '0052_ipd_episode_audits.sql'));
+  const route = read('app/api/admin/migrate-ipd-episode-audits/route.ts');
+  for (const col of ['divergence_band', 'band_uncertain']) {
+    assert.ok(sqlText.includes(col), `.sql declares ${col}`);
+    assert.ok(route.includes(`ADD COLUMN IF NOT EXISTS ${col}`), `the route back-fills ${col}`);
+  }
+  assert.ok(sqlText.includes('±5 repeat-run spread'), 'the DDL says why the band exists');
+});
+
+test('the raw index never appears on the list, and the list cannot be sorted by it', () => {
+  const list = code('app/admin/ipd-audit/episodes/page.tsx');
+  assert.ok(!list.includes('divergence_index'), 'the number is not rendered on the list at all');
+  assert.ok(!/sort === 'divergence'/.test(list), 'and there is no index sort');
+  assert.ok(list.includes("sp.sort === 'band'"), 'sorting is by band');
+  assert.ok(list.includes('(num(b.n_divergent) ?? 0) - (num(a.n_divergent) ?? 0)'),
+    'then by divergent COUNT within band — a count does not move the way the index does');
+});
+
+test('the index IS available on drill-in, labelled with its spread', () => {
+  const ui = code('app/admin/ipd-audit/episodes/ui.tsx');
+  assert.ok(ui.includes('export function InternalIndex('));
+  assert.ok(ui.includes('Internal index') && ui.includes('repeat-run spread'));
+  const detail = code('app/admin/ipd-audit/episodes/[id]/page.tsx');
+  assert.ok(detail.includes('<InternalIndex'), 'and the detail page renders it');
+});
+
+test('the chip shows a band or "not scorable", never a bare number', () => {
+  const ui = code('app/admin/ipd-audit/episodes/ui.tsx');
+  const chip = ui.slice(ui.indexOf('export function DivergenceChip'), ui.indexOf('export function InternalIndex'));
+  assert.ok(!/\{index\}/.test(chip), 'the chip renders no index');
+  assert.ok(chip.includes('not scorable'), 'and still refuses to band an unscorable episode');
+  assert.ok(chip.includes('(near boundary)'));
+});
+
 // ── round 8: the ceiling, the hole, and the bound ───────────────────────────────────────────
 
 test('the checkpoint token ceiling is raised and RECORDED on every row', () => {
@@ -772,7 +818,7 @@ test('scoring_status is stored and the UI refuses to render a number without one
   assert.ok(route.includes("ADD COLUMN IF NOT EXISTS scoring_status TEXT NOT NULL DEFAULT 'ok'"));
   const ui = code('app/admin/ipd-audit/episodes/ui.tsx');
   assert.ok(ui.includes('not scorable'), 'the chip says so in words');
-  assert.ok(/if \(st !== 'ok' \|\| index == null\)/.test(ui), 'any status but ok suppresses the number');
+  assert.ok(/if \(st !== 'ok' \|\| !band\)/.test(ui), 'any status but ok suppresses the band too');
   // both surfaces pass the status in
   for (const f of ['app/admin/ipd-audit/episodes/page.tsx', 'app/admin/ipd-audit/episodes/[id]/page.tsx']) {
     assert.ok(read(f).includes('scoring_status'), `${f} passes scoring_status to the chip`);
