@@ -13,7 +13,7 @@
  * source. The uncited cap in judge-core then does the rest.
  */
 
-import { governedChat } from '../trace';
+import { callModel } from './model-call';
 import { retrieve, resolveNormativeSources } from '../retrieve';
 import { assertKnownBedrockModel } from '../bedrock-core';
 import {
@@ -76,6 +76,16 @@ export const CHECKPOINT_SEED: number | null = null;
  * data before it becomes a failure.
  */
 export const CHECKPOINT_MAX_TOKENS = 8000;
+//   DERIVATION (re-derived round 11 item 1, unchanged at 8000):
+//     one entry ≈ item + by_day + rationale (~25 words) + citation_ids + matcher{kind,terms[2-3]}
+//                 + proposed_severity                                    ≈ 110-140 output tokens
+//     cap       = MAX_ENTRIES_PER_CATEGORY × 4 categories = 16 entries
+//     worst     = 16 × 140                                               ≈ 2,240 tokens
+//     plus expected_los_days, expected_disposition, uncertainty[≤5]      ≈   300 tokens
+//     ceiling   = 8000                                                   ≈ 3.1× headroom
+//   3000 overflowed when the course was UNBOUNDED (day 1 emitted 24 entries); with the round-8 cap
+//   at 16 entries the ceiling is now generous rather than marginal, and it is kept there because
+//   headroom on the pass that feeds every other pass is worth more than the tokens.
 
 export interface RunCheckpointInput {
   traceId: string | undefined;
@@ -299,39 +309,27 @@ export async function runCheckpoint(input: RunCheckpointInput): Promise<Checkpoi
   let lastFinishReason: string | null = null;
 
   const askOnce = async (extraInstruction: string | null): Promise<{ course: ExpectedCourse | null; error: string | null }> => {
-    let lastError = 'no attempt was made';
-    // THREE attempts, which already satisfies item 3's "retry a non-completion once" with room to
-    // spare. Worth stating plainly: on IP-1286 all three attempts failed IDENTICALLY, every run,
-    // because a max_tokens overflow is deterministic — the same input truncates at the same place.
-    // A retry cannot fix a ceiling; only item 1 could. It is kept for the transient cases.
-    for (let attempt = 0; attempt < 3; attempt++) {
-      attemptsUsed++;
-      if (attempt > 0) await new Promise((r) => setTimeout(r, 750 * Math.pow(2, attempt - 1)));
-      try {
-        const res = await governedChat(input.traceId, `ipd_episode_checkpoint_${input.checkpointId}`, {
-          messages: [
-            { role: 'system', content: IPD_EPISODE_CHECKPOINT_SYSTEM },
-            { role: 'user', content: extraInstruction ? `${user}\n\n${extraInstruction}` : user },
-          ],
-          temperature: CHECKPOINT_TEMPERATURE,
-          max_tokens: CHECKPOINT_MAX_TOKENS,
-        }, { bedrock: input.model, promptRef: 'prompts/IPD_EPISODE_CHECKPOINT_SYSTEM' });
-
-        lastFinishReason = String(res?.choices?.[0]?.finish_reason ?? '') || null;
-        const text = String(res?.choices?.[0]?.message?.content ?? '');
-        // ids, not the count: the parser resolves each cited ordinal to the chunk id it stood for
-        const course = parseExpectedCourse(text, ids);
-        if (!course) { lastError = 'the response carried no usable expected course'; continue; }
-        return { course, error: null };
-      } catch (e) {
-        lastError = String((e as Error).message).slice(0, 400);
-        // The transport throws on a non-completion and names the reason in the message; pull it out
-        // so a truncation is a value in a column rather than a substring someone has to grep for.
-        const m = /\((length|content_filter|error|max_tokens)\)/.exec(lastError);
-        lastFinishReason = m ? m[1] : (lastFinishReason ?? 'error');
-      }
-    }
-    return { course: null, error: lastError };
+    const r = await callModel({
+      traceId: input.traceId,
+      label: `ipd_episode_checkpoint_${input.checkpointId}`,
+      system: IPD_EPISODE_CHECKPOINT_SYSTEM,
+      user: extraInstruction ? `${user}\n\n${extraInstruction}` : user,
+      model: input.model,
+      promptRef: 'prompts/IPD_EPISODE_CHECKPOINT_SYSTEM',
+      maxTokens: CHECKPOINT_MAX_TOKENS,
+      temperature: CHECKPOINT_TEMPERATURE,
+      truncationRetryInstruction:
+        'YOUR PREVIOUS RESPONSE WAS CUT OFF because it was too long. Answer again with FEWER '
+        + 'entries — at most two per category, the most consequential ones — and keep every '
+        + 'rationale to one short sentence. A shorter complete course is worth far more than a '
+        + 'longer truncated one, which is discarded entirely.',
+    });
+    attemptsUsed += r.attempts;
+    lastFinishReason = r.finishReason ?? lastFinishReason;
+    if (r.error) return { course: null, error: r.error };
+    const course = parseExpectedCourse(r.text, ids);
+    if (!course) return { course: null, error: 'the response carried no usable expected course' };
+    return { course, error: null };
   };
 
   const first = await askOnce(null);

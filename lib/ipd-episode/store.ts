@@ -118,18 +118,37 @@ export function skipIsRetryable(dischargedAt: string | null, now: Date = new Dat
   return (now.getTime() - d) < SKIP_RETRY_DAYS * 86_400_000;
 }
 
-/** Upsert a skip (§7.3): reason refreshed, `last_seen` bumped, `attempts` incremented. */
+/**
+ * Upsert a skip (§7.3): reason refreshed, `last_seen` bumped, `attempts` incremented.
+ *
+ * ⚠️ IT CARRIES THE DIAGNOSTICS TOO (round 11 item 4). Stage timings, the checkpoint summary and
+ * the prompt/assembled event counts used to live ONLY on the audit row — so they existed on every
+ * run that succeeded and on none that failed, which is exactly backwards. IPNO-416 failed twice and
+ * left nothing to diagnose but a wall-clock reading taken outside the process.
+ *
+ * The SKIP ROW was chosen over writing a half-finished audit row: an audit row is what the UI
+ * renders and what `is_current` points at, and inventing a partial one risks a surface showing an
+ * episode as audited when it was not. A skip row is already the record of "this episode did not
+ * produce an audit", so attaching the evidence to it puts the diagnosis where the failure is.
+ */
 export async function recordSkip(a: {
   encounterId: string; reason: SkipReason; dischargedAt: string | null; engineVersion?: string;
+  /** Per-stage wall times, checkpoint summary, event counts — whatever exists when the skip is written. */
+  diagnostics?: unknown;
+  detail?: string | null;
 }): Promise<'recorded' | 'skipped'> {
   try {
     await run(
-      `INSERT INTO ipd_episode_skips (encounter_id, engine_version, reason, discharged_at)
-       VALUES ($1, $2, $3, $4)
+      `INSERT INTO ipd_episode_skips (encounter_id, engine_version, reason, discharged_at, diagnostics, detail)
+       VALUES ($1, $2, $3, $4, $5::jsonb, $6)
        ON CONFLICT (encounter_id, engine_version) DO UPDATE SET
          reason = EXCLUDED.reason, last_seen = NOW(), attempts = ipd_episode_skips.attempts + 1,
-         discharged_at = COALESCE(EXCLUDED.discharged_at, ipd_episode_skips.discharged_at)`,
-      [a.encounterId, a.engineVersion ?? IPD_EPISODE_ENGINE_VERSION, a.reason, a.dischargedAt],
+         discharged_at = COALESCE(EXCLUDED.discharged_at, ipd_episode_skips.discharged_at),
+         -- keep whatever the caller had when it failed; never overwrite evidence with a null
+         diagnostics = COALESCE(EXCLUDED.diagnostics, ipd_episode_skips.diagnostics),
+         detail = COALESCE(EXCLUDED.detail, ipd_episode_skips.detail)`,
+      [a.encounterId, a.engineVersion ?? IPD_EPISODE_ENGINE_VERSION, a.reason, a.dischargedAt,
+       a.diagnostics == null ? null : JSON.stringify(a.diagnostics), a.detail ?? null],
     );
     return 'recorded';
   } catch (e) {
@@ -354,7 +373,7 @@ export async function saveEpisodeAudit(row: EpisodeAuditRow, checkpoints: Checkp
          n_findings, n_divergence_pass, n_fidelity_pass, n_omission, n_commission, n_timing,
          n_sequencing, n_divergent, n_context_dependent, n_unassessable, n_concordant,
          n_low_value, n_dropped_invalid, n_parse_failed,
-         n_unassessable_rejected, n_judged_omissions_dropped,
+         n_unassessable_rejected, n_judged_omissions_dropped, n_findings_truncated,
          judge_temperature, resolution_counts,
          checkpoint_policy, checkpoint_concurrency, checkpoint_wall_ms,
          prompt_events, assembled_events, stage_timings,
@@ -364,8 +383,8 @@ export async function saveEpisodeAudit(row: EpisodeAuditRow, checkpoints: Checkp
                $2,$3,$4,$5,$6,$7, $8,$9,$10,$11,$12, $13,$14,$15,$16,$17,
                $18,$19,$20,$21,$22,$23, $24,$25,$26,$27,$28, $29,$30,$31,
                $32,$33, $34,$35::jsonb,
-               $36,$37,$38, $39,$40,$41::jsonb,
-               $42,$43,$44::jsonb,$45::jsonb,$46::jsonb,$47::jsonb, $48,$49,$50,$51,$52::jsonb)
+               $36, $37,$38,$39, $40,$41,$42::jsonb,
+               $43,$44,$45::jsonb,$46::jsonb,$47::jsonb,$48::jsonb, $49,$50,$51,$52,$53::jsonb)
        RETURNING id`,
       [
         runSeq,
@@ -383,7 +402,7 @@ export async function saveEpisodeAudit(row: EpisodeAuditRow, checkpoints: Checkp
         num(c.n_commission), num(c.n_timing), num(c.n_sequencing), num(c.n_divergent),
         num(c.n_context_dependent), num(c.n_unassessable), num(c.n_concordant),
         num(c.n_low_value), num(c.n_dropped_invalid), num(c.n_parse_failed),
-        num(c.n_unassessable_rejected), num(c.n_judged_omissions_dropped),
+        num(c.n_unassessable_rejected), num(c.n_judged_omissions_dropped), num(c.n_findings_truncated),
         row.judgeTemperature ?? null, JSON.stringify(row.resolutionCounts ?? null),
         row.checkpointPolicy ?? 'standard', row.checkpointConcurrency ?? null, row.checkpointWallMs ?? null,
         row.promptEvents ?? null, row.assembledEvents ?? null, JSON.stringify(row.timings ?? null),

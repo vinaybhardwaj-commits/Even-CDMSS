@@ -463,6 +463,74 @@ test('the extracted case is UNREACHABLE from the checkpoint retrieval path (§3.
   }
 });
 
+// ── round 11: one call site, re-derived ceilings, bounded judge output ───────────────────────
+
+test('every model call goes through the ONE shared helper', () => {
+  for (const f of ['lib/ipd-episode/checkpoint.ts', 'lib/ipd-episode/judge.ts']) {
+    const src = code(f);
+    assert.ok(!src.includes('governedChat('), `${f} must not call governedChat directly any more`);
+    assert.ok(src.includes('callModel('), `${f} goes through the helper`);
+  }
+  const mc = code('lib/ipd-episode/model-call.ts');
+  assert.equal((mc.match(/governedChat\(/g) ?? []).length, 1, 'exactly one governedChat call in the engine');
+  assert.ok(mc.includes('bedrock: input.model'), 'and it still names a bedrock target');
+});
+
+test('a truncated body is NEVER accepted as an answer — the defect of rounds 8, 10 and 11', () => {
+  const mc = code('lib/ipd-episode/model-call.ts');
+  assert.ok(mc.includes("if (finishReason === 'length')"), 'a clean 200 with a length finish is refused');
+  assert.ok(mc.includes('export function isTruncation('), 'and a thrown one is detected');
+  assert.ok(mc.includes('truncationRetryInstruction'), 'retried once, asking for less');
+  assert.ok(mc.includes('retried once asking for fewer items and it truncated again'),
+    'and a second truncation fails the call with a reason');
+  assert.ok(mc.includes('export function truncatedAt('), 'the character count is named in the failure');
+});
+
+test('every ceiling carries its derivation beside the constant', () => {
+  const judge = read('lib/ipd-episode/judge.ts');
+  assert.ok(judge.includes('export const JUDGE_MAX_TOKENS = 16000'));
+  assert.ok(judge.includes('export const COMMENTARY_MAX_TOKENS = 10000'), 'raised from the tightest of the four');
+  assert.ok(judge.includes('DERIVATION') || judge.includes('worst case'), 'the arithmetic is written down');
+  assert.ok(judge.includes('22,677'), 'the observed overflow is cited');
+  const cp = read('lib/ipd-episode/checkpoint.ts');
+  assert.ok(cp.includes('DERIVATION') && cp.includes('3.1× headroom'), 'the checkpoint ceiling too');
+  // no bare numeric max_tokens left at a call site
+  assert.ok(!/max_tokens: \d/.test(code('lib/ipd-episode/judge.ts')));
+  assert.ok(!/max_tokens: \d/.test(code('lib/ipd-episode/checkpoint.ts')));
+});
+
+test('the judge output is bounded the way the checkpoint course is', () => {
+  const core = code('lib/ipd-episode/judge-core.ts');
+  assert.ok(core.includes('export const MAX_FINDINGS_PER_PASS = 30'));
+  assert.ok(core.includes('export function capFindings('));
+  const judge = code('lib/ipd-episode/judge.ts');
+  assert.equal((judge.match(/capFindings\(/g) ?? []).length, 2, 'applied to both A1 and A2');
+  assert.ok(judge.includes('findingsTruncated: capped.dropped'), 'and the drop is recorded');
+  const sqlText = read(join('migrations', '0052_ipd_episode_audits.sql'));
+  assert.ok(sqlText.includes('n_findings_truncated'));
+});
+
+test('diagnostics survive a FAILED episode — they were only on the audit row before', () => {
+  const store = code('lib/ipd-episode/store.ts');
+  assert.ok(store.includes('diagnostics?: unknown'), 'recordSkip takes them');
+  assert.ok(store.includes('COALESCE(EXCLUDED.diagnostics, ipd_episode_skips.diagnostics)'),
+    'and never overwrites evidence with a null on a later upsert');
+  const run = code('lib/ipd-episode/run.ts');
+  assert.ok(run.includes('const diagnosticsNow ='), 'built as a closure, so it reflects the failure point');
+  // every skip after the checkpoints run carries them
+  for (const marker of ["reason: 'diff_failed'", "reason: 'fidelity_failed'"]) {
+    const at = run.indexOf(marker);
+    assert.ok(at > 0 && run.slice(at, at + 400).includes('diagnostics: diagnosticsNow'),
+      `${marker} carries diagnostics`);
+  }
+  const sqlText = read(join('migrations', '0052_ipd_episode_audits.sql'));
+  const route = read('app/api/admin/migrate-ipd-episode-audits/route.ts');
+  for (const col of ['diagnostics', 'detail']) {
+    assert.ok(sqlText.includes(col), `.sql declares skips.${col}`);
+    assert.ok(route.includes(`ALTER TABLE ipd_episode_skips ADD COLUMN IF NOT EXISTS ${col}`), `back-filled`);
+  }
+});
+
 // ── round 10: the timeout ───────────────────────────────────────────────────────────────────
 
 test('checkpoints run concurrently and the judge passes stay sequential', () => {
@@ -595,10 +663,13 @@ test('the chip shows a band or "not scorable", never a bare number', () => {
 test('the checkpoint token ceiling is raised and RECORDED on every row', () => {
   const cp = code('lib/ipd-episode/checkpoint.ts');
   assert.ok(cp.includes('export const CHECKPOINT_MAX_TOKENS = 8000'), 'raised from 3000');
-  assert.ok(cp.includes('max_tokens: CHECKPOINT_MAX_TOKENS'), 'and actually passed');
-  assert.ok(!cp.includes('max_tokens: 3000'), 'the old ceiling is gone');
-  // finish_reason is captured on SUCCESS too, not only parsed out of an error
-  assert.ok(cp.includes("lastFinishReason = String(res?.choices?.[0]?.finish_reason ?? '') || null"));
+  // passed through the shared helper's field now, not a raw max_tokens key
+  assert.ok(cp.includes('maxTokens: CHECKPOINT_MAX_TOKENS'), 'and actually passed');
+  assert.ok(!cp.includes('3000'), 'the old ceiling is gone');
+  // finish_reason now comes back from the shared helper, on success and on failure alike
+  assert.ok(cp.includes('lastFinishReason = r.finishReason ?? lastFinishReason'));
+  const mc = code('lib/ipd-episode/model-call.ts');
+  assert.ok(mc.includes('finishReasonOf(res)'), 'the helper reads it off the response');
   const sqlText = read(join('migrations', '0052_ipd_episode_audits.sql'));
   const route = read('app/api/admin/migrate-ipd-episode-audits/route.ts');
   for (const col of ['max_tokens', 'finish_reason', 'attempts', 'entries_truncated']) {

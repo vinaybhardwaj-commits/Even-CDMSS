@@ -9,10 +9,11 @@
  * blinding cannot be broken by a change in here.
  */
 
-import { governedChat } from '../trace';
+import { callModel } from './model-call';
 import { assertKnownBedrockModel } from '../bedrock-core';
 import {
   buildCommentaryUser, buildDiffUser, buildFidelityUser, parseFindings, validateCommentary,
+  capFindings,
   type Commentary, type EpisodeFinding, type ParseFailure,
 } from './judge-core';
 import {
@@ -41,34 +42,56 @@ export function judgeModel(env: Record<string, string | undefined>): string {
  */
 export const JUDGE_TEMPERATURE = 0;
 
-const content = (res: unknown): string =>
-  String((res as { choices?: { message?: { content?: unknown } }[] })?.choices?.[0]?.message?.content ?? '');
+/**
+ * ⚠️ EVERY CEILING RE-DERIVED (round 11 item 1). All four were set once and never revisited when
+ * decision 33 added a matcher and a proposed_severity to every expectation and the diff prompt grew
+ * to carry five expected courses. IPNO-416's diff pass produced 22,677 characters — roughly 5,700
+ * tokens — and was still going when 8000 cut it off. The derivations are here so the next schema
+ * change has something to update rather than a bare number to guess at.
+ *
+ * DIFF (A1) and FIDELITY (A2), 16000:
+ *   one finding ≈ finding_id + 6 enum fields + statement (~40 words) + evidence_basis (1-3 rows)
+ *              + citation_ids                                        ≈ 200-260 output tokens
+ *   cap        = MAX_FINDINGS_PER_PASS (30, item 3)
+ *   worst case = 30 × 260                                            ≈ 7,800 tokens
+ *   ceiling    = 16000                                               ≈ 2.0× headroom
+ *   measured   IP-1286 diff 11-15 findings, IP-1313 diff 10, fidelity 3-6 — the cap is well above
+ *              anything observed, and the ceiling is well above the cap.
+ *
+ * COMMENTARY (B), 10000 — raised from 6000, which was the tightest of the four:
+ *   narrative ~600 + outcome_context ~300                            ≈ 900 tokens
+ *   findings_context: one note per finding, and an episode can carry 80 findings once the resolver
+ *              contributes (IP-1286 ran 68-73)   80 × 60             ≈ 4,800 tokens
+ *   worst case                                                       ≈ 5,700 tokens
+ *   ceiling    = 10000                                               ≈ 1.75× headroom
+ *   6000 left almost none, and B is the pass whose truncation is silent — a rejected commentary
+ *   stores null and the episode still scores.
+ */
+export const JUDGE_MAX_TOKENS = 16000;
+export const COMMENTARY_MAX_TOKENS = 10000;
 
-/** Two retries with exponential backoff, then give up (§8). Never throws. */
+/** Every judge call goes through the shared helper, so truncation is handled once (item 2). */
 async function callWithRetry(
   traceId: string | undefined, label: string, system: string, user: string, model: string, promptRef: string, maxTokens: number,
-): Promise<{ text: string; error: string | null }> {
-  let lastError = 'no attempt was made';
-  for (let attempt = 0; attempt < 3; attempt++) {
-    if (attempt > 0) await new Promise((r) => setTimeout(r, 1000 * Math.pow(2, attempt - 1)));
-    try {
-      const res = await governedChat(traceId, label, {
-        messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
-        temperature: JUDGE_TEMPERATURE,
-        max_tokens: maxTokens,
-      }, { bedrock: model, promptRef });
-      const text = content(res);
-      if (text.trim()) return { text, error: null };
-      lastError = 'the response was empty';
-    } catch (e) {
-      lastError = String((e as Error).message).slice(0, 400);
-    }
-  }
-  return { text: '', error: lastError };
+): Promise<{ text: string; error: string | null; finishReason: string | null; truncated: boolean; attempts: number }> {
+  const r = await callModel({
+    traceId, label, system, user, model, promptRef, maxTokens,
+    temperature: JUDGE_TEMPERATURE,
+    truncationRetryInstruction:
+      'YOUR PREVIOUS RESPONSE WAS CUT OFF because it was too long. Answer again with ONLY THE MOST '
+      + 'CONSEQUENTIAL findings — at most 15 — most serious first. A shorter complete answer is '
+      + 'worth far more than a longer truncated one, which is discarded entirely.',
+  });
+  return { text: r.text, error: r.error, finishReason: r.finishReason, truncated: r.truncated, attempts: r.attempts };
 }
 
 export interface PassResult {
   findings: EpisodeFinding[];
+  /** The call ran out of room and the retry did not fix it — the episode must not be scored. */
+  truncated: boolean;
+  finishReason: string | null;
+  /** Findings dropped by the per-pass cap (item 3). */
+  findingsTruncated: number;
   /** Findings discarded after the repair pass had its chance. */
   unparseable: number;
   /** Findings kept ONLY because a coercion repaired one bad enum value. */
@@ -88,15 +111,17 @@ export async function runDiffPass(a: {
   model: string;
 }): Promise<PassResult> {
   const user = buildDiffUser({ admissionContext: a.admissionContext, events: a.events, checkpointBlocks: a.checkpointBlocks });
-  const { text, error } = await callWithRetry(a.traceId, 'ipd_episode_diff', IPD_EPISODE_DIFF_SYSTEM, user, a.model, 'prompts/IPD_EPISODE_DIFF_SYSTEM', 8000);
-  if (error) return { findings: [], unparseable: 0, repaired: 0, failures: [], ok: false, error };
+  const { text, error, finishReason, truncated } = await callWithRetry(a.traceId, 'ipd_episode_diff', IPD_EPISODE_DIFF_SYSTEM, user, a.model, 'prompts/IPD_EPISODE_DIFF_SYSTEM', JUDGE_MAX_TOKENS);
+  if (error) return { findings: [], unparseable: 0, repaired: 0, failures: [], ok: false, error, truncated, finishReason, findingsTruncated: 0 };
   const parsed = parseFindings(text, { pass: 'divergence', idPrefix: 'a1' });
   // An empty findings list is a legitimate result — a concordant admission. Only a call or parse
   // FAILURE skips the episode (§8), so "no divergence found" must not look like a failure here.
   const usable = /\bfindings\b/.test(text);
+  const capped = capFindings(parsed.findings);
   return {
-    findings: parsed.findings, unparseable: parsed.unparseable, repaired: parsed.repaired,
+    findings: capped.kept, unparseable: parsed.unparseable, repaired: parsed.repaired,
     failures: parsed.failures, ok: usable, error: usable ? null : 'the response carried no findings array',
+    truncated, finishReason, findingsTruncated: capped.dropped,
   };
 }
 
@@ -113,13 +138,15 @@ export async function runFidelityPass(a: {
     admissionContext: a.admissionContext, events: a.events,
     extractedCase: a.extractedCase, extractionVersion: a.extractionVersion,
   });
-  const { text, error } = await callWithRetry(a.traceId, 'ipd_episode_fidelity', IPD_EPISODE_FIDELITY_SYSTEM, user, a.model, 'prompts/IPD_EPISODE_FIDELITY_SYSTEM', 8000);
-  if (error) return { findings: [], unparseable: 0, repaired: 0, failures: [], ok: false, error };
+  const { text, error, finishReason, truncated } = await callWithRetry(a.traceId, 'ipd_episode_fidelity', IPD_EPISODE_FIDELITY_SYSTEM, user, a.model, 'prompts/IPD_EPISODE_FIDELITY_SYSTEM', JUDGE_MAX_TOKENS);
+  if (error) return { findings: [], unparseable: 0, repaired: 0, failures: [], ok: false, error, truncated, finishReason, findingsTruncated: 0 };
   const parsed = parseFindings(text, { pass: 'fidelity', idPrefix: 'a2' });
   const usable = /\bfindings\b/.test(text);
+  const capped = capFindings(parsed.findings);
   return {
-    findings: parsed.findings, unparseable: parsed.unparseable, repaired: parsed.repaired,
+    findings: capped.kept, unparseable: parsed.unparseable, repaired: parsed.repaired,
     failures: parsed.failures, ok: usable, error: usable ? null : 'the response carried no findings array',
+    truncated, finishReason, findingsTruncated: capped.dropped,
   };
 }
 
@@ -146,7 +173,7 @@ export async function runCommentaryPass(a: {
 
   let lastError: string | null = null;
   for (let attempt = 0; attempt < 2; attempt++) {
-    const { text, error } = await callWithRetry(a.traceId, `ipd_episode_commentary${attempt ? '_retry' : ''}`, IPD_EPISODE_COMMENTARY_SYSTEM, user, a.model, 'prompts/IPD_EPISODE_COMMENTARY_SYSTEM', 6000);
+    const { text, error } = await callWithRetry(a.traceId, `ipd_episode_commentary${attempt ? '_retry' : ''}`, IPD_EPISODE_COMMENTARY_SYSTEM, user, a.model, 'prompts/IPD_EPISODE_COMMENTARY_SYSTEM', COMMENTARY_MAX_TOKENS);
     if (error) { lastError = error; continue; }
     const v = validateCommentary(text, knownIds);
     if (v.ok) return { commentary: v.commentary, error: null };

@@ -339,9 +339,31 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
     const checkpointMsMax = checkpoints.reduce((n, c) => Math.max(n, c.wallMs), 0);
     const retrievalMsTotal = checkpoints.reduce((n, c) => n + c.retrievalMs, 0);
 
+    // ── item 4: the diagnostics bundle, available at EVERY failure point below ──────────────
+    // Built as a closure so it always reflects what is known at the moment a skip is written,
+    // rather than a snapshot taken at a point the failure may never reach.
+    const diagnosticsNow = (extra: Record<string, unknown> = {}) => ({
+      assemble_ms: assembleMs,
+      retrieval_ms: retrievalMsTotal,
+      checkpoint_ms: checkpointMsTotal,
+      checkpoint_max_ms: checkpointMsMax,
+      checkpoint_wall_ms: checkpointWallMs,
+      checkpoint_concurrency: CHECKPOINT_CONCURRENCY,
+      checkpoint_count: checkpoints.length,
+      assembled_events: events.length,
+      prompt_events: summariseEventsForPrompt(diffPassEvents(events)).length,
+      checkpoints: checkpoints.map((c) => ({
+        id: c.checkpointId, status: c.status, entries: c.entryCount,
+        finish_reason: c.finishReason, attempts: c.attempts, wall_ms: c.wallMs,
+        retrieval_ms: c.retrievalMs, prompt_events: c.promptEvents, max_tokens: c.maxTokens,
+      })),
+      ...extra,
+    });
+
     // Every checkpoint errored ⇒ there is no expected course to diff against (§8).
     if (checkpoints.length && checkpoints.every((c) => c.status === 'error')) {
-      await recordSkip({ encounterId, reason: 'diff_failed', dischargedAt: envelope.dischargedAt, engineVersion });
+      await recordSkip({ encounterId, reason: 'diff_failed', dischargedAt: envelope.dischargedAt, engineVersion,
+        diagnostics: diagnosticsNow(), detail: 'every checkpoint errored' });
       await finishTraceIfRunning(traceId, 'error', 'every checkpoint errored');
       return { encounterId, skip: 'diff_failed', error: 'every checkpoint errored', traceId, latencyMs: Date.now() - t0, notes: assemblyNotes };
     }
@@ -404,7 +426,9 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
     });
     const diffMs = Date.now() - tDiff;
     if (!a1.ok) {
-      await recordSkip({ encounterId, reason: 'diff_failed', dischargedAt: envelope.dischargedAt, engineVersion });
+      await recordSkip({ encounterId, reason: 'diff_failed', dischargedAt: envelope.dischargedAt, engineVersion,
+        diagnostics: diagnosticsNow({ diff_ms: diffMs, diff_finish_reason: a1.finishReason, diff_truncated: a1.truncated }),
+        detail: a1.error ?? 'diff pass failed' });
       await finishTraceIfRunning(traceId, 'error', a1.error ?? 'diff pass failed');
       return { encounterId, skip: 'diff_failed', error: a1.error ?? 'diff pass failed', traceId, latencyMs: Date.now() - t0, notes: assemblyNotes };
     }
@@ -417,7 +441,9 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
     });
     const fidelityMs = Date.now() - tFid;
     if (!a2.ok) {
-      await recordSkip({ encounterId, reason: 'fidelity_failed', dischargedAt: envelope.dischargedAt, engineVersion });
+      await recordSkip({ encounterId, reason: 'fidelity_failed', dischargedAt: envelope.dischargedAt, engineVersion,
+        diagnostics: diagnosticsNow({ diff_ms: diffMs, fidelity_ms: fidelityMs, fidelity_finish_reason: a2.finishReason, fidelity_truncated: a2.truncated }),
+        detail: a2.error ?? 'fidelity pass failed' });
       await finishTraceIfRunning(traceId, 'error', a2.error ?? 'fidelity pass failed');
       return { encounterId, skip: 'fidelity_failed', error: a2.error ?? 'fidelity pass failed', traceId, latencyMs: Date.now() - t0, notes: assemblyNotes };
     }
@@ -437,6 +463,7 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
     // every counter reading 0 the way IP-1286's five did.
     const unparseable = a1.unparseable + a2.unparseable;
     const final = finalizeFindings(raw, entryRefs, events, unparseable, sourceById, normativeSources);
+    final.counters.n_findings_truncated = a1.findingsTruncated + a2.findingsTruncated;
     const repaired = a1.repaired + a2.repaired;
     // Every discarded fragment, tagged with the pass that produced it. This is the record that did
     // not exist when IP-1286 lost 5 of its 15 A1 findings with nothing written down anywhere.
@@ -648,6 +675,8 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
         `citations by provenance: ${Object.entries(final.provenance_counts).filter(([, n]) => n > 0).map(([k, n]) => `${k} ${n}`).join(', ') || 'none'}`,
         `resolver: ${Object.entries(resolution_counts).map(([k, n]) => `${k} ${n}`).join(', ')}`,
         `pass contribution: resolver ${resolverFindings.length}, diff ${a1.findings.length}, fidelity ${a2.findings.length}`,
+        ...(a1.findingsTruncated + a2.findingsTruncated ? [`${a1.findingsTruncated + a2.findingsTruncated} finding(s) dropped by the per-pass output cap`] : []),
+        `judge finish_reason: diff=${a1.finishReason ?? 'none'}, fidelity=${a2.finishReason ?? 'none'}`,
         ...(final.counters.n_judged_omissions_dropped ? [`${final.counters.n_judged_omissions_dropped} omission finding(s) from the diff pass dropped — code owns omissions now`] : []),
         ...(final.counters.n_unassessable_rejected ? [`${final.counters.n_unassessable_rejected} unassessable verdict(s) rewritten to context_dependent — evidence did not support the claim`] : []),
         ...(checkpoints.filter((c) => c.retrievalSkipped).length ? [`${checkpoints.filter((c) => c.retrievalSkipped).length} checkpoint(s) generated with NO retrieval — the query was empty`] : []),

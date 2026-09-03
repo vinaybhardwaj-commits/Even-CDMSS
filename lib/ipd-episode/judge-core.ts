@@ -405,6 +405,29 @@ export function enforceUnassessable(f: EpisodeFinding): { finding: EpisodeFindin
   return { finding: { ...f, verdict: 'context_dependent' }, rejected: true };
 }
 
+/**
+ * ⚠️ THE JUDGE'S OUTPUT IS BOUNDED, FOR THE SAME REASON THE CHECKPOINT COURSE IS (item 3).
+ *
+ * Round 8 capped the expected course at four entries per category because output length was both a
+ * cost channel and a variance channel — the marginal expectation is the one that appears in one
+ * reading and not the next. The judge side had no such bound, and IPNO-416's diff pass ran to
+ * 22,677 characters and was cut off mid-answer, losing the whole pass.
+ *
+ * 30 per pass, against a measured 10–15 diff findings on IP-1286 and 10 on IP-1313: comfortably
+ * above anything observed, so the cap should never bite on a normal episode, and firmly below the
+ * runaway that cost IPNO-416 its audit. `findings_truncated` records when it does bite, so a cap
+ * that is too tight shows up in the data instead of quietly removing findings.
+ *
+ * The prompt asks for most-consequential-first, so truncation drops the least consequential — the
+ * same ordering contract the expected-course cap relies on.
+ */
+export const MAX_FINDINGS_PER_PASS = 30;
+
+export function capFindings(findings: EpisodeFinding[]): { kept: EpisodeFinding[]; dropped: number } {
+  if (findings.length <= MAX_FINDINGS_PER_PASS) return { kept: findings, dropped: 0 };
+  return { kept: findings.slice(0, MAX_FINDINGS_PER_PASS), dropped: findings.length - MAX_FINDINGS_PER_PASS };
+}
+
 // ── the code-enforced rules ──────────────────────────────────────────────────────────────────
 
 /**
@@ -683,6 +706,8 @@ export interface FindingCounters {
   n_unassessable_rejected: number;
   /** Omission findings the diff pass emitted anyway, dropped under decision 33 (item 3). */
   n_judged_omissions_dropped: number;
+  /** Findings dropped by the per-pass output cap. */
+  n_findings_truncated: number;
 }
 
 /**
@@ -706,6 +731,7 @@ export function countFindings(findings: EpisodeFinding[], domainDropped: number,
     n_parse_failed: parseFailed,
     n_unassessable_rejected: 0,
     n_judged_omissions_dropped: 0,
+    n_findings_truncated: 0,
   };
   for (const f of findings) {
     if (f.pass === 'divergence') c.n_divergence_pass++; else c.n_fidelity_pass++;

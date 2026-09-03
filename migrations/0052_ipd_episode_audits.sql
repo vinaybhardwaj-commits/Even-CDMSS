@@ -90,6 +90,7 @@ CREATE TABLE IF NOT EXISTS ipd_episode_audits (
   -- the diff pass emitted after code took ownership of omissions.
   n_unassessable_rejected INTEGER DEFAULT 0,
   n_judged_omissions_dropped INTEGER DEFAULT 0,
+  n_findings_truncated  INTEGER DEFAULT 0,
   judge_temperature     DOUBLE PRECISION,
   resolution_counts     JSONB,
 
@@ -228,6 +229,13 @@ CREATE TABLE IF NOT EXISTS ipd_episode_skips (
   last_seen       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   attempts        INTEGER NOT NULL DEFAULT 1,
   discharged_at   TIMESTAMPTZ,
+
+  -- ⚠️ THE DIAGNOSIS LIVES WITH THE FAILURE (round 11 item 4). Stage timings, the checkpoint
+  -- summary and the prompt/assembled event counts used to be written ONLY on the audit row — so
+  -- they existed for every run that succeeded and none that failed. IPNO-416 failed twice and left
+  -- nothing but a wall-clock reading taken outside the process.
+  diagnostics     JSONB,
+  detail          TEXT,
   PRIMARY KEY (encounter_id, engine_version)
 );
 

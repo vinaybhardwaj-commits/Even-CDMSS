@@ -61,6 +61,7 @@ export async function POST(req: NextRequest) {
       n_parse_failed        INTEGER DEFAULT 0,
       n_unassessable_rejected INTEGER DEFAULT 0,
       n_judged_omissions_dropped INTEGER DEFAULT 0,
+      n_findings_truncated  INTEGER DEFAULT 0,
       judge_temperature     DOUBLE PRECISION,
       resolution_counts     JSONB,
       capped_count          INTEGER DEFAULT 0,
@@ -225,9 +226,14 @@ export async function POST(req: NextRequest) {
       last_seen       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       attempts        INTEGER NOT NULL DEFAULT 1,
       discharged_at   TIMESTAMPTZ,
+      diagnostics     JSONB,
+      detail          TEXT,
       PRIMARY KEY (encounter_id, engine_version)
     )`;
     await sql`CREATE INDEX IF NOT EXISTS ipd_episode_skips_discharged_idx ON ipd_episode_skips (discharged_at DESC)`;
+    await sql`ALTER TABLE ipd_episode_skips ADD COLUMN IF NOT EXISTS diagnostics JSONB`;
+    await sql`ALTER TABLE ipd_episode_skips ADD COLUMN IF NOT EXISTS detail TEXT`;
+    await sql`ALTER TABLE ipd_episode_audits ADD COLUMN IF NOT EXISTS n_findings_truncated INTEGER DEFAULT 0`;
     steps.skips_table = 'ok';
 
     const counts = (await sql`SELECT count(*)::int AS n FROM ipd_episode_audits`) as Array<{ n: number }>;
