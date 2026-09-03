@@ -463,6 +463,49 @@ test('the extracted case is UNREACHABLE from the checkpoint retrieval path (§3.
   }
 });
 
+// ── round 8: the ceiling, the hole, and the bound ───────────────────────────────────────────
+
+test('the checkpoint token ceiling is raised and RECORDED on every row', () => {
+  const cp = code('lib/ipd-episode/checkpoint.ts');
+  assert.ok(cp.includes('export const CHECKPOINT_MAX_TOKENS = 8000'), 'raised from 3000');
+  assert.ok(cp.includes('max_tokens: CHECKPOINT_MAX_TOKENS'), 'and actually passed');
+  assert.ok(!cp.includes('max_tokens: 3000'), 'the old ceiling is gone');
+  // finish_reason is captured on SUCCESS too, not only parsed out of an error
+  assert.ok(cp.includes("lastFinishReason = String(res?.choices?.[0]?.finish_reason ?? '') || null"));
+  const sqlText = read(join('migrations', '0052_ipd_episode_audits.sql'));
+  const route = read('app/api/admin/migrate-ipd-episode-audits/route.ts');
+  for (const col of ['max_tokens', 'finish_reason', 'attempts', 'entries_truncated']) {
+    assert.ok(sqlText.includes(col), `.sql declares ${col}`);
+    assert.ok(route.includes(`ADD COLUMN IF NOT EXISTS ${col}`), `the route back-fills ${col}`);
+  }
+});
+
+test('a hole in the expected course cannot be scored over', () => {
+  const run = code('lib/ipd-episode/run.ts');
+  assert.ok(run.includes("checkpoints.filter((c) => c.status === 'error' || c.entryCount === 0).length"),
+    'an errored OR empty checkpoint counts as incomplete');
+  assert.ok(run.includes('incompleteCheckpoints,'), 'and reaches the status function');
+  const core = code('lib/ipd-episode/judge-core.ts');
+  assert.ok(core.includes("if ((a.incompleteCheckpoints ?? 0) > 0) return 'incomplete_checkpoints';"));
+  // tested FIRST, so it outranks no_expectations and all_capped
+  const fn = core.slice(core.indexOf('export function scoringStatusFor'), core.indexOf('export function storedDivergenceIndex'));
+  assert.ok(fn.indexOf('incomplete_checkpoints') < fn.indexOf('no_expectations'));
+  assert.ok(core.includes("status === 'no_expectations' || status === 'incomplete_checkpoints' ? null : index"),
+    'and the index is stored NULL');
+  const ui = code('app/admin/ipd-audit/episodes/ui.tsx');
+  assert.ok(ui.includes('part of the expected course is missing'), 'the UI gives the reason');
+});
+
+test('the expected course is bounded in the prompt AND in code', () => {
+  assert.match(IPD_EPISODE_CHECKPOINT_SYSTEM, /AT MOST FOUR ENTRIES PER CATEGORY/);
+  assert.match(IPD_EPISODE_CHECKPOINT_SYSTEM, /MOST CONSEQUENTIAL FIRST/);
+  const core = code('lib/ipd-episode/checkpoint-core.ts');
+  assert.ok(core.includes('export const MAX_ENTRIES_PER_CATEGORY = 4'));
+  assert.ok(core.includes('export function capExpectedCourse('), 'a prompt is a request; this is the guarantee');
+  const cp = code('lib/ipd-episode/checkpoint.ts');
+  assert.ok(cp.includes('capExpectedCourse(course)'), 'and it runs on every checkpoint');
+});
+
 // ── decision 33: omission is a lookup, not a judgement ──────────────────────────────────────
 
 test('the resolver is pure — no db, no model, no Next, nothing that could vary between runs', () => {

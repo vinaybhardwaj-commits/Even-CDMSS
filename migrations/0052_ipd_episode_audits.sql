@@ -186,7 +186,17 @@ CREATE TABLE IF NOT EXISTS ipd_episode_checkpoints (
   -- have to take that on trust. `seed` is NULL by necessity: Bedrock's Converse inferenceConfig
   -- accepts maxTokens and temperature and nothing else, so AUDIT_LLM_SEED has no wire field here.
   temperature         DOUBLE PRECISION,
-  seed                INTEGER
+  seed                INTEGER,
+
+  -- The token ceiling this checkpoint ran under, and what the provider said when it stopped.
+  -- RECORDED ON EVERY ROW, not only on failure: `length` means the answer was truncated, and five
+  -- consecutive runs lost their day-2 checkpoint to exactly that without it being visible anywhere
+  -- except an error string. `attempts` is how many tries it took.
+  max_tokens          INTEGER,
+  finish_reason       TEXT,
+  attempts            INTEGER DEFAULT 0,
+  -- Entries dropped by the per-category cap, so a cap biting too hard is visible in the data.
+  entries_truncated   INTEGER DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS ipd_episode_checkpoints_audit_idx ON ipd_episode_checkpoints (episode_audit_id);

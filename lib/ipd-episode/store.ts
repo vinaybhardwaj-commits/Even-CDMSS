@@ -263,6 +263,11 @@ export interface CheckpointWriteRow {
    *  them rather than trusting that they were what someone said. */
   temperature: number;
   seed: number | null;
+  maxTokens: number;
+  /** Recorded on EVERY row, not only on failure — `length` means a truncated answer. */
+  finishReason: string | null;
+  attempts: number;
+  entriesTruncated: number;
 }
 
 /**
@@ -366,9 +371,10 @@ export async function saveEpisodeAudit(row: EpisodeAuditRow, checkpoints: Checkp
            retrieval_query, retrieval_failed, citation_ids, expected_course, status, error_detail,
            model, trace_id, uncited_entry_count, entry_count, citation_sources,
            retrieved_titles, retrieval_offtopic, offtopic_excerpt_count, day0_query_from_ot,
-           temperature, seed, retrieval_skipped)
+           temperature, seed, retrieval_skipped, max_tokens, finish_reason, attempts,
+           entries_truncated)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8::int[],$9::jsonb,$10,$11,$12,$13,$14,$15,$16::jsonb,
-                 $17::text[],$18,$19,$20,$21,$22,$23)`,
+                 $17::text[],$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)`,
         [
           auditId, cp.dayIndex, cp.checkpointType, cp.inputCutoffAt, cp.inputEventCount,
           cp.retrievalQuery, cp.retrievalFailed, cp.citationIds,
@@ -378,6 +384,7 @@ export async function saveEpisodeAudit(row: EpisodeAuditRow, checkpoints: Checkp
           cp.retrievedTitles ?? [], cp.retrievalOffTopic ?? false,
           num(cp.offTopicExcerptCount), cp.day0QueryFromOt ?? false,
           cp.temperature, cp.seed, cp.retrievalSkipped ?? false,
+          num(cp.maxTokens), cp.finishReason ?? null, num(cp.attempts), num(cp.entriesTruncated),
         ],
       ).catch((e: unknown) => {
         warn(`saveEpisodeAudit checkpoint day ${cp.dayIndex} (${cp.checkpointType})`, e);
@@ -426,7 +433,8 @@ export async function checkpointsForAudit(auditId: string): Promise<EpisodeListR
     `SELECT day_index, checkpoint_type, generated_at, input_cutoff_at, input_event_count,
             retrieval_query, retrieval_failed, citation_ids, expected_course, status, error_detail, model,
             uncited_entry_count, entry_count, citation_sources, retrieved_titles, retrieval_offtopic,
-            offtopic_excerpt_count, day0_query_from_ot, temperature, seed, retrieval_skipped
+            offtopic_excerpt_count, day0_query_from_ot, temperature, seed, retrieval_skipped,
+            max_tokens, finish_reason, attempts, entries_truncated
      FROM ipd_episode_checkpoints
      WHERE episode_audit_id = $1
      ORDER BY (checkpoint_type = 'episode'), day_index ASC`, [auditId],

@@ -661,6 +661,43 @@ export function everyEntryUncited(course: ExpectedCourse | null, excerptCount: n
   return total > 0 && uncited === total;
 }
 
+/**
+ * ⚠️ AT MOST FOUR PER CATEGORY, AND THE LENGTH ITSELF WAS THE VARIANCE (item 4).
+ *
+ * Decision 33 took the VERDICT away from the model and the resolver made those verdicts stable —
+ * but the model's remaining freedom, HOW MANY THINGS TO EXPECT, became the new variance channel.
+ * Across five runs of IP-1286 the day-1 checkpoint produced four distinct expected courses with
+ * entry counts swinging 19–24, and the resolver faithfully turned each different list into a
+ * different set of findings. A resolver cannot stabilise a score whose inputs move.
+ *
+ * A short, stable expected course beats a long, unstable one: the fifth-most-consequential
+ * expectation on a hernia repair contributes noise, not signal, and it is exactly the entry a
+ * model includes or omits at random. The prompt asks for the most consequential first and a hard
+ * stop at four; this truncates after parsing, because a prompt is a request and this is the
+ * guarantee. `entries_truncated` records how many were cut, so a cap that is biting too hard is
+ * visible rather than assumed.
+ */
+export const MAX_ENTRIES_PER_CATEGORY = 4;
+
+export function capExpectedCourse(course: ExpectedCourse | null): { course: ExpectedCourse | null; truncated: number } {
+  if (!course) return { course, truncated: 0 };
+  const n = MAX_ENTRIES_PER_CATEGORY;
+  const before = course.expected_diagnostics.length + course.expected_therapeutics.length
+    + course.expected_monitoring.length + course.escalation_triggers.length;
+  const capped: ExpectedCourse = {
+    ...course,
+    // slice(0, n) keeps the model's own ordering, which the prompt tells it to make
+    // most-consequential-first — so truncation drops the least consequential, not an arbitrary tail.
+    expected_diagnostics: course.expected_diagnostics.slice(0, n),
+    expected_therapeutics: course.expected_therapeutics.slice(0, n),
+    expected_monitoring: course.expected_monitoring.slice(0, n),
+    escalation_triggers: course.escalation_triggers.slice(0, n),
+  };
+  const after = capped.expected_diagnostics.length + capped.expected_therapeutics.length
+    + capped.expected_monitoring.length + capped.escalation_triggers.length;
+  return { course: capped, truncated: before - after };
+}
+
 // ── checkpoint entry references (the uncited-entry cap's key, PRD §4.4) ──────────────────────
 
 export interface CheckpointEntryRef { ref: string; citation_ids: number[] }

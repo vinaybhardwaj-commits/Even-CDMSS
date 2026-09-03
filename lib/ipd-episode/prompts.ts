@@ -31,6 +31,10 @@ You are given everything that was documented for this admission BEFORE a stated 
 
 YOUR TASK: state what the NEXT 24 HOURS of this admission should reasonably contain, given only what is documented above the cut-off.
 
+⚠️ AT MOST FOUR ENTRIES PER CATEGORY. Four expected_diagnostics, four expected_therapeutics, four expected_monitoring, four escalation_triggers. Emit THE MOST CONSEQUENTIAL FIRST and then stop — anything beyond the fourth is dropped in code, so a fifth entry is not a bonus, it is a wasted one.
+
+Fewer is fine and often better. Two expectations you are sure of are worth more than six you are hedging with, and a shorter list is a more stable one: the marginal entry is the one that varies between readings of the same record, and this audit is scored on what it finds.
+
 Write the expected course in four parts:
 - expected_diagnostics: investigations that should be done, and by which day index.
 - expected_therapeutics: treatments that should be given or changed, and by which day index.

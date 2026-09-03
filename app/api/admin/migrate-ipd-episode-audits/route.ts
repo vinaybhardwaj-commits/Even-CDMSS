@@ -152,7 +152,11 @@ export async function POST(req: NextRequest) {
       offtopic_excerpt_count INTEGER DEFAULT 0,
       day0_query_from_ot  BOOLEAN DEFAULT FALSE,
       temperature         DOUBLE PRECISION,
-      seed                INTEGER
+      seed                INTEGER,
+      max_tokens          INTEGER,
+      finish_reason       TEXT,
+      attempts            INTEGER DEFAULT 0,
+      entries_truncated   INTEGER DEFAULT 0
     )`;
     await sql`CREATE INDEX IF NOT EXISTS ipd_episode_checkpoints_audit_idx ON ipd_episode_checkpoints (episode_audit_id)`;
     await sql`ALTER TABLE ipd_episode_checkpoints ADD COLUMN IF NOT EXISTS uncited_entry_count INTEGER DEFAULT 0`;
@@ -165,6 +169,10 @@ export async function POST(req: NextRequest) {
     await sql`ALTER TABLE ipd_episode_checkpoints ADD COLUMN IF NOT EXISTS temperature DOUBLE PRECISION`;
     await sql`ALTER TABLE ipd_episode_checkpoints ADD COLUMN IF NOT EXISTS seed INTEGER`;
     await sql`ALTER TABLE ipd_episode_checkpoints ADD COLUMN IF NOT EXISTS retrieval_skipped BOOLEAN DEFAULT FALSE`;
+    await sql`ALTER TABLE ipd_episode_checkpoints ADD COLUMN IF NOT EXISTS max_tokens INTEGER`;
+    await sql`ALTER TABLE ipd_episode_checkpoints ADD COLUMN IF NOT EXISTS finish_reason TEXT`;
+    await sql`ALTER TABLE ipd_episode_checkpoints ADD COLUMN IF NOT EXISTS attempts INTEGER DEFAULT 0`;
+    await sql`ALTER TABLE ipd_episode_checkpoints ADD COLUMN IF NOT EXISTS entries_truncated INTEGER DEFAULT 0`;
     steps.checkpoints_table = 'ok';
 
     // ── citation_ids must be INTEGER[] ────────────────────────────────────────────────────────

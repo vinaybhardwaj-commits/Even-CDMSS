@@ -410,15 +410,22 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
     // A divergence_index of 100 on an episode where no expectation was ever formed is the most
     // dangerous thing this engine can emit: it reads as "ran perfectly" and means "nothing was
     // measured". The status is computed BEFORE the row is built so the stored index can be null.
+    // A checkpoint that errored, or produced no entries at all, means part of the expected course
+    // does not exist — and an episode cannot be scored against a course with a hole in it.
+    const incompleteCheckpoints = checkpoints.filter((c) => c.status === 'error' || c.entryCount === 0).length;
     const scoringStatus = scoringStatusFor({
       totalExpectedEntries: checkpoints.reduce((n, c) => n + c.entryCount, 0),
       findings: final.findings,
       cappedFindingIds: final.capped_finding_ids,
+      incompleteCheckpoints,
     });
     if (scoringStatus !== 'ok') {
-      errorDetail.push(scoringStatus === 'no_expectations'
-        ? 'no checkpoint produced a single expected entry — this episode is not scorable'
-        : 'every finding was capped — the index is arithmetically high but nothing survived at full weight');
+      errorDetail.push(
+        scoringStatus === 'incomplete_checkpoints'
+          ? `${incompleteCheckpoints} of ${checkpoints.length} checkpoint(s) errored or produced no entries — the expected course is incomplete and this episode is not scorable`
+          : scoringStatus === 'no_expectations'
+            ? 'no checkpoint produced a single expected entry — this episode is not scorable'
+            : 'every finding was capped — the index is arithmetically high but nothing survived at full weight');
       if (traceId) {
         await logEvent(traceId, 'ipd_episode_not_scorable', 'score', {
           encounter_id: encounterId, scoring_status: scoringStatus,
@@ -492,6 +499,10 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
       day0QueryFromOt: c.day0QueryFromOt,
       temperature: c.temperature,
       seed: c.seed,
+      maxTokens: c.maxTokens,
+      finishReason: c.finishReason,
+      attempts: c.attempts,
+      entriesTruncated: c.entriesTruncated,
     }));
 
     const saved = await saveEpisodeAudit({
@@ -566,6 +577,9 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
         ...(final.counters.n_judged_omissions_dropped ? [`${final.counters.n_judged_omissions_dropped} omission finding(s) from the diff pass dropped — code owns omissions now`] : []),
         ...(final.counters.n_unassessable_rejected ? [`${final.counters.n_unassessable_rejected} unassessable verdict(s) rewritten to context_dependent — evidence did not support the claim`] : []),
         ...(checkpoints.filter((c) => c.retrievalSkipped).length ? [`${checkpoints.filter((c) => c.retrievalSkipped).length} checkpoint(s) generated with NO retrieval — the query was empty`] : []),
+        `finish_reason by checkpoint: ${checkpoints.map((c) => `${c.checkpointId}=${c.finishReason ?? 'none'}`).join(', ')}`,
+        `entries by checkpoint: ${checkpoints.map((c) => `${c.checkpointId}=${c.entryCount}`).join(', ')}`,
+        ...(checkpoints.reduce((n, c) => n + c.entriesTruncated, 0) ? [`${checkpoints.reduce((n, c) => n + c.entriesTruncated, 0)} entry(ies) truncated by the per-category cap`] : []),
         ...(repaired ? [`${repaired} finding(s) kept by the enum repair pass`] : []),
         ...(unparseable ? [`${unparseable} finding(s) discarded — see raw_judge_error and the trace`] : []),
         ...(totalEntries && uncitedEntries === totalEntries ? [`all ${totalEntries} expected-course entries are uncited`] : []),

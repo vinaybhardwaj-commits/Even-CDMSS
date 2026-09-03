@@ -18,7 +18,7 @@ import { retrieve, resolveNormativeSources } from '../retrieve';
 import { assertKnownBedrockModel } from '../bedrock-core';
 import {
   buildCheckpointUser, buildRetrievalQuery, checkpointEntryRefs, countUncitedEntries,
-  everyEntryUncited, parseExpectedCourse, assessTopicality, retrievedTitles,
+  everyEntryUncited, parseExpectedCourse, assessTopicality, retrievedTitles, capExpectedCourse,
   RETRIEVAL_TOP_K, type CheckpointEntryRef, type ExpectedCourse, type RetrievedExcerpt,
 } from './checkpoint-core';
 import { IPD_EPISODE_CHECKPOINT_SYSTEM } from './prompts';
@@ -58,6 +58,24 @@ export const RETRIEVAL_MIN_SIMILARITY = 0.3;
  */
 export const CHECKPOINT_TEMPERATURE = 0;
 export const CHECKPOINT_SEED: number | null = null;
+
+/**
+ * ⚠️ 3000 WAS TOO SMALL AND IT FAILED SILENTLY-ISH FOR FIVE CONSECUTIVE RUNS. The day-2 checkpoint
+ * of IP-1286 — the busiest day, so the longest response — returned finish_reason `length` on every
+ * attempt of every run. `max_tokens` maps to `length`, `length` is outside USABLE_FINISH_REASONS
+ * (lib/provider-error-core.ts), so the transport threw and the checkpoint was recorded
+ * `status: error` with zero entries. The episode then scored as if that quarter of the expected
+ * course had simply had nothing in it.
+ *
+ * Decision 33 caused it: adding a matcher and a proposed_severity to every entry roughly doubled
+ * the bytes per entry, and the busiest checkpoint crossed the ceiling first.
+ *
+ * 8000 against a longest observed response that overflowed 3000, and a schema now capped at 16
+ * entries (4 per category) — comfortably more than 2× headroom. The value is RECORDED on every
+ * row beside the finish_reason, so the next time this ceiling is approached it is visible in the
+ * data before it becomes a failure.
+ */
+export const CHECKPOINT_MAX_TOKENS = 8000;
 
 export interface RunCheckpointInput {
   traceId: string | undefined;
@@ -104,6 +122,13 @@ export interface CheckpointResult {
   /** The generation settings this checkpoint actually ran with. */
   temperature: number;
   seed: number | null;
+  maxTokens: number;
+  /** The provider's finish_reason, recorded on EVERY row — not only on failure. `length` here is
+   *  a truncated answer, which is how five runs lost their day-2 checkpoint in silence. */
+  finishReason: string | null;
+  attempts: number;
+  /** Entries discarded by the per-category cap (item 4). */
+  entriesTruncated: number;
   expectedCourse: ExpectedCourse | null;
   entryRefs: CheckpointEntryRef[];
   status: 'ok' | 'error';
@@ -222,7 +247,9 @@ export async function runCheckpoint(input: RunCheckpointInput): Promise<Checkpoi
   const { excerpts, ids, sources, normativeDropped, failed } = await retrieveExcerpts(query);
   const topicality = assessTopicality(query, excerpts);
 
-  const base: Omit<CheckpointResult, 'expectedCourse' | 'entryRefs' | 'status' | 'errorDetail' | 'uncitedEntryCount' | 'entryCount' | 'retriedForCitations'> = {
+  const base: Omit<CheckpointResult, 'expectedCourse' | 'entryRefs' | 'status' | 'errorDetail'
+    | 'uncitedEntryCount' | 'entryCount' | 'retriedForCitations'
+    | 'maxTokens' | 'finishReason' | 'attempts' | 'entriesTruncated'> = {
     checkpointId: input.checkpointId,
     dayIndex: input.dayIndex,
     checkpointType: input.checkpointType,
@@ -253,9 +280,19 @@ export async function runCheckpoint(input: RunCheckpointInput): Promise<Checkpoi
     excerpts,
   });
 
+  /** Every attempt's outcome, so `attempts` and `finish_reason` are facts on the row rather than
+   *  something a reader has to infer from an error string. */
+  let attemptsUsed = 0;
+  let lastFinishReason: string | null = null;
+
   const askOnce = async (extraInstruction: string | null): Promise<{ course: ExpectedCourse | null; error: string | null }> => {
     let lastError = 'no attempt was made';
+    // THREE attempts, which already satisfies item 3's "retry a non-completion once" with room to
+    // spare. Worth stating plainly: on IP-1286 all three attempts failed IDENTICALLY, every run,
+    // because a max_tokens overflow is deterministic — the same input truncates at the same place.
+    // A retry cannot fix a ceiling; only item 1 could. It is kept for the transient cases.
     for (let attempt = 0; attempt < 3; attempt++) {
+      attemptsUsed++;
       if (attempt > 0) await new Promise((r) => setTimeout(r, 750 * Math.pow(2, attempt - 1)));
       try {
         const res = await governedChat(input.traceId, `ipd_episode_checkpoint_${input.checkpointId}`, {
@@ -264,9 +301,10 @@ export async function runCheckpoint(input: RunCheckpointInput): Promise<Checkpoi
             { role: 'user', content: extraInstruction ? `${user}\n\n${extraInstruction}` : user },
           ],
           temperature: CHECKPOINT_TEMPERATURE,
-          max_tokens: 3000,
+          max_tokens: CHECKPOINT_MAX_TOKENS,
         }, { bedrock: input.model, promptRef: 'prompts/IPD_EPISODE_CHECKPOINT_SYSTEM' });
 
+        lastFinishReason = String(res?.choices?.[0]?.finish_reason ?? '') || null;
         const text = String(res?.choices?.[0]?.message?.content ?? '');
         // ids, not the count: the parser resolves each cited ordinal to the chunk id it stood for
         const course = parseExpectedCourse(text, ids);
@@ -274,6 +312,10 @@ export async function runCheckpoint(input: RunCheckpointInput): Promise<Checkpoi
         return { course, error: null };
       } catch (e) {
         lastError = String((e as Error).message).slice(0, 400);
+        // The transport throws on a non-completion and names the reason in the message; pull it out
+        // so a truncation is a value in a column rather than a substring someone has to grep for.
+        const m = /\((length|content_filter|error|max_tokens)\)/.exec(lastError);
+        lastFinishReason = m ? m[1] : (lastFinishReason ?? 'error');
       }
     }
     return { course: null, error: lastError };
@@ -284,6 +326,8 @@ export async function runCheckpoint(input: RunCheckpointInput): Promise<Checkpoi
     return {
       ...base, expectedCourse: null, entryRefs: [], status: 'error', errorDetail: first.error,
       uncitedEntryCount: 0, entryCount: 0, retriedForCitations: false,
+      maxTokens: CHECKPOINT_MAX_TOKENS, finishReason: lastFinishReason, attempts: attemptsUsed,
+      entriesTruncated: 0,
     };
   }
 
@@ -308,9 +352,17 @@ export async function runCheckpoint(input: RunCheckpointInput): Promise<Checkpoi
     if (second.course && !everyEntryUncited(second.course, excerpts.length)) course = second.course;
   }
 
+  // ── item 4: bound the expected course ──
+  const capped = capExpectedCourse(course);
+  course = capped.course ?? course;
+
   const { uncited, total } = countUncitedEntries(course);
   return {
     ...base,
+    maxTokens: CHECKPOINT_MAX_TOKENS,
+    finishReason: lastFinishReason,
+    attempts: attemptsUsed,
+    entriesTruncated: capped.truncated,
     expectedCourse: course,
     entryRefs: checkpointEntryRefs(input.checkpointId, course),
     status: 'ok',

@@ -826,7 +826,7 @@ export function finalizeFindings(
 
 // ── scoring status (item 5) ──────────────────────────────────────────────────────────────────
 
-export const SCORING_STATUSES = ['ok', 'no_expectations', 'all_capped'] as const;
+export const SCORING_STATUSES = ['ok', 'no_expectations', 'all_capped', 'incomplete_checkpoints'] as const;
 export type ScoringStatus = (typeof SCORING_STATUSES)[number];
 
 /**
@@ -838,6 +838,8 @@ export type ScoringStatus = (typeof SCORING_STATUSES)[number];
  * episode with real omissions displaying a perfect score is worse than an episode displaying
  * nothing, because a number invites a clinician to trust it.
  *
+ *   incomplete_checkpoints — a checkpoint errored or produced no entries, so part of the expected
+ *                     course does not exist. `divergence_index` is stored NULL.
  *   no_expectations — no checkpoint produced a single entry. There was no standard to measure
  *                     against, so there is no score. `divergence_index` is stored NULL and the UI
  *                     says "not scorable" rather than rendering a number.
@@ -851,7 +853,15 @@ export function scoringStatusFor(a: {
   totalExpectedEntries: number;
   findings: readonly EpisodeFinding[];
   cappedFindingIds: ReadonlySet<string>;
+  /** Checkpoints that errored or produced no entries at all (item 2). */
+  incompleteCheckpoints?: number;
 }): ScoringStatus {
+  // ⚠️ FIRST, BEFORE ANY OTHER TEST. On IP-1286 the day-2 checkpoint failed on all five runs — a
+  // max_tokens truncation — and the episode scored `ok` on the remaining three quarters, five
+  // times, with a number a clinician could read. A score computed against an expected course that
+  // is missing a whole day is not a low score or a high score, it is not a score, and presenting
+  // one is the most dangerous thing this engine has done.
+  if ((a.incompleteCheckpoints ?? 0) > 0) return 'incomplete_checkpoints';
   if (a.totalExpectedEntries === 0) return 'no_expectations';
   if (a.findings.length > 0 && a.findings.every((f) => a.cappedFindingIds.has(f.finding_id))) return 'all_capped';
   return 'ok';
@@ -860,7 +870,10 @@ export function scoringStatusFor(a: {
 /** The score to STORE. Null under `no_expectations` — an absent standard yields no number, and a
  *  null is the only honest way to say that in an integer column. */
 export function storedDivergenceIndex(index: number, status: ScoringStatus): number | null {
-  return status === 'no_expectations' ? null : index;
+  // Both of these mean "there is no number here": no expectation was formed at all, or part of the
+  // expected course is missing. `all_capped` keeps its number — that arithmetic is real, it is just
+  // weakly evidenced, and the status says so.
+  return status === 'no_expectations' || status === 'incomplete_checkpoints' ? null : index;
 }
 
 // ── resolver findings (decision 33) ─────────────────────────────────────────────────────────

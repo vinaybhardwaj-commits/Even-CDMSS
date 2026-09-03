@@ -27,6 +27,7 @@ export function DivergenceChip({ index, status }: { index: number | null; status
   const st = status ?? 'ok';
   if (st !== 'ok' || index == null) {
     const why = st === 'no_expectations' ? 'no checkpoint produced an expected course, so nothing could be measured'
+      : st === 'incomplete_checkpoints' ? 'a checkpoint failed or produced no entries — part of the expected course is missing, so there is nothing to score against'
       : st === 'all_capped' ? 'every finding was capped — nothing survived at full weight'
       : 'no score was stored for this episode';
     return (

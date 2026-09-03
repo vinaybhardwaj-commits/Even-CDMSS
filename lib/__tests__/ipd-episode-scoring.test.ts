@@ -20,6 +20,7 @@ import {
 import {
   checkpointEntryRefs, parseExpectedCourse, buildRetrievalQuery, renderExpectedCourse,
   ordinalForChunkId, countUncitedEntries, everyEntryUncited, buildCheckpointUser,
+  capExpectedCourse, MAX_ENTRIES_PER_CATEGORY,
   clinicalTerms, retrievalIsOffTopic, assessTopicality, retrievedTitles, RETRIEVED_TITLE_CHARS,
   drugBaseName, clinicalTextForQuery, stripPersonNames, clinicalWordsOnly, MIN_SHARED_TERMS,
   type CheckpointEntryRef,
@@ -406,6 +407,60 @@ test('everyEntryUncited detects the IP-1286 shape, and only that shape', () => {
   }), CHUNKS);
   assert.equal(everyEntryUncited(some, 3), false, 'one grounded entry is not the failure');
   assert.equal(everyEntryUncited(null, 3), false);
+});
+
+// ── round 8: a missing checkpoint must not score, and the course is bounded ──────────────────
+
+test('ANY errored or empty checkpoint makes the episode not scorable, and the index NULL', () => {
+  // five runs of IP-1286 lost their day-2 checkpoint to a max_tokens truncation and scored `ok`
+  // on the remaining three quarters, every time, with a number a clinician could read
+  const st = scoringStatusFor({ totalExpectedEntries: 45, findings: [], cappedFindingIds: new Set(), incompleteCheckpoints: 1 });
+  assert.equal(st, 'incomplete_checkpoints');
+  assert.equal(storedDivergenceIndex(41, st), null, 'a score against a course with a hole in it is not a score');
+});
+
+test('incomplete_checkpoints outranks every other status', () => {
+  // it is tested FIRST: an episode can be both incomplete and all-capped, and incomplete is worse
+  assert.equal(scoringStatusFor({
+    totalExpectedEntries: 0, findings: [], cappedFindingIds: new Set(), incompleteCheckpoints: 2,
+  }), 'incomplete_checkpoints');
+  const f1 = f({ finding_id: 'a' });
+  assert.equal(scoringStatusFor({
+    totalExpectedEntries: 10, findings: [f1], cappedFindingIds: new Set(['a']), incompleteCheckpoints: 1,
+  }), 'incomplete_checkpoints');
+});
+
+test('a complete episode is unaffected', () => {
+  assert.equal(scoringStatusFor({ totalExpectedEntries: 45, findings: [], cappedFindingIds: new Set(), incompleteCheckpoints: 0 }), 'ok');
+  assert.equal(scoringStatusFor({ totalExpectedEntries: 45, findings: [], cappedFindingIds: new Set() }), 'ok', 'absent means none');
+  assert.equal(storedDivergenceIndex(41, 'ok'), 41);
+});
+
+test('the expected course is capped at four per category, keeping the model’s own ordering', () => {
+  assert.equal(MAX_ENTRIES_PER_CATEGORY, 4);
+  const mk = (n: number, prefix: string) => Array.from({ length: n }, (_, i) => ({
+    item: `${prefix}${i + 1}`, by_day: 0, rationale: 'r', citation_ids: [], matcher: null,
+    proposed_severity: 'moderate' as const,
+  }));
+  const course = {
+    expected_diagnostics: mk(7, 'dx'), expected_therapeutics: mk(6, 'tx'),
+    expected_monitoring: mk(2, 'mon').map((e) => ({ ...e, frequency: 'daily' })),
+    escalation_triggers: mk(5, 'esc').map((e) => ({ ...e, trigger: e.item, action: 'act' })),
+    expected_los_days: 3, expected_disposition: 'home', uncertainty: [],
+  };
+  const { course: capped, truncated } = capExpectedCourse(course);
+  assert.equal(capped!.expected_diagnostics.length, 4);
+  assert.equal(capped!.expected_therapeutics.length, 4);
+  assert.equal(capped!.expected_monitoring.length, 2, 'a category under the cap is untouched');
+  assert.equal(capped!.escalation_triggers.length, 4);
+  assert.equal(truncated, 3 + 2 + 0 + 1);
+  // ordering preserved: the prompt asks for most-consequential-first, so the tail is what goes
+  assert.equal(capped!.expected_diagnostics[0].item, 'dx1');
+  assert.equal(capped!.expected_diagnostics[3].item, 'dx4');
+});
+
+test('capping a null course is a no-op', () => {
+  assert.deepEqual(capExpectedCourse(null), { course: null, truncated: 0 });
 });
 
 // ── decision 33: code owns omissions, and unassessable must be earned ────────────────────────
