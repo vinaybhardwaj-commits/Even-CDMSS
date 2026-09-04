@@ -92,8 +92,8 @@ On all 120 RMO rows, `finalized_by_username` differed from `current_treating_doc
 Three cautions:
 
 1. `finalized_by_username` is a display-name string. No identifier column exists for the author. Joins on it are free-text joins.
-2. Name hygiene is already broken. One row reads `Dr Dietician` where the real author is a named dietician. Spelling drifts, for example `Dr. Testperson Alpha` against the unpunctuated house style.
-3. Role is a property of the note, not of the person. Dr Testperson Beta appears as both `Doctor` and `RMO`. Derive role per note.
+2. Name hygiene is already broken. One row reads `Dr Dietician` — a ROLE sitting in the name field — where the real author is a named dietician. Spelling drifts too: the same clinician appears with and without the full stop after `Dr`, against the unpunctuated house style. (Both examples are real rows; the names are redacted here because this repository is public.)
+3. Role is a property of the note, not of the person. One clinician appears as both `Doctor` and `RMO` across different notes. Derive role per note.
 
 No counter-signature field exists. "Finalized" means the author finalized it. The record holds no evidence of consultant review.
 

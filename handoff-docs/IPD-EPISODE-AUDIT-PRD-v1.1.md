@@ -333,6 +333,37 @@ wiring the round-15 counts in beside the band — which cannot sit beside a band
 A source-read test now holds the query and the page's field accesses together: every `r.<field>`
 the page reads must be named in the SELECT.
 
+### 1.15 Round 16 — real names redacted, and the cause recorded (V, 2026-09-03)
+
+Three real people's names were on this branch, in a PUBLIC repository: two clinicians used as test
+fixtures since the build commit, and two staff names inside the merged database reference. A
+theatre assistant's name had also been quoted in round 14's own explanation of why staff names must
+not be stored — removed in `d935ccb3` before this round.
+
+**THE CAUSE: the reference document was added by the orchestrator without a personal-data review.**
+`handoff-docs/EVEN-DB-REFERENCE-2026-09-01.md` was merged in by the kickoff to serve as the
+evidence base for the join keys and coverage figures, and nothing read it for personal data first.
+The fixtures then followed the document — the build used the names it found there. One unreviewed
+document seeded every later occurrence.
+
+**The next person adding a document to this repository must read it for personal data before
+committing it.** That is the whole lesson, and it is cheaper to apply than the history rewrite it
+cost this time.
+
+The document STAYS: it is the evidence base for §3.2.3's column lists and §12's grounding facts,
+and removing it would strand every number that cites it. Both of its examples keep their substance
+— a role placeholder sitting in a name field, and spelling drift in a free-text author field — with
+the values removed. `Dr Dietician` is retained deliberately: it is a ROLE, not a person, and it is
+the defect the example exists to show.
+
+Fixtures now use `Dr Testperson Alpha` and `Dr Testperson Beta` — two distinct synthetic
+identities, because several tests turn on the two authors being different people.
+
+History was rewritten on `ipd-episode-audit` and `handoff/ipd-episode-audit` so that no commit on
+either branch contains a real name. Nothing had merged and only one machine had pulled them, which
+is what made a force-push safe; the standing no-force-push rule was suspended by V for these two
+branches and this purpose only.
+
 ### 4.2a `unassessable` must be earned (added 2026-09-02, decision 33)
 
 A finding may carry `unassessable` only if its `evidence_basis` is empty or every cited source is Tier C. Anything else is rewritten to `context_dependent` in code and counted in `n_unassessable_rejected`. Resolver findings with `resolution = 'absent_class_missing'` are exempt: that gap was established by code rather than claimed by a model.
