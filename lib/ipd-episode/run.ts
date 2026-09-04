@@ -22,7 +22,8 @@ import { assertKnownBedrockModel } from '../bedrock-core';
 import { startTrace, finishTraceIfRunning, logEvent } from '../trace';
 import {
   checkpointPlan, dayStartIso, diffPassEvents, episodeLevelEvents, eventsBeforeDayStart,
-  fidelityPassEvents, isDischargeEvent, summariseEventsForPrompt, type EpisodeEvent,
+  fidelityPassEvents, isDischargeEvent, summariseEventsForPrompt, dischargeIndicatesDeath,
+  type EpisodeEvent,
 } from './assemble-core';
 import { assembleEpisode, type AssembledEpisode } from './assemble';
 import { admissionContextLine, renderExpectedCourse, type CheckpointEntryRef } from './checkpoint-core';
@@ -426,7 +427,12 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
     // Resolved against the SAME filtered list the diff pass sees — no discharge event, so an
     // expectation cannot be satisfied by something recorded only in the discharge summary.
     const resolverEvents = diffPassEvents(events);
-    const resolved = resolveAll(resolvableEntries, resolverEvents);
+    // ROUND 20 ITEM 1 / DECISION 41. Null unless this episode's discharge_type is one of the three
+    // the mirror uses for death, so an unrecognised value audits normally.
+    const terminalDay = dischargeIndicatesDeath(envelope.dischargeType)
+      ? (events.find(isDischargeEvent)?.day_index ?? envelope.losDays ?? null)
+      : null;
+    const resolved = resolveAll(resolvableEntries, resolverEvents, terminalDay);
     const resolverFindings = findingsFromResolved(resolved, domainForSection);
     const resolution_counts = resolutionCounts(resolved);
 
@@ -478,7 +484,7 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
     // presence turns a silent day into `unassessable`, and the discharge day going silent is
     // exactly the gap worth reporting rather than excusing. Nothing expected it, so nothing else
     // could have found it.
-    const dischargeNoteGap = missingDischargeDayNote(events, envelope.losDays);
+    const dischargeNoteGap = missingDischargeDayNote(events, envelope.losDays, envelope.dischargeType);
     const raw: EpisodeFinding[] = [
       // the deterministic half: already carries its entry's citations, so it bypasses the
       // ordinal resolution the judged findings need

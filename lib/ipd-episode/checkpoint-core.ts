@@ -210,6 +210,9 @@ export function clinicalWordsOnly(text: string): string {
 /** How many progress notes the accumulated problem list may draw on, and the shared character
  *  budget across them. Bounded so a long stay cannot grow the query without limit (item 8). */
 export const Q_NOTES_MAX = 6;
+/** How many of the most recent shift handovers may contribute (round 20 item 3b). Bounded because
+ *  a handover exists on every shift and they repeat heavily. */
+export const Q_HANDOVERS_MAX = 3;
 export const Q_NARRATIVE_TOTAL_CHARS = 1200;
 
 const detailStr = (e: EpisodeEvent, key: string): string => {
@@ -265,6 +268,26 @@ export function buildRetrievalQuery(input: RetrievalQueryInput): RetrievalQueryR
     .filter((e) => e.event_type === 'initial_assessment' && e.summary.trim())
     .sort((a, b) => String(a.occurred_at ?? '').localeCompare(String(b.occurred_at ?? '')))[0];
   if (assessment) push(whitelisted(assessment));
+
+  // 3b. ROUND 20 ITEM 3b — SHIFT HANDOVERS ARE A QUERY SOURCE NOW.
+  //
+  // They were consulted by nothing, and they are the one clinical record that exists on EVERY day
+  // of every admission — including the early days where IPNO-573's first three checkpoints found no
+  // note, no lab and no OT note and produced an empty query. `nhc16` carries the standing problem
+  // list ("K/C/O DM,HTN,CKD ON MM & MHD") and `nhc13` the consciousness line; both are on the
+  // whitelist, so what reaches the query here is the same bounded narrative every other source
+  // gets, and the staff-name fields in that template (`nursing_handover`, `nursing_receiving`) are
+  // excluded by name.
+  //
+  // Placed BEFORE the notes so that when both exist the note narrative — richer, and written by a
+  // clinician — takes the larger share of the character budget below.
+  const handoverText = [...events]
+    .filter((e) => e.event_type === 'handover')
+    .sort((a, b) => String(a.occurred_at ?? '').localeCompare(String(b.occurred_at ?? '')))
+    .slice(-Q_HANDOVERS_MAX)
+    .map((e) => whitelisted(e))
+    .filter((t) => t.trim());
+  for (const t of Array.from(new Set(handoverText))) push(t);
 
   // 4. ROUND 14 ITEM 8 — THE ACCUMULATED PROBLEM LIST, NOT THE LATEST NOTE.
   //

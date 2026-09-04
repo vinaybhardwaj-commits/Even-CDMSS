@@ -570,7 +570,40 @@ export interface ResolvedOutcome {
  * count as satisfying it, so code cannot check it and will not guess. That is a defect in the
  * generation, and it is recorded as one rather than scored as an omission.
  */
-export function resolveEntry(entry: ResolvableEntry, events: readonly EpisodeEvent[]): ResolvedOutcome {
+export function resolveEntry(
+  entry: ResolvableEntry, events: readonly EpisodeEvent[], terminalDay: number | null = null,
+): ResolvedOutcome {
+  // ⚠️ ROUND 20 ITEM 1 / DECISION 41 — THE TERMINAL DAY IS UNASSESSABLE.
+  //
+  // Round 14 scoped class presence to the expectation's own window, which correctly turned the days
+  // AFTER a death into `unassessable`. It missed the day OF the death, because the class is still
+  // represented in that window: the patient was alive for part of it, notes and orders exist, so a
+  // day-5 expectation on a patient who died on day 5 resolved `absent_class_present` — divergent.
+  //
+  // IPNO-573 is the measured case: three MAJOR findings on day 5, the day the patient died,
+  // including "hourly neurological assessment (GCS, pupil reactivity, motor response)". Twenty-four
+  // of its sixty-eight penalty points came from care a dead patient did not receive. IPNO-560,
+  // recorded `Admitted Dead`, carried six majors of the same kind — empiric antibiotics, IV fluids,
+  // glycaemic control — and banded `moderate` because of them.
+  //
+  // An expectation formed ON the day of death cannot be judged: nothing in this pipeline knows what
+  // hour the patient died, so "it was not done" and "there was no longer a patient to do it to" are
+  // indistinguishable. That is what `unassessable` means, and `absent_class_missing` is the
+  // resolution that carries it — the same one §4.2a exempts from the postcondition.
+  //
+  // `terminalDay` is null on every episode whose discharge_type this engine does not recognise as
+  // death, so an unknown value audits normally (see `dischargeIndicatesDeath`).
+  if (terminalDay != null && entry.dayIndex >= terminalDay) {
+    return {
+      resolution: 'absent_class_missing',
+      verdict: 'unassessable',
+      severity: entry.proposedSeverity,
+      statement: `Expected: ${entry.item}. This expectation was formed on or after the day the patient died (day ${terminalDay}), so this engine cannot judge it: nothing here records the hour of death, and "not done" cannot be told apart from "there was no longer a patient to do it to".`,
+      matchedEvent: null, matchedTerm: null,
+      confound: `the expectation's window opens on or after the day of death (day ${terminalDay})`,
+    };
+  }
+
   // ⚠️ ROUND 17 ITEM 1 — AN ESCALATION TRIGGER IS A CONDITIONAL, AND CODE CANNOT EVALUATE ITS
   // ANTECEDENT. THIS GATE WAS PROMPT-ONLY UNTIL NOW.
   //
@@ -686,8 +719,9 @@ export function resolveEntry(entry: ResolvableEntry, events: readonly EpisodeEve
 /** Resolve every entry. Order is stable (the order the entries were generated in). */
 export function resolveAll(
   entries: readonly ResolvableEntry[], events: readonly EpisodeEvent[],
+  terminalDay: number | null = null,
 ): { entry: ResolvableEntry; outcome: ResolvedOutcome }[] {
-  return entries.map((entry) => ({ entry, outcome: resolveEntry(entry, events) }));
+  return entries.map((entry) => ({ entry, outcome: resolveEntry(entry, events, terminalDay) }));
 }
 
 /** Counts by resolution, for the audit row and for the report. */

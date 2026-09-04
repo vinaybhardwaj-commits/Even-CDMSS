@@ -70,6 +70,38 @@ export const TIER_B_TABLES = [
   'kx_ip_transfers',
 ] as const;
 
+/**
+ * ROUND 20 ITEM 1 / DECISION 41 — WHICH `discharge_type` VALUES MEAN THE PATIENT DIED.
+ *
+ * ⚠️ DERIVED FROM THE DATA, NOT RECALLED. Queried on 2026-09-04 against db13
+ * `kx_discharge_summary_records`, all 2,496 rows, 14 distinct values:
+ *
+ *     Normal Discharge 2236 · None 155 · LAMA 33 · DAMA 28 · Discharge On Request 18 ·
+ *     Expired 8 · Admitted Dead 3 · Refer External Hospital 3 · (empty) 3 · Mortuary 3 ·
+ *     Referral 2 · mortuary 2 · Early Neonatal 1 · Absconded 1
+ *
+ * THREE MEAN DEATH: `Expired`, `Admitted Dead`, `Mortuary` — 16 records between them. The match is
+ * CASE-INSENSITIVE because the mirror carries both `Mortuary` (3) and `mortuary` (2); a
+ * case-sensitive list would have exempted three episodes and audited two of the same kind normally.
+ *
+ * ⚠️ `Early Neonatal` IS DELIBERATELY NOT MATCHED. It may well be a neonatal death category, but it
+ * may equally be a discharge category, and one row cannot settle it. An unrecognised value AUDITS
+ * NORMALLY — which is the direction this must fail in. Exempting an episode from the terminal-day
+ * rule on a guess would silently stop auditing a real admission; auditing a death as if it were a
+ * discharge produces findings a human will notice and can correct. The loud failure is the safer
+ * one, and it is the one a wrong guess here produces.
+ *
+ * EXACT match on the trimmed, lower-cased value, never a substring: `Refer External Hospital`
+ * contains no death word today, but a substring rule is a standing invitation for one to appear.
+ */
+export const DEATH_DISCHARGE_TYPES: readonly string[] = ['expired', 'admitted dead', 'mortuary'];
+
+export function dischargeIndicatesDeath(dischargeType: string | null | undefined): boolean {
+  const t = String(dischargeType ?? '').trim().toLowerCase();
+  if (!t) return false;
+  return DEATH_DISCHARGE_TYPES.includes(t);
+}
+
 export function tierForTable(table: string | null | undefined): EvidenceTier {
   const t = String(table ?? '');
   if ((TIER_A_TABLES as readonly string[]).includes(t)) return 'A';
@@ -275,6 +307,9 @@ export function componentValue(entries: ComponentEntry[], name: string): string 
  */
 export const NOTE_SUMMARY_EXCLUDED_NAMES = [
   'esfewqf', 'Inver43', 'fycjtkuvyj', 'liubf', 'observationId', 'doctor_id', 'tag_data',
+  // ROUND 20: `signnur` is a 15 kB base64 PNG of a signature. It was reaching note summaries and
+  // only the 4,000-character cap was keeping it out of the prompts — by luck, not by design.
+  'signnur',
 ] as const;
 
 /**
@@ -316,6 +351,28 @@ export function isPersonFieldName(name: string): boolean {
  *
  * The opaque template ids are here because the reference measured them as where the narrative
  * actually lives (§1.2: "Clinical narrative sits in fields named T-3, T-35, and T-2").
+ *
+ * ⚠️ ROUND 20 ITEM 3 — THE WHITELIST WAS ALSO EMPTYING THE QUERY, and the fields below were added
+ * by SAMPLING db13 rather than by guessing at names.
+ *
+ * Five checkpoints across three Group-1 episodes ran with zero excerpts and every entry uncited;
+ * IPNO-573 formed 40 expectations on no evidence at all. Its day-0 initial assessment contributed
+ * nothing, because none of that template's field names was on this list.
+ *
+ * WHAT THE SAMPLING FOUND (kx_clinical_template_initial_assessment_adults, 188 rows):
+ *   histoyerjfj (1,070 chars) · risky (1,156) · vulnerass (1,929)   — narrative, wrapped in HTML
+ *                                                                     TABLES, hence stripMarkup
+ *   pamgjdk (2,042)   — pain assessment, HTML fragments
+ *   loc (32)          — level of consciousness, a JSON array: ["Alert"]
+ *   signnur (14,970)  — ⚠️ A BASE64 PNG SIGNATURE IMAGE. Never whitelisted, and now excluded from
+ *                        note summaries too: it is 15 kB of `data:image/png;base64,...` that only
+ *                        the 4,000-character summary cap was keeping out of the prompts, by luck.
+ *
+ * AND (kx_clinical_template_shift_handovers, 1,573 rows):
+ *   nhc16 (1,100 non-empty) — the standing problem list: "K/C/O DM,HTN,CKD ON MM & MHD"
+ *   nhc13 (1,306)           — consciousness: "conscious AND ORIENTED"
+ *   nhc05 (8,800)           — NOT included: a care-checklist JSON table of GIVEN / N/A rows
+ *   nursing_handover, nursing_receiving — ⚠️ NOT included: they hold STAFF NAMES.
  */
 export const QUERY_NARRATIVE_FIELDS: readonly string[] = [
   'T-2', 'T-3', 'T-35',
@@ -323,23 +380,74 @@ export const QUERY_NARRATIVE_FIELDS: readonly string[] = [
   'history_of_present_illness', 'hopi', 'diagnosis', 'provisional_diagnosis',
   'final_diagnosis', 'impression', 'indication', 'examination', 'findings',
   'procedure', 'procedure_details', 'plan_of_management', 'treatment_plan',
+  // initial assessment (round 20 item 3a) — sampled, not guessed
+  'histoyerjfj', 'risky', 'vulnerass', 'pamgjdk', 'loc',
+  // shift handover (round 20 item 3b) — the problem list and the consciousness line only
+  'nhc16', 'nhc13',
 ];
+
+/**
+ * ROUND 20 ITEM 3c — HOW THE TENSION IS RESOLVED: A BOUNDED FALLBACK, NOT A BROADER WHITELIST.
+ *
+ * The whitelist exists because three strip-based attempts failed to keep inventory noise out of
+ * retrieval (round 7 item 7). Widening it to "anything that looks like prose" would walk straight
+ * back into that. But a deny-by-default list has a second failure mode the first three attempts did
+ * not have: when a template's fields are ALL unknown, the query is not noisy — it is EMPTY, and an
+ * empty query is not a safe default. It produced 40 expectations with no evidence behind them.
+ *
+ * So the whitelist stays authoritative, and a fallback runs only when it yields NOTHING for a
+ * component block. The fallback is deliberately more suspicious than the whitelist:
+ *   · person-named fields are dropped by the same `isPersonFieldName` rule that guards summaries;
+ *   · markup, JSON and data URIs are stripped;
+ *   · anything still containing a `data:` URI or base64 run is dropped whole;
+ *   · the result is capped hard, because a fallback should contribute a hint, not a document.
+ *
+ * A known template is therefore as tightly controlled as before. An unknown one contributes
+ * something cleaned rather than nothing at all, and the next unknown template after this one does
+ * not need a code change to be audited with evidence.
+ */
+const DATA_URI_OR_BASE64 = /data:[a-z/+.-]+;base64,|[A-Za-z0-9+/]{120,}={0,2}/i;
+
+/** Strip HTML tags, entities and JSON punctuation down to readable words. */
+export function stripMarkup(text: string): string {
+  const noTags = String(text ?? '').split(/<[^>]*>/).join(' ');
+  const noEntities = noTags.split(/&[a-z]+;|&#\d+;/i).join(' ');
+  // NOT the comma: it is prose punctuation ("K/C/O DM,HTN,CKD"), and removing it made the query
+  // less readable without making it match differently — retrieval tokenises on non-alphanumerics.
+  const noJson = Array.from(noEntities, (c) => ('{}[]":\\'.includes(c) ? ' ' : c)).join('');
+  return collapseSpaces(noJson);
+}
 
 /**
  * The retrieval-safe narrative of one component block: whitelisted fields only, values only, no
  * field names, no identifiers, no person fields. Bounded and boring by construction.
  */
+export const QUERY_FALLBACK_CAP = 240;
+
 export function queryNarrativeFrom(entries: ComponentEntry[], cap = 400): string {
   const allow = new Set(QUERY_NARRATIVE_FIELDS.map((f) => f.toLowerCase()));
+  const usable = (v: string) => !!v && !/^(true|false|null|\d+(\.\d+)?)$/i.test(v);
   const parts: string[] = [];
   for (const e of entries) {
     if (!allow.has(e.name.toLowerCase())) continue;
-    const v = e.valueString.trim();
-    // a bare boolean or number is a flag, not narrative
-    if (!v || /^(true|false|null|\d+(\.\d+)?)$/i.test(v)) continue;
+    const v = stripMarkup(e.valueString.trim());
+    if (!usable(v)) continue;
+    if (DATA_URI_OR_BASE64.test(v)) continue;
     parts.push(v);
   }
-  return collapseSpaces(parts.join(' ')).slice(0, cap);
+  if (parts.length) return collapseSpaces(parts.join(' ')).slice(0, cap);
+
+  // ── the bounded fallback (item 3c). Only when the whitelist matched NOTHING at all. ──
+  const fallback: string[] = [];
+  for (const e of entries) {
+    if (isPersonFieldName(e.name)) continue;
+    const raw = e.valueString.trim();
+    if (DATA_URI_OR_BASE64.test(raw)) continue;
+    const v = stripMarkup(raw);
+    if (!usable(v) || v.length < 8) continue;
+    fallback.push(v);
+  }
+  return collapseSpaces(fallback.join(' ')).slice(0, QUERY_FALLBACK_CAP);
 }
 
 /**

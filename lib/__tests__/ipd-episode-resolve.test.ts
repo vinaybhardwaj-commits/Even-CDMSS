@@ -16,6 +16,7 @@ import {
   CLINICAL_SHORTHAND, expandClinicalShorthand,
   type ExpectationMatcher, type ResolvableEntry,
 } from '../ipd-episode/resolve-core';
+import { DEATH_DISCHARGE_TYPES, dischargeIndicatesDeath } from '../ipd-episode/assemble-core';
 import { findingsFromResolved, domainForSection, countFindings, resolverGroupKey } from '../ipd-episode/judge-core';
 import type { EpisodeEvent } from '../ipd-episode/assemble-core';
 
@@ -449,4 +450,78 @@ test('ITEM 1: the gate is keyed on the section, and NON-escalation sections are 
   assert.equal(ESCALATION_SECTION, 'escalation');
   const run = readFileSync('lib/ipd-episode/run.ts', 'utf8');
   assert.match(run, /push\(ESCALATION_SECTION,/, 'no repeated literal to drift from the gate');
+});
+
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+// ROUND 20 ITEM 1 / DECISION 41 — THE TERMINAL DAY IS UNASSESSABLE
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+
+test('ITEM 1: the death values are exactly the three the mirror uses, case-insensitively', () => {
+  // Derived from db13 kx_discharge_summary_records, all 2,496 rows, 14 distinct values.
+  for (const v of ['Expired', 'expired', 'Admitted Dead', 'ADMITTED DEAD', 'Mortuary', 'mortuary']) {
+    assert.equal(dischargeIndicatesDeath(v), true, v);
+  }
+  // BOTH capitalisations of mortuary exist in the data (3 + 2); a case-sensitive list would have
+  // exempted three episodes and audited two of the same kind normally.
+  assert.deepEqual([...DEATH_DISCHARGE_TYPES], ['expired', 'admitted dead', 'mortuary']);
+});
+
+test('ITEM 1: everything else audits NORMALLY — the failure direction V asked for', () => {
+  for (const v of ['Normal Discharge', 'LAMA', 'DAMA', 'Discharge On Request', 'Referral',
+                   'Refer External Hospital', 'Absconded', 'None', '', '   ', null, undefined]) {
+    assert.equal(dischargeIndicatesDeath(v as string), false, String(v));
+  }
+  // ⚠️ `Early Neonatal` (n=1) is DELIBERATELY not matched. It may be a neonatal death category or a
+  // discharge category and one row cannot settle it. Exempting on a guess silently stops auditing a
+  // real admission; auditing a death as a discharge produces findings a human notices.
+  assert.equal(dischargeIndicatesDeath('Early Neonatal'), false);
+  // and no substring rule: a value merely CONTAINING a death word is not a death
+  assert.equal(dischargeIndicatesDeath('Transferred to mortuary annexe'), false);
+});
+
+test('ITEM 1: an expectation formed ON the day of death is unassessable, not divergent', () => {
+  // THE IPNO-573 CASE: three majors on day 5, the day the patient died, including hourly neuro obs.
+  const events = [noteEvent(5, 'ward round'), drugOrder('NORADRENALINE', 5)];
+  const onTheDay = resolveEntry(
+    entry({ dayIndex: 5, section: 'monitoring', item: 'Hourly neurological assessment (GCS, pupil reactivity)',
+            matcher: { kind: 'note', terms: ['neurological assessment', 'GCS'] } }),
+    events, 5);
+  assert.equal(onTheDay.verdict, 'unassessable');
+  assert.equal(onTheDay.resolution, 'absent_class_missing');
+  assert.match(onTheDay.statement, /on or after the day the patient died/);
+  assert.match(onTheDay.confound ?? '', /day of death/);
+});
+
+test('ITEM 1: an expectation formed BEFORE the day of death is still judged', () => {
+  const events = [noteEvent(3, 'ward round'), noteEvent(4, 'ward round')];
+  const earlier = resolveEntry(
+    entry({ dayIndex: 3, section: 'monitoring', item: 'Neurological assessment',
+            matcher: { kind: 'note', terms: ['neurological assessment'] } }),
+    events, 5);
+  assert.notEqual(earlier.verdict, 'unassessable',
+    'day 3 had a living patient and two days to act — that is assessable');
+  assert.equal(earlier.resolution, 'absent_class_present');
+});
+
+test('ITEM 1: terminalDay null (an unrecognised discharge_type) changes nothing', () => {
+  const events = [noteEvent(5, 'ward round')];
+  const withGate = resolveEntry(entry({ dayIndex: 5, section: 'monitoring', item: 'X',
+    matcher: { kind: 'note', terms: ['neuro'] } }), events, 5);
+  const without = resolveEntry(entry({ dayIndex: 5, section: 'monitoring', item: 'X',
+    matcher: { kind: 'note', terms: ['neuro'] } }), events, null);
+  assert.equal(withGate.verdict, 'unassessable');
+  assert.equal(without.verdict, 'divergent', 'an unknown discharge_type audits normally');
+});
+
+test('ITEM 1: resolveAll threads the terminal day, and the episode checkpoint is covered too', () => {
+  // cp-episode carries day_index = losDays (assemble-core checkpointPlan), so on a death episode
+  // its expectations open on the day of death and are covered by the same rule.
+  const events = [noteEvent(2, 'ward round')];
+  const entries = [
+    entry({ ref: 'cp-d1/monitoring/1', dayIndex: 1, section: 'monitoring', matcher: { kind: 'note', terms: ['zzz'] } }),
+    entry({ ref: 'cp-episode/monitoring/1', dayIndex: 2, section: 'monitoring', matcher: { kind: 'note', terms: ['zzz'] } }),
+  ];
+  const out = resolveAll(entries, events, 2).map((r) => r.outcome.verdict);
+  assert.deepEqual(out, ['divergent', 'unassessable']);
 });

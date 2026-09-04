@@ -15,6 +15,7 @@ import {
   buildOrderEvents, checkpointPlan, collapseSpaces, dayIndexFor, dayStartIso, diffPassEvents,
   episodeLevelEvents, eventsBeforeDayStart, fidelityPassEvents, isoFromEpochMs, losDaysFor,
   noteSummaryFrom, normalizeAuthorName, parseComponentJson, componentValue, tierForTable,
+  queryNarrativeFrom, QUERY_FALLBACK_CAP,
   type EpisodeEvent,
 } from '../ipd-episode/assemble-core';
 import { templateClinicalTime } from '../ipd-episode/assemble';
@@ -340,4 +341,76 @@ test('source-read: every db13 read is fail-safe — no reader lets a query error
   assert.equal((src.match(/metabaseQuery\(/g) ?? []).length, 1,
     'metabaseQuery must be reached only through the one guarded helper, so no reader can forget the catch');
   assert.ok(/catch \(e\)/.test(src) && /return \[\]/.test(src), 'the guarded helper degrades to an empty result');
+});
+
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+// ROUND 20 ITEM 3 — THE QUERY THAT WAS SILENTLY EMPTY
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+
+const comp = (name: string, valueString: string) => ({ name, valueString });
+
+test('ITEM 3a: the initial assessment now contributes, with its HTML tables stripped', () => {
+  // Sampled from db13: histoyerjfj / risky / vulnerass are narrative wrapped in HTML tables.
+  const out = queryNarrativeFrom([
+    comp('histoyerjfj', '<table align="center" border="1"><thead><tr><th scope="col">History</th></tr></thead>'
+      + '<tbody><tr><td>Breathlessness since three days, known diabetic</td></tr></tbody></table>'),
+    comp('loc', '["Alert"]'),
+  ]);
+  assert.match(out, /Breathlessness since three days/, 'the narrative survives');
+  assert.match(out, /Alert/, 'and the JSON array is unwrapped to its word');
+  for (const junk of ['<table', 'thead', 'scope=', 'border', '["']) {
+    assert.ok(!out.includes(junk), `markup token ${junk} must not reach retrieval`);
+  }
+});
+
+test('ITEM 3a: the base64 signature blob never reaches the query OR the summary', () => {
+  const png = 'data:image/png;base64,' + 'iVBORw0KGgoAAAANSUhEUg' + 'A'.repeat(400);
+  assert.equal(queryNarrativeFrom([comp('signnur', png)]), '', 'not in the query');
+  const summary = noteSummaryFrom([comp('signnur', png), comp('T-3', 'patient reviewed')], (t) => t);
+  assert.ok(!summary.includes('base64'), 'not in the note summary either');
+  assert.match(summary, /patient reviewed/, 'and the real narrative is untouched');
+});
+
+test('ITEM 3b: the handover problem list is whitelisted, its staff names are not', () => {
+  const out = queryNarrativeFrom([
+    comp('nhc16', 'K/C/O DM,HTN,CKD ON MM & MHD PAST'),
+    comp('nhc13', 'conscious AND ORIENTED'),
+    comp('nursing_handover', 'SRUTHI'),
+    comp('nursing_receiving', 'AKHILA'),
+    comp('nhc05', '{"tableVal":[{"rowheader":"basic care","nhc08":"GIVEN"}]}'),
+  ]);
+  assert.match(out, /K\/C\/O DM,HTN,CKD/, 'the standing problem list reaches retrieval');
+  assert.match(out, /conscious AND ORIENTED/);
+  for (const name of ['SRUTHI', 'AKHILA']) assert.ok(!out.includes(name), `${name} must not`);
+  assert.ok(!out.includes('rowheader'), 'nor the care-checklist table');
+});
+
+test('ITEM 3c: the fallback fires ONLY when the whitelist matched nothing', () => {
+  // a known template is as tightly controlled as before — the fallback never runs
+  const known = queryNarrativeFrom([comp('T-3', 'reviewed, afebrile'), comp('unknown_junk', 'ABSTACK 30-.-5MM-COVIDEN')]);
+  assert.equal(known, 'reviewed, afebrile', 'the unknown field contributes nothing beside a known one');
+
+  // an entirely unknown template contributes something cleaned rather than nothing at all
+  const unknown = queryNarrativeFrom([comp('zzz_novel_field', 'Acute pyelonephritis with obstructive uropathy')]);
+  assert.match(unknown, /Acute pyelonephritis with obstructive uropathy/);
+});
+
+test('ITEM 3c: the fallback is more suspicious than the whitelist, not less', () => {
+  const png = 'data:image/png;base64,' + 'A'.repeat(300);
+  const out = queryNarrativeFrom([
+    comp('some_surgeon_name', 'Dr Testperson Alpha'),   // person-named field
+    comp('sig_blob', png),                               // data URI
+    comp('x', 'ok'),                                     // too short to be narrative
+    comp('novel_finding', 'Right hydroureteronephrosis noted on imaging'),
+  ]);
+  assert.match(out, /Right hydroureteronephrosis/, 'real narrative survives');
+  assert.ok(!out.includes('Testperson'), 'a person-named field is dropped by name');
+  assert.ok(!out.includes('base64'), 'a data URI is dropped whole');
+  assert.ok(out.length <= QUERY_FALLBACK_CAP, 'and the fallback is capped tighter than the whitelist');
+});
+
+test('ITEM 3: an empty component block still yields an empty query, not junk', () => {
+  assert.equal(queryNarrativeFrom([]), '');
+  assert.equal(queryNarrativeFrom([comp('a', ''), comp('b', '   ')]), '');
 });

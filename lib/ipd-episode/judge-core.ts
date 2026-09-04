@@ -32,7 +32,7 @@
 import { extractJsonObject } from '../lvc-value-core';
 import { LVC_CATEGORIES } from '../opd-lvc-classify-core';
 import {
-  COMPLETENESS_SOURCES, collapseSpaces, tierForTable, isDischargeEvent,
+  COMPLETENESS_SOURCES, collapseSpaces, tierForTable, isDischargeEvent, dischargeIndicatesDeath,
   type EpisodeEvent, type EvidenceTier,
 } from './assemble-core';
 import { CHECKPOINT_ENTRY_SECTIONS, renderEvent, type CheckpointEntryRef, type ExpectedCourse } from './checkpoint-core';
@@ -817,7 +817,7 @@ export function applyBillingOnlyCap(
 export const MISSING_DISCHARGE_NOTE_ID = 'd-1';
 
 export function missingDischargeDayNote(
-  events: readonly EpisodeEvent[], losDays: number | null,
+  events: readonly EpisodeEvent[], losDays: number | null, dischargeType?: string | null,
 ): EpisodeFinding | null {
   const dischargeDay = events.find(isDischargeEvent)?.day_index
     ?? (typeof losDays === 'number' ? losDays : null);
@@ -830,6 +830,7 @@ export function missingDischargeDayNote(
   // the admission record itself, and a LOS-0 stay is a different kind of episode.
   if (dischargeDay === 0) return null;
   const anyNote = events.find((e) => e.event_type === 'note');
+  const died = dischargeIndicatesDeath(dischargeType);
   return {
     finding_id: MISSING_DISCHARGE_NOTE_ID,
     pass: 'divergence',
@@ -838,8 +839,21 @@ export function missingDischargeDayNote(
     domain: 'documentation',
     day_index: dischargeDay,
     checkpoint_ref: null,
-    statement: `No progress note was written on the discharge day (day ${dischargeDay}). `
-      + 'The decision to discharge was recorded without a same-day clinical entry to support it.',
+    // ⚠️ ROUND 20 ITEM 2 — WHAT THIS SAYS DEPENDS ON HOW THE ADMISSION ENDED, and round 14 never
+    // asked. On IPNO-531 and IPNO-560 this finding read "The decision to discharge was recorded
+    // without a same-day clinical entry to support it" — about patients who had DIED. There was no
+    // decision to discharge. A clinician reading that learns nothing and distrusts the rest.
+    //
+    // The OBSERVATION survives unchanged, because it is worth making either way: a day with no
+    // progress note is a documentation gap, and a death day with no note is arguably the worse of
+    // the two — a death is the one event that most needs a same-day clinical record. Only the
+    // sentence changes.
+    statement: died
+      ? `No progress note was written on the day the patient died (day ${dischargeDay}). `
+        + 'The death is recorded without a same-day clinical entry describing the deterioration, '
+        + 'the response to it, or the circumstances of death.'
+      : `No progress note was written on the discharge day (day ${dischargeDay}). `
+        + 'The decision to discharge was recorded without a same-day clinical entry to support it.',
     severity: 'major',
     evidence_tier: 'A',
     // The absence is established AGAINST the progress-note table. Citing a real note from another

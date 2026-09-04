@@ -454,6 +454,73 @@ sees the FINISHED message rather than the one that was written.
 | 3 | The migration route's `DROP COLUMN IF EXISTS de_identified` is the **only destructive statement** in a route that is otherwise additive-only, and it now says so at length: what it drops, why nothing depends on it, and that a future DROP must carry its own note. A reader skimming the route is entitled to assume it cannot destroy data; from that line on the assumption is wrong, so it is stated rather than inferred. |
 | 4 | The DDL column-extraction regex in the contract test was coupled to two-space indentation and an uppercase type token; a column declared differently would have vanished from `declared` and quietly weakened the bidirectional check. Loosened, and the extraction is now itself asserted — a set comparison is vacuously green if one side comes back short. |
 
+### 1.19 Decision 41 — the terminal day is unassessable (V, 2026-09-03)
+
+When `discharge_type` indicates death, every expectation whose window opens **on or after** the day
+of death resolves `absent_class_missing` / `unassessable`.
+
+Round 14 scoped class presence to the expectation's own window, which correctly turned the days
+AFTER a death into `unassessable`. It missed the day OF the death, because the class is still
+represented in that window — the patient was alive for part of it, so notes and orders exist.
+**IPNO-573** produced three MAJOR findings on day 5, the day the patient died, including *hourly
+neurological assessment (GCS, pupil reactivity, motor response)*: 24 of its 68 penalty points were
+care a dead patient did not receive. **IPNO-560**, recorded `Admitted Dead`, carried six majors of
+the same kind — empiric antibiotics, IV fluids, glycaemic control — and banded `moderate` for them.
+
+Nothing in this pipeline records the HOUR of death, so on that day "it was not done" and "there was
+no longer a patient to do it to" are indistinguishable. That is what `unassessable` means.
+
+**THE MATCH LIST, DERIVED FROM db13 AND NOT RECALLED.** Queried 2026-09-04 against
+`kx_discharge_summary_records`, all 2,496 rows, 14 distinct values:
+
+> Normal Discharge 2236 · None 155 · LAMA 33 · DAMA 28 · Discharge On Request 18 · **Expired 8** ·
+> **Admitted Dead 3** · Refer External Hospital 3 · (empty) 3 · **Mortuary 3** · Referral 2 ·
+> **mortuary 2** · Early Neonatal 1 · Absconded 1
+
+Three values mean death — `Expired`, `Admitted Dead`, `Mortuary` — over 16 records. The match is
+**case-insensitive** because the mirror carries both `Mortuary` (3) and `mortuary` (2); a
+case-sensitive list would have exempted three episodes and audited two of the same kind normally.
+Exact match on the trimmed lower-cased value, never a substring.
+
+**AN UNRECOGNISED VALUE AUDITS NORMALLY.** `Early Neonatal` (n=1) is deliberately not matched: it
+may be a neonatal death category or a discharge category, and one row cannot settle it. Exempting
+an episode on a guess silently stops auditing a real admission; auditing a death as though it were
+a discharge produces findings a human notices and can correct. The loud failure is the safer one.
+
+The episode-level checkpoint carries `day_index = losDays`, so on a death episode its expectations
+open on the day of death and are covered by the same rule.
+
+### 1.20 Round 20 items 2 and 3
+
+**Item 2 — the day-1 finding now knows how the admission ended.** On IPNO-531 and IPNO-560 it read
+*"The decision to discharge was recorded without a same-day clinical entry to support it"* — about
+patients who had died. There was no decision to discharge. The observation survives unchanged, and
+is arguably worth more on a death than on a discharge; only the sentence changes.
+
+**Item 3 — the silently empty retrieval.** Five checkpoints across three episodes ran with zero
+excerpts; IPNO-573 formed 40 expectations on no evidence at all. Fields were added by SAMPLING
+db13, not by guessing at names:
+
+- **3a, initial assessment** (188 rows): `histoyerjfj` (1,070 chars), `risky` (1,156), `vulnerass`
+  (1,929) — narrative wrapped in **HTML tables**, hence a markup stripper; `pamgjdk` (2,042) pain
+  assessment; `loc` a JSON array `["Alert"]`. **`signnur` (14,970 chars) is a base64 PNG signature
+  image** — never whitelisted, and now excluded from note summaries too, where only the 4,000-char
+  cap had been keeping it out of the prompts, by luck rather than design.
+- **3b, shift handovers** are a query source at last — the one clinical record present on every day
+  of every admission. `nhc16` carries the standing problem list, `nhc13` the consciousness line.
+  `nhc05` (an 8,800-char care-checklist table) and `nursing_handover` / `nursing_receiving` (**staff
+  names**) are excluded.
+- **3c, the tension.** The whitelist exists because three strip-based attempts failed to keep
+  inventory noise out of retrieval (round 7 item 7); widening it to "anything prose-shaped" walks
+  back into that. But deny-by-default has a second failure mode those attempts did not: when every
+  field of a template is unknown the query is not noisy, it is EMPTY — and an empty query is not a
+  safe default. **Resolution: the whitelist stays authoritative, and a bounded fallback runs only
+  when it matched nothing at all.** The fallback is deliberately more suspicious than the whitelist
+  — person-named fields dropped by `isPersonFieldName`, markup and JSON stripped, anything holding a
+  data URI or a long base64 run dropped whole, and a tighter character cap. A known template is as
+  controlled as before; an unknown one contributes something cleaned rather than nothing, and the
+  next unknown template does not need a code change to be audited with evidence.
+
 ### 4.2a `unassessable` must be earned (added 2026-09-02, decision 33)
 
 A finding may carry `unassessable` only if its `evidence_basis` is empty or every cited source is Tier C. Anything else is rewritten to `context_dependent` in code and counted in `n_unassessable_rejected`. Resolver findings with `resolution = 'absent_class_missing'` are exempt: that gap was established by code rather than claimed by a model.
