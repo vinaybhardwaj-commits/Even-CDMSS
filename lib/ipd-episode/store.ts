@@ -267,6 +267,9 @@ export interface EpisodeAuditRow {
   /** ROUND 13 ITEM 3. The A1 user message's size, and how many distinct expectations it carried. */
   diffPromptChars?: number | null;
   digestEntries?: number | null;
+  /** ROUND 15 ITEM 1. The absolute penalty and the denominator the rate divides it by. */
+  penaltyTotal?: number | null;
+  expectationsEvaluated?: number | null;
   /** Per-stage wall times, so the next investigation does not have to guess which stage is slow. */
   timings?: unknown;
   /** Pass B's one un-rederivable input, persisted for the on-demand run (decision 35). */
@@ -385,7 +388,7 @@ export async function saveEpisodeAudit(row: EpisodeAuditRow, checkpoints: Checkp
          prompt_events, assembled_events, stage_timings,
          capped_count, checkpoint_count, evidence_tiers, real_course, findings, admission_context, commentary,
          model_checkpoint, model_judge, trace_id, error_detail, raw_judge_error,
-         diff_prompt_chars, digest_entries)
+         diff_prompt_chars, digest_entries, penalty_total, expectations_evaluated)
        VALUES ($1,TRUE,$2,$3,$4,$5,
                $6,$7,$8,$9,$10,$11,
                $12,$13,$14,$15,$16,$17,
@@ -396,7 +399,7 @@ export async function saveEpisodeAudit(row: EpisodeAuditRow, checkpoints: Checkp
                $42,$43,$44::jsonb,$45,$46,$47::jsonb,
                $48::jsonb,$49::jsonb,$50,$51::jsonb,$52,$53,
                $54,$55,$56::jsonb,
-               $57,$58)
+               $57,$58,$59,$60)
        RETURNING id`,
       [
         runSeq,
@@ -428,6 +431,9 @@ export async function saveEpisodeAudit(row: EpisodeAuditRow, checkpoints: Checkp
         // casts on their old placeholders; the episode ran 314 s and persisted nothing. Adding at
         // the end moves no existing $n, so the diff is two columns and two parameters.
         row.diffPromptChars ?? null, row.digestEntries ?? null,
+        // Round 15: NEVER NULL when the episode scored. `num` because a null here would make
+        // SUM() and AVG() skip the row in exactly the cohort query these two exist to serve.
+        num(row.penaltyTotal), num(row.expectationsEvaluated),
       ],
     );
     const first = res[0];
@@ -484,10 +490,18 @@ export type EpisodeListRow = Record<string, unknown>;
 export async function episodeWorklist(a: { limit?: number; sort?: 'divergence' | 'discharge' | 'recent' } = {}): Promise<EpisodeListRow[]> {
   const lim = Math.max(1, Math.min(400, Math.floor(a.limit ?? 200)));
   const rows = await run(
+    // ⚠️ EVERY COLUMN THE LIST PAGE READS MUST BE NAMED HERE, and three of them were not.
+    // `dbf07b9a` added divergence_band / band_uncertain / scoring_status to the INSERT and to the
+    // page, and never to this SELECT — so `r.divergence_band` was undefined on every row and
+    // DivergenceChip took its own "no band was stored" branch. The worklist has read
+    // "not scorable" for every episode since round 9, on a table full of scored ones. A source
+    // -read test now holds this query and the page's field accesses together.
     `SELECT id, encounter_id, ip_uid, speciality, facility_name, admitted_at, discharged_at,
-            los_days, discharge_type, divergence_index, completeness_pct,
+            los_days, discharge_type, divergence_index, divergence_band, band_uncertain,
+            scoring_status, completeness_pct,
             n_findings, n_divergent, n_unassessable, n_low_value, n_divergence_pass, n_fidelity_pass,
             n_concordant, capped_count, run_seq,
+            penalty_total, expectations_evaluated,
             checkpoint_count, audited_at
      FROM ipd_episode_audits
      WHERE engine_version = $1 AND is_current = TRUE

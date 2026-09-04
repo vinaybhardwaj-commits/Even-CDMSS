@@ -12,7 +12,7 @@ import Link from 'next/link';
 import { isAdminUnlocked, adminTokenConfigured } from '@/lib/admin-cookie';
 import { namesForIpUids } from '@/lib/ipd-audit/db13';
 import { checkpointsForAudit, dischargeEngineScores, episodeAuditById } from '@/lib/ipd-episode/store';
-import { DischargeEngineScore, DivergenceChip, EpisodeTabs, InternalIndex, Locked, fmtDay } from '../ui';
+import { DischargeEngineScore, DivergenceChip, DivergenceCounts, EpisodeTabs, InternalIndex, Locked, fmtDay } from '../ui';
 import { CheckpointPanels, CommentaryPanel, FindingsPanel, TimelinePanel, UnassessablePanel } from './panels';
 
 export const dynamic = 'force-dynamic';
@@ -57,6 +57,11 @@ export default async function EpisodeAuditDetail({ params, searchParams }: {
 
       <div className="mt-4 flex flex-wrap items-center gap-x-6 gap-y-2 rounded-xl border border-slate-200 bg-white px-4 py-3">
         <DivergenceChip band={audit.divergence_band as string | null} uncertain={!!audit.band_uncertain} status={audit.scoring_status as string | null} />
+        <DivergenceCounts
+          penalty={audit.penalty_total == null ? null : Number(audit.penalty_total)}
+          evaluated={audit.expectations_evaluated == null ? null : Number(audit.expectations_evaluated)}
+          divergent={audit.n_divergent == null ? null : Number(audit.n_divergent)}
+        />
         <DischargeEngineScore cvi={sib.care_value_index} band={sib.band} />
         <span className="text-[12px] text-slate-600">
           <span className="text-[10px] font-medium uppercase tracking-wide text-slate-400">Completeness </span>
@@ -76,7 +81,12 @@ export default async function EpisodeAuditDetail({ params, searchParams }: {
 
       {/* The raw index, drill-in only and labelled for what it is. Never on the list. */}
       <p className="mt-2">
-        <InternalIndex index={audit.divergence_index == null ? null : Number(audit.divergence_index)} uncertain={!!audit.band_uncertain} />
+        <InternalIndex
+          index={audit.divergence_index == null ? null : Number(audit.divergence_index)}
+          uncertain={!!audit.band_uncertain}
+          penalty={audit.penalty_total == null ? null : Number(audit.penalty_total)}
+          evaluated={audit.expectations_evaluated == null ? null : Number(audit.expectations_evaluated)}
+        />
       </p>
 
       <p className="mt-2 text-[11px] text-slate-400">

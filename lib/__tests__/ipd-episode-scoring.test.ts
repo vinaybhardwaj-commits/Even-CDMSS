@@ -11,11 +11,11 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
   applyTierCRule, applySeverityCap, entryWasUncited, attachAttribution, attributedParty, completenessPct,
-  countFindings, divergenceIndex, normalizeFidelityFindings, evidenceTiersOf, finalizeFindings,
+  countFindings, divergenceIndex, penaltyTotal, expectationsEvaluated, normalizeFidelityFindings, evidenceTiersOf, finalizeFindings,
   parseFindings, resolveFindingCitations, validateCommentary, asLvcCategory, SEVERITY_PENALTY,
   PARSE_FRAGMENT_CHARS, classifyCitationProvenance, applyLiteratureCap, findingHasTierAEvidence, scoringStatusFor,
   storedDivergenceIndex, impliedFindingType, capSeverityAt, CAP_SEVERITY_CEILING,
-  divergenceBandFor, bandIsUncertain, DIVERGENCE_BANDS, BAND_THRESHOLDS, INDEX_REPEAT_SPREAD,
+  divergenceBandFor, bandIsUncertain, DIVERGENCE_BANDS, BAND_THRESHOLDS, PENALTY_REPEAT_SPREAD,
   dropJudgedOmissions, enforceUnassessable, findingsFromResolved, domainForSection,
   buildExpectationDigest, buildDiffUser, applyBillingOnlyCap, notesOnDay, missingDischargeDayNote,
   subjectWords, SUBJECT_CONCEPTS, MISSING_DISCHARGE_NOTE_ID,
@@ -55,39 +55,96 @@ const f = (o: Partial<EpisodeFinding> & { finding_id: string }): EpisodeFinding 
 const refs = (entries: [string, number[]][]): Map<string, CheckpointEntryRef> =>
   new Map(entries.map(([ref, citation_ids]) => [ref, { ref, citation_ids }]));
 
-// ── 5. divergence index ──────────────────────────────────────────────────────────────────────
+// ── 5. THE DIVERGENCE INDEX, AS A RATE (round 15 item 1) ─────────────────────────────────────
+//
+// Was `100 − penalty`. IP-1483 (LOS 7, penalty 113) and IPNO-495 (LOS 11, penalty 198) both
+// floored at 0 and reported the same band: a 76% difference in absolute penalty rendered as one
+// indistinguishable number, and every stay of about a week or more was going to read identically.
+// The index is now penalty over the worst this episode could have scored.
 
-test('divergence index: 100 minus 8·major + 4·moderate + 1·minor', () => {
+test('the rate: penalty over 8 × the expectations that were actually evaluated', () => {
   assert.equal(SEVERITY_PENALTY.major, 8);
   assert.equal(SEVERITY_PENALTY.moderate, 4);
   assert.equal(SEVERITY_PENALTY.minor, 1);
-  assert.equal(divergenceIndex([]), 100);
-  assert.equal(divergenceIndex([f({ finding_id: '1', severity: 'major' })]), 92);
-  assert.equal(divergenceIndex([f({ finding_id: '1', severity: 'moderate' })]), 96);
-  assert.equal(divergenceIndex([f({ finding_id: '1', severity: 'minor' })]), 99);
-  assert.equal(divergenceIndex([
-    f({ finding_id: '1', severity: 'major' }), f({ finding_id: '2', severity: 'moderate' }), f({ finding_id: '3', severity: 'minor' }),
-  ]), 100 - 13);
+  const four = [
+    f({ finding_id: '1', severity: 'major', verdict: 'divergent' }),
+    f({ finding_id: '2', verdict: 'concordant' }),
+    f({ finding_id: '3', verdict: 'concordant' }),
+    f({ finding_id: '4', verdict: 'concordant' }),
+  ];
+  assert.equal(penaltyTotal(four), 8);
+  assert.equal(expectationsEvaluated(four), 4);
+  assert.equal(divergenceIndex(four), 75, '8 of a possible 32');
 });
 
-test('divergence index floors at zero and never goes negative', () => {
-  const many = Array.from({ length: 20 }, (_, i) => f({ finding_id: String(i), severity: 'major' }));
-  assert.equal(divergenceIndex(many), 0);
+test('the rate divides LENGTH out — the whole reason it exists', () => {
+  // Two episodes, the same proportion of divergence, thirteen times the size. The total called the
+  // long one catastrophic; the rate calls them alike.
+  const small = [
+    f({ finding_id: 'd', severity: 'major', verdict: 'divergent' }),
+    ...Array.from({ length: 3 }, (_, i) => f({ finding_id: `c${i}`, verdict: 'concordant' })),
+  ];
+  const large = [
+    ...Array.from({ length: 13 }, (_, i) => f({ finding_id: `d${i}`, severity: 'major', verdict: 'divergent' })),
+    ...Array.from({ length: 39 }, (_, i) => f({ finding_id: `c${i}`, verdict: 'concordant' })),
+  ];
+  assert.equal(penaltyTotal(small), 8);
+  assert.equal(penaltyTotal(large), 104, 'the absolute figure still says how much there is to read');
+  assert.equal(divergenceIndex(small), divergenceIndex(large), 'and the rate says they are the same care');
+  assert.equal(Math.max(0, 100 - penaltyTotal(large)), 0, 'the old total floored this one at zero');
 });
 
-test('divergence index: only `divergent` contributes — the other three verdicts are free', () => {
-  for (const verdict of ['context_dependent', 'unassessable', 'concordant'] as Verdict[]) {
+test('the rate cannot leave 0…100, whatever the penalty — the floor is now vestigial', () => {
+  const allMajor = Array.from({ length: 20 }, (_, i) => f({ finding_id: String(i), severity: 'major', verdict: 'divergent' }));
+  assert.equal(divergenceIndex(allMajor), 0, 'every expectation a major divergence is the worst case, exactly');
+  assert.equal(penaltyTotal(allMajor), 160);
+  const none = Array.from({ length: 20 }, (_, i) => f({ finding_id: String(i), verdict: 'concordant' }));
+  assert.equal(divergenceIndex(none), 100);
+});
+
+test('the rate: only `divergent` contributes to the numerator', () => {
+  for (const verdict of ['context_dependent', 'concordant'] as Verdict[]) {
     assert.equal(divergenceIndex([f({ finding_id: '1', severity: 'major', verdict })]), 100, verdict);
   }
 });
 
-test('divergence index: A1 and A2 findings BOTH count, on one shared penalty (decision 16)', () => {
-  const both = [
-    f({ finding_id: 'a1', pass: 'divergence', severity: 'major' }),
-    f({ finding_id: 'a2', pass: 'fidelity', domain: 'documentation', finding_type: 'commission', severity: 'moderate' }),
+test('DENOMINATOR: an `unassessable` finding is not counted — a thin record must not score well', () => {
+  const mixed = [
+    f({ finding_id: 'd', severity: 'major', verdict: 'divergent' }),
+    f({ finding_id: 'u', severity: 'major', verdict: 'unassessable' }),
   ];
-  assert.equal(divergenceIndex(both), 100 - 12);
+  assert.equal(expectationsEvaluated(mixed), 1);
+  assert.equal(divergenceIndex(mixed), 0, 'one of one evaluated expectation was a major divergence');
+  assert.equal(Math.round(100 - (100 * 8) / (8 * 2)), 50,
+    'counting it would give this thinner record the better score');
 });
+
+test('DENOMINATOR: nothing assessable is NULL — zero and 100 are both claims about care', () => {
+  assert.equal(divergenceIndex([]), null);
+  assert.equal(divergenceIndex([f({ finding_id: 'u', verdict: 'unassessable' })]), null);
+  assert.equal(expectationsEvaluated([f({ finding_id: 'u', verdict: 'unassessable' })]), 0);
+});
+
+test('the rate: A1 and A2 findings BOTH count, on one shared penalty (decision 16)', () => {
+  const both = [
+    f({ finding_id: 'a1', pass: 'divergence', severity: 'major', verdict: 'divergent' }),
+    f({ finding_id: 'a2', pass: 'fidelity', domain: 'documentation', finding_type: 'commission', severity: 'moderate', verdict: 'divergent' }),
+  ];
+  assert.equal(penaltyTotal(both), 12);
+  assert.equal(expectationsEvaluated(both), 2);
+  assert.equal(divergenceIndex(both), 25, '12 of a possible 16');
+});
+
+test('the absolutes are returned beside the rate, because neither can be read alone', () => {
+  const res = finalizeFindings([
+    f({ finding_id: 'd', severity: 'major', verdict: 'divergent', citation_ids: [4021] }),
+    f({ finding_id: 'c', verdict: 'concordant' }),
+  ], new Map(), [], 0, SOURCES, NORMATIVE);
+  assert.equal(res.penalty_total, 8);
+  assert.equal(res.expectations_evaluated, 2);
+  assert.equal(res.divergence_index, 50);
+});
+
 
 // ── 6. the Tier C rule ───────────────────────────────────────────────────────────────────────
 
@@ -206,7 +263,10 @@ test('item 10: THE ONE CAP DOES NOT STACK — a literature-cited finding is no l
   assert.equal(only.citation_provenance, 'literature', 'provenance is still classified and stored');
   assert.equal(only.capped, false, 'but it no longer silences the finding');
   assert.equal(only.severity, 'major');
-  assert.equal(res.divergence_index, 92, 'one MAJOR divergent finding — the 8-point term is reachable again');
+  // ONE assessable finding, and it is a major divergence — the worst this episode could score.
+  assert.equal(res.penalty_total, 8);
+  assert.equal(res.expectations_evaluated, 1);
+  assert.equal(res.divergence_index, 0, 'the 8-point term is reachable again (round 15: as a rate)');
 });
 
 test('item 10: the uncited-ENTRY count survives as a report number, capping nothing', () => {
@@ -342,18 +402,10 @@ test('everyEntryUncited detects the IP-1286 shape, and only that shape', () => {
 
 // ── round 9: the band, and why the number is not shown ──────────────────────────────────────
 
-test('the four bands and their thresholds', () => {
+test('the four band NAMES are unchanged — only the thresholds moved (round 15 item 2)', () => {
   assert.deepEqual([...DIVERGENCE_BANDS],
     ['no divergence found', 'minor divergence', 'moderate divergence', 'substantial divergence']);
-  assert.deepEqual(BAND_THRESHOLDS, { minor: 90, moderate: 70, substantial: 45 });
-  assert.equal(divergenceBandFor(100), 'no divergence found');
-  assert.equal(divergenceBandFor(90), 'no divergence found', 'inclusive lower bound');
-  assert.equal(divergenceBandFor(89), 'minor divergence');
-  assert.equal(divergenceBandFor(70), 'minor divergence');
-  assert.equal(divergenceBandFor(69), 'moderate divergence');
-  assert.equal(divergenceBandFor(45), 'moderate divergence');
-  assert.equal(divergenceBandFor(44), 'substantial divergence');
-  assert.equal(divergenceBandFor(0), 'substantial divergence');
+  // the boundaries themselves are asserted against the rate in the round-15 test below
 });
 
 test('the bands are NOT the discharge engine’s A–E letters — both appear on one screen', () => {
@@ -372,34 +424,53 @@ test('an unscorable episode has NO band — a null index must not acquire a reas
   assert.equal(divergenceBandFor(storedDivergenceIndex(41, 'ok')), 'substantial divergence');
 });
 
-test('band_uncertain fires within the MEASURED repeat-run spread of any threshold', () => {
-  assert.equal(INDEX_REPEAT_SPREAD, 5, 'IP-1286: 40, 37, 36, 41, 36 on identical input');
-  for (const t of [90, 70, 45]) {
+test('ROUND 15: the repeat spread keeps the units it was MEASURED in — penalty, not index', () => {
+  assert.equal(PENALTY_REPEAT_SPREAD, 5, 'IP-1286: 40, 37, 36, 41, 36 on identical input');
+  // ⚠️ Restating it as ±5 INDEX points against a rate would have quadrupled the claimed noise.
+  // Five penalty points on IP-1286's 51 evaluated expectations is 100 × 5 / 408 ≈ 1.2 index points.
+  assert.ok((100 * PENALTY_REPEAT_SPREAD) / (8 * 51) < 2, 'about one index point, not five');
+});
+
+test('ROUND 15: band_uncertain asks whether the MEASURED wobble would change the band', () => {
+  // 51 expectations, penalty 45 → index 89, one point under the 90 threshold. Five penalty points
+  // is ~1.2 index points, so this one genuinely could land either side.
+  assert.equal(bandIsUncertain(89, 45, 51), true);
+  // the same index in the middle of a band is confident, however the penalty moves
+  assert.equal(bandIsUncertain(85, 61, 51), false, '85 is four clear of both 80 and 90');
+});
+
+test('ROUND 15: the SAME wobble matters less on a longer episode, and the flag says so', () => {
+  // Five penalty points against 30 evaluated expectations is 2.1 index points; against 200 it is
+  // 0.3. A fixed index window cannot express that, and a rate must.
+  const shortStay = bandIsUncertain(91, 22, 30);   // 91, threshold 90 one point below
+  const longStay = bandIsUncertain(91, 144, 200);  // same index, far more expectations
+  assert.equal(shortStay, true, 'on a short episode the wobble crosses the threshold');
+  assert.equal(longStay, false, 'on a long one it cannot');
+});
+
+test('ROUND 15: a pre-round-15 row with no denominator falls back to the widest honest reading', () => {
+  // Stored rows written before penalty_total existed have nothing to convert with. They get the
+  // old fixed window rather than a precision that cannot be computed for them.
+  for (const t of Object.values(BAND_THRESHOLDS)) {
     assert.equal(bandIsUncertain(t), true, `${t} is a threshold`);
-    assert.equal(bandIsUncertain(t + 5), true, 'the far edge is still uncertain');
-    assert.equal(bandIsUncertain(t - 5), true);
-    assert.equal(bandIsUncertain(t + 6), false, 'six points clear is confident');
-    assert.equal(bandIsUncertain(t - 6), false);
   }
+  // 85 is five clear of 80 and 90 — the bands are close enough now that only the middle of the
+  // widest band is confident without a denominator, which is itself the argument for having one.
+  assert.equal(bandIsUncertain(60), false, 'far from every threshold');
 });
 
-test('the IP-1286 five-run readings all band the same way, and all read as near-boundary', () => {
-  // 36–41 sits 4–9 under the 45 threshold, which is exactly the case the flag exists for
-  const readings = [40, 37, 36, 41, 36];
-  const bands = new Set(readings.map((r) => divergenceBandFor(r)));
-  assert.equal(bands.size, 1, 'the band is stable across the spread that moves the number');
-  assert.equal([...bands][0], 'substantial divergence');
-  // 40 is 5 from the 45 threshold and 41 is 4 — both uncertain. 37 (8 clear) and 36 (9 clear)
-  // are confidently inside the band. Three of five readings of ONE admission are confident, two
-  // are not, which is the honest picture of an instrument with this spread.
-  assert.deepEqual(readings.map(bandIsUncertain), [true, false, false, true, false]);
-});
-
-test('the band survives the whole spread only because it is wider than the spread', () => {
-  // a reading at a threshold moves band on a re-run — which is what band_uncertain is for
-  assert.equal(divergenceBandFor(44), 'substantial divergence');
-  assert.equal(divergenceBandFor(46), 'moderate divergence');
-  assert.equal(bandIsUncertain(44) && bandIsUncertain(46), true);
+test('ROUND 15 ITEM 2: the four bands, re-banded for a rate', () => {
+  // The old 90/70/45 were set against a TOTAL. Against a rate, 45 would need 55% of every
+  // expectation to have diverged at major — unreachable — so `substantial` would never fire.
+  assert.deepEqual(BAND_THRESHOLDS, { minor: 97, moderate: 90, substantial: 80 });
+  assert.equal(divergenceBandFor(100), 'no divergence found');
+  assert.equal(divergenceBandFor(97), 'no divergence found');
+  assert.equal(divergenceBandFor(96), 'minor divergence');
+  assert.equal(divergenceBandFor(90), 'minor divergence');
+  assert.equal(divergenceBandFor(89), 'moderate divergence');
+  assert.equal(divergenceBandFor(80), 'moderate divergence');
+  assert.equal(divergenceBandFor(79), 'substantial divergence');
+  assert.equal(divergenceBandFor(0), 'substantial divergence');
 });
 
 // ── round 8: a missing checkpoint must not score, and the course is bounded ──────────────────
@@ -548,7 +619,9 @@ test('a resolver DIVERGENT finding scores — this is the omission signal the au
   const map = refs([['cp-d0/therapeutics/1', [4021]]]);
   const res = finalizeFindings(built, map, [], 0, SOURCES, NORMATIVE);
   assert.equal(res.findings[0].verdict, 'divergent', 'the Tier C rule must not erase a code-established absence');
-  assert.equal(res.divergence_index, 92, 'a major divergence costs 8');
+  assert.equal(res.penalty_total, 8, 'a major divergence costs 8');
+  assert.equal(res.expectations_evaluated, 1);
+  assert.equal(res.divergence_index, 0, 'the only expectation evaluated diverged, at major');
 });
 
 // ── item 8: the citation that was being lost ────────────────────────────────────────────────
@@ -1028,7 +1101,9 @@ test('item 10: provenance is still MEASURED, and no longer capped — literature
   assert.equal(lit.severity, 'major', 'but the grade survives');
   assert.equal(lit.capped, false);
   assert.equal(res.findings.find((x) => x.finding_id === 'norm')!.severity, 'major');
-  assert.equal(res.divergence_index, 100 - 16, 'two majors, both at full weight');
+  assert.equal(res.penalty_total, 16, 'two majors, both at full weight');
+  assert.equal(res.expectations_evaluated, 2);
+  assert.equal(res.divergence_index, 0);
 });
 
 test('provenance_counts is the measurement V asked for: how much of the score rests on guidelines', () => {
@@ -1222,9 +1297,11 @@ test('finalizeFindings applies the whole chain in one place, so its order cannot
   assert.equal(res.counters.n_dropped_invalid, 1, 'the domain violation, and only it');
   assert.equal(res.counters.n_findings, 4);
   // 'uncited_entry' is MAJOR + divergent (8) since item 10 — Tier A evidence lifts the cap;
-  // 'real' is moderate + divergent (4); 'tierc' is unassessable (0). The cap still never zeroes a
-  // finding by rewriting its verdict.
-  assert.equal(res.divergence_index, 100 - 12);
+  // 'real' is moderate + divergent (4); 'tierc' is unassessable, so it scores nothing AND leaves
+  // the denominator. Three assessable findings remain, worth 24 at worst.
+  assert.equal(res.penalty_total, 12);
+  assert.equal(res.expectations_evaluated, 3);
+  assert.equal(res.divergence_index, 50);
 });
 
 test('the cap and the Tier C rule now do different jobs, so both apply', () => {
@@ -1236,7 +1313,10 @@ test('the cap and the Tier C rule now do different jobs, so both apply', () => {
   assert.equal(res.n_tier_c_rewritten, 1, 'and the verdict rewritten, by the rule that owns verdicts');
   assert.equal(res.findings[0].severity, 'moderate');
   assert.equal(res.findings[0].verdict, 'unassessable');
-  assert.equal(res.divergence_index, 100, 'unassessable scores nothing');
+  assert.equal(res.penalty_total, 0, 'unassessable scores nothing');
+  // and it is not counted in the denominator either, so there is no rate to report at all
+  assert.equal(res.expectations_evaluated, 0);
+  assert.equal(res.divergence_index, null);
 });
 
 // ── retrieval query ──────────────────────────────────────────────────────────────────────────
@@ -1908,5 +1988,7 @@ test('ITEM 2b: the discharge-note finding SURVIVES the whole finalise chain — 
   assert.equal(kept.finding_id, MISSING_DISCHARGE_NOTE_ID);
   assert.equal(kept.severity, 'major', 'at full weight — Tier A evidence, no citation needed (item 10)');
   assert.equal(kept.verdict, 'divergent');
-  assert.equal(res.divergence_index, 92);
+  assert.equal(res.penalty_total, 8);
+  assert.equal(res.expectations_evaluated, 1);
+  assert.equal(res.divergence_index, 0, 'the only thing measured was missing');
 });

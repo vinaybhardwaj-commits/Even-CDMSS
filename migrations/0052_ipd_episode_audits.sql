@@ -118,6 +118,12 @@ CREATE TABLE IF NOT EXISTS ipd_episode_audits (
   -- prompt came from the digest or from a quieter episode.
   diff_prompt_chars     INTEGER,
   digest_entries        INTEGER,
+  -- ROUND 15 ITEM 1. divergence_index is a RATE now — penalty over the worst this episode could
+  -- have scored — so the absolute figures must be stored beside it or they are gone. IP-1483
+  -- (penalty 113) and IPNO-495 (penalty 198) both floored at 0 under the old total and read as the
+  -- same episode. The rate bands it; these two say how much there is to read.
+  penalty_total         INTEGER DEFAULT 0,
+  expectations_evaluated INTEGER DEFAULT 0,
   -- Per-stage wall times. Without these, "which stage is superlinear" is a guess.
   stage_timings         JSONB,
   checkpoint_count      INTEGER DEFAULT 0,

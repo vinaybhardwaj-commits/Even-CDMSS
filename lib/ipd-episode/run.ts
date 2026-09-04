@@ -612,6 +612,7 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
     }));
 
     const tPersist = Date.now();
+    const storedIndex = storedDivergenceIndex(final.divergence_index, scoringStatus);
     const saved = await saveEpisodeAudit({
       engineVersion,
       encounterId,
@@ -625,11 +626,15 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
       losDays: envelope.losDays,
       dischargeType: envelope.dischargeType,
       extractionVersion: extraction.extractionVersion,
-      divergenceIndex: storedDivergenceIndex(final.divergence_index, scoringStatus),
+      divergenceIndex: storedIndex,
       // The band is derived from the STORED index, so an unscorable episode has no band either —
       // "not scorable" must not acquire a reassuring word through a null slipping into a bucket.
-      divergenceBand: divergenceBandFor(storedDivergenceIndex(final.divergence_index, scoringStatus)),
-      bandUncertain: bandIsUncertain(storedDivergenceIndex(final.divergence_index, scoringStatus)),
+      divergenceBand: divergenceBandFor(storedIndex),
+      bandUncertain: bandIsUncertain(storedIndex, final.penalty_total, final.expectations_evaluated),
+      // ROUND 15 ITEM 1. The absolutes travel WITH the rate, always: the rate bands the episode
+      // and these say how much there is to read, and a worklist needs both.
+      penaltyTotal: final.penalty_total,
+      expectationsEvaluated: final.expectations_evaluated,
       scoringStatus,
       completenessPct: completenessPct(sourcesPresent),
       counters: final.counters,

@@ -224,6 +224,67 @@ time available than by declining to make it. `planAttempt` now shrinks to fit, w
 ceilinged at what remains, and refuses only below a 60 s viability floor — where a judge pass on a
 150–200 KB prompt has no realistic chance.
 
+### 1.12 Decision 38 — the divergence index is a RATE (V, 2026-09-03; amends §6.1 and decision 9)
+
+`divergence_index = round(100 − 100 × penalty / (8 × expectations_evaluated))`, floored at 0.
+`penalty` is unchanged: 8·major + 4·moderate + 1·minor over `divergent` findings from both passes.
+
+**Why.** IP-1483 (LOS 7, penalty 113) and IPNO-495 (LOS 11, penalty 198) both floored at 0 under
+the old total and reported the same band — a 76% difference in absolute penalty rendered as one
+indistinguishable number. Every stay of about a week or more was going to read identically, so the
+longer the admission the less the score could say about it.
+
+**THE DENOMINATOR: findings with a verdict other than `unassessable`.** V named
+`expectations_evaluated` and invited a different choice with reasoning; this is that reasoning.
+
+- *Not the ungrouped expectation entries.* Round 12 collapses a standing expectation restated on six
+  days into one finding. Counting the six divides by work the episode did not do and flatters every
+  long stay — the defect this decision exists to remove.
+- *Not the resolver's classes alone.* Penalty also comes from the diff and fidelity passes, and a
+  fidelity finding is measured against the record rather than an expectation. A denominator smaller
+  than the population generating the numerator is not a rate.
+- *Not every finding.* An `unassessable` finding is one the pipeline COULD NOT measure. Counting
+  those pays an episode for the questions it failed to answer and rewards a thin record — the
+  "confident 100" failure `scoring_status` exists to prevent.
+
+**The rate is bounded by construction**: penalty accrues only on `divergent` findings, at most 8
+each, and every divergent finding is assessable — so `penalty ≤ 8 × expectations_evaluated` and the
+index cannot leave 0…100. The floor is now a belt on a fastened belt.
+
+**`penalty_total` and `expectations_evaluated` are stored and shown beside the band**, with
+`n_divergent`. The rate bands the episode; the counts say how much there is to read.
+
+### 1.13 Round 15 item 2 — re-banded, PROVISIONAL pending V
+
+| band | rate | meaning |
+|---|---|---|
+| no divergence found | ≥ 97 | under 3% of the maximum |
+| minor divergence | 90–96 | up to a tenth |
+| moderate divergence | 80–89 | up to a fifth |
+| substantial divergence | < 80 | more than a fifth of everything expected went wrong |
+
+The old 90 / 70 / 45 were set against a TOTAL. Against a rate, 45 would require 55% of every
+expectation evaluated to have diverged at major severity — unreachable — so `substantial` would
+never have fired again. **V settles the final numbers; these are proposed from the data.**
+
+**And the repeat spread keeps the units it was measured in.** IP-1286's five runs spread 5 PENALTY
+points. As a rate that is 100 × 5 / (8 × evaluated) — about 1.2 index points on its 51 expectations,
+less on a longer episode. Restating "±5" against the new scale would have quadrupled the claimed
+noise, so `PENALTY_REPEAT_SPREAD = 5` keeps penalty units and `bandIsUncertain` converts, asking
+whether the measured wobble would actually change the band. A row stored before round 15 has no
+denominator to convert with and falls back to the old fixed window.
+
+### 1.14 The worklist has read "not scorable" for every episode since round 9
+
+`dbf07b9a` added `divergence_band`, `band_uncertain` and `scoring_status` to the INSERT and to the
+list page, and never to `episodeWorklist`'s SELECT. `r.divergence_band` was therefore `undefined`
+on every row, `DivergenceChip` took its "no band was stored" branch, and the whole worklist read
+*not scorable* on a table full of scored episodes. Nothing failed and nothing threw. Found while
+wiring the round-15 counts in beside the band — which cannot sit beside a band that never renders.
+
+A source-read test now holds the query and the page's field accesses together: every `r.<field>`
+the page reads must be named in the SELECT.
+
 ### 4.2a `unassessable` must be earned (added 2026-09-02, decision 33)
 
 A finding may carry `unassessable` only if its `evidence_basis` is empty or every cited source is Tier C. Anything else is rewritten to `context_dependent` in code and counted in `n_unassessable_rejected`. Resolver findings with `resolution = 'absent_class_missing'` are exempt: that gap was established by code rather than claimed by a model.

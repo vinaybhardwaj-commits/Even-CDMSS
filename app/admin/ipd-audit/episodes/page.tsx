@@ -11,7 +11,7 @@ import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { isAdminUnlocked, adminTokenConfigured } from '@/lib/admin-cookie';
 import { episodeWorklist, dischargeEngineScores, IPD_EPISODE_ENGINE_VERSION } from '@/lib/ipd-episode/store';
-import { DischargeEngineScore, DivergenceChip, EpisodeTabs, Locked, fmtDay } from './ui';
+import { DischargeEngineScore, DivergenceChip, DivergenceCounts, EpisodeTabs, Locked, fmtDay } from './ui';
 import { DIVERGENCE_BANDS } from '@/lib/ipd-episode/judge-core';
 
 export const dynamic = 'force-dynamic';
@@ -109,7 +109,18 @@ export default async function EpisodeAuditList({ searchParams }: {
                     <td className="px-3 py-2 text-slate-600">{str(r.speciality)}</td>
                     <td className="px-3 py-2 text-slate-600">{fmtDay(r.discharged_at)}</td>
                     <td className="px-3 py-2 tabular-nums text-slate-600">{r.los_days == null ? '—' : `${r.los_days}d`}</td>
-                    <td className="px-3 py-2"><DivergenceChip band={r.divergence_band as string | null} uncertain={!!r.band_uncertain} status={r.scoring_status as string | null} /></td>
+                    <td className="px-3 py-2">
+                      <DivergenceChip band={r.divergence_band as string | null} uncertain={!!r.band_uncertain} status={r.scoring_status as string | null} />
+                      {/* ROUND 15 ITEM 1: the band alone cannot triage a worklist — two episodes
+                          band the same while one holds four findings and the other forty. */}
+                      <div className="mt-0.5">
+                        <DivergenceCounts
+                          penalty={r.penalty_total == null ? null : Number(r.penalty_total)}
+                          evaluated={r.expectations_evaluated == null ? null : Number(r.expectations_evaluated)}
+                          divergent={r.n_divergent == null ? null : Number(r.n_divergent)}
+                        />
+                      </div>
+                    </td>
                     <td className="px-3 py-2"><DischargeEngineScore cvi={sib.care_value_index} band={sib.band} /></td>
                     <td className="px-3 py-2 text-[12px] text-slate-600">
                       {String(r.n_findings ?? 0)} total · {String(r.n_divergent ?? 0)} divergent · {String(r.n_unassessable ?? 0)} unassessable

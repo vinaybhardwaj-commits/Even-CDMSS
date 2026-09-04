@@ -862,13 +862,71 @@ export function attributedParty(f: EpisodeFinding): { kind: 'author' | 'responsi
 export const SEVERITY_PENALTY: Record<Severity, number> = { major: 8, moderate: 4, minor: 1 };
 
 /** §6.1. Only `divergent` findings contribute, from BOTH passes (decision 16). Floors at zero. */
-export function divergenceIndex(findings: EpisodeFinding[]): number {
+export function penaltyTotal(findings: readonly EpisodeFinding[]): number {
   let penalty = 0;
   for (const f of findings) {
     if (f.verdict !== 'divergent') continue;
     penalty += SEVERITY_PENALTY[f.severity];
   }
-  return Math.max(0, 100 - penalty);
+  return penalty;
+}
+
+/**
+ * ROUND 15 ITEM 1 — THE DENOMINATOR, AND WHY IT IS THIS ONE.
+ *
+ * V's instruction names `expectations_evaluated` and defines the ceiling as "the score an episode
+ * would get if every expectation it was measured against had diverged at major severity", and
+ * invited a different denominator with reasoning. This is that reasoning; the name is kept.
+ *
+ * IT COUNTS EVERY FINDING THIS ENGINE COULD ANSWER — every verdict except `unassessable`.
+ *
+ *   · NOT the ungrouped expectation entries. Round 12 collapses a standing expectation restated on
+ *     six days into ONE finding; counting the six would divide by work the episode did not do and
+ *     flatter every long stay, which is the defect this whole item exists to remove.
+ *   · NOT the resolver's classes alone. Penalty comes from the diff and fidelity passes too — a
+ *     fidelity finding is measured against the record rather than against an expectation — so a
+ *     resolver-only denominator can be smaller than the population generating the numerator, and
+ *     a rate whose numerator outruns its denominator is not a rate.
+ *   · NOT every finding either. An `unassessable` finding is one this pipeline COULD NOT measure:
+ *     no lab data in the window, no vitals in the mirror at all. Counting those in the denominator
+ *     pays an episode for the questions it failed to answer, and rewards a thin record with a high
+ *     score — the "confident 100" failure `scoring_status` already exists to prevent.
+ *
+ * What remains is exactly V's phrase: the things it WAS measured against. Every one of them could
+ * have been a major divergence, and none of them was excused.
+ *
+ * ⚠️ AND THE RATE IS BOUNDED BY CONSTRUCTION. Penalty only accrues on `divergent` findings, each
+ * at most 8, and every divergent finding is assessable — so penalty ≤ 8 × expectationsEvaluated
+ * and the index cannot leave 0…100. `Math.max(0, …)` below is therefore a belt on a fastened belt,
+ * kept only so a future change to SEVERITY_PENALTY cannot produce a negative score silently.
+ */
+export function expectationsEvaluated(findings: readonly EpisodeFinding[]): number {
+  return findings.filter((f) => f.verdict !== 'unassessable').length;
+}
+
+/**
+ * §6.1, AS A RATE (round 15 item 1, V 2026-09-03).
+ *
+ * ⚠️ THE TOTAL COULD NOT TRIAGE A LONG STAY, AND THE MEASUREMENTS SAY SO PLAINLY. Penalty was
+ * subtracted from 100 outright, so IP-1483 (LOS 7, penalty 113) and IPNO-495 (LOS 11, penalty 198)
+ * both floored at 0 and reported the same "substantial divergence" — a 76% difference in absolute
+ * penalty rendered as one indistinguishable number. Every stay of about a week or more was going
+ * to read identically, which is the opposite of a triage instrument: the longer the admission, the
+ * less the score could say about it.
+ *
+ * A rate divides that out. An episode with 120 expectations and twelve divergences is not worse
+ * than one with 20 expectations and eight, and the total said it was.
+ *
+ * THE ABSOLUTE FIGURES DO NOT DISAPPEAR. `penalty_total`, `expectations_evaluated` and
+ * `n_divergent` are stored beside the index and shown beside the band, because the rate says how
+ * this episode compares and the counts say how much there is to read, and a worklist needs both.
+ */
+export function divergenceIndex(findings: EpisodeFinding[]): number | null {
+  const evaluated = expectationsEvaluated(findings);
+  // Nothing was measured, so there is no rate. NOT zero, and not 100: both are claims about care.
+  if (evaluated === 0) return null;
+  const maxPenalty = SEVERITY_PENALTY.major * evaluated;
+  return Math.max(0, Math.round(100 - (100 * penaltyTotal(findings)) / maxPenalty));
 }
 
 /** §6.2. Nine sources; the floor is 33 because selection already requires three of them. */
@@ -977,7 +1035,12 @@ export function evidenceTiersOf(sourcesPresent: readonly string[]): { A: string[
 export interface FinalizeResult {
   findings: EpisodeFinding[];
   counters: FindingCounters;
-  divergence_index: number;
+  /** Null when nothing assessable was measured — see `divergenceIndex` (round 15 item 1). */
+  divergence_index: number | null;
+  /** The absolute figure the rate divides. Stored and shown beside the band. */
+  penalty_total: number;
+  /** The denominator: findings this engine could answer. Stored and shown beside the band. */
+  expectations_evaluated: number;
   n_tier_c_rewritten: number;
   n_uncited_capped: number;
   /** Findings measured against an expectation that carried no citation (report-only since item 10). */
@@ -1060,6 +1123,8 @@ export function finalizeFindings(
       n_judged_omissions_dropped: omissionDrop.dropped,
     },
     divergence_index: divergenceIndex(findings),
+    penalty_total: penaltyTotal(findings),
+    expectations_evaluated: expectationsEvaluated(findings),
     n_tier_c_rewritten: rewritten,
     n_uncited_capped: capped,
     n_fidelity_normalized: normalized,
@@ -1116,11 +1181,47 @@ export type DivergenceBand = (typeof DIVERGENCE_BANDS)[number];
  * band. Moving a threshold on the strength of a single admission's noise would be fitting the
  * scale to the only case we have looked at, which is worse than using a stated prior.
  */
-export const BAND_THRESHOLDS = { minor: 90, moderate: 70, substantial: 45 } as const;
+/**
+ * ROUND 15 ITEM 2 — RE-BANDED FOR A RATE. PROVISIONAL: V SETTLES THE NUMBERS.
+ *
+ * The old thresholds (90 / 70 / 45) were set against a TOTAL, where 45 meant "55 penalty points"
+ * and was reachable by any episode with seven major findings. Against a rate the same numbers mean
+ * something else entirely: 45 would require 55% of every expectation evaluated to have diverged at
+ * major severity, which no real admission will ever do. Left unchanged, every episode measured so
+ * far lands in the top two bands and `substantial divergence` becomes unreachable — the mirror
+ * image of the defect this round exists to fix.
+ *
+ * These are proposed from what the index now MEANS — the share of the worst score this episode
+ * could have had:
+ *
+ *   ≥ 97  no divergence found      under 3% of the maximum: nothing worth a clinician's time
+ *   90-96 minor divergence         up to a tenth: real findings, none of them pressing
+ *   80-89 moderate divergence      up to a fifth: a pattern worth reading before the next admission
+ *   < 80  substantial divergence   more than a fifth of everything expected went wrong
+ *
+ * A fifth of every expectation diverging is a lot of care not delivered as anticipated, and that
+ * is the line "substantial" should sit on. The measured episodes are reported to V beside this
+ * table so the numbers can be argued from data rather than from the shape of the sentence.
+ */
+export const BAND_THRESHOLDS = { minor: 97, moderate: 90, substantial: 80 } as const;
 
-/** The measured repeat-run spread, in points. The band widths and the boundary rule both derive
- *  from this one number, so it lives in one place. */
-export const INDEX_REPEAT_SPREAD = 5;
+/**
+ * The measured repeat-run spread, IN PENALTY POINTS — which is what was actually measured, and
+ * round 15 is the round in which that distinction starts to matter.
+ *
+ * ⚠️ IT IS NOT FIVE INDEX POINTS ANY MORE. IP-1286's five runs scored 40/37/36/41/36 on the old
+ * TOTAL, a spread of 5. The index is a rate now, so the same 5 penalty points are worth
+ * 100 × 5 / (8 × evaluated) index points — about 1.2 on IP-1286's 51 evaluated expectations, and
+ * less on a longer episode. Restating "±5" against the new scale would have quadrupled the claimed
+ * noise and marked almost everything as near a boundary.
+ *
+ * So the constant keeps the units it was measured in, and `bandIsUncertain` converts.
+ */
+export const PENALTY_REPEAT_SPREAD = 5;
+
+/** @deprecated Round 15: the measurement is in penalty points. Kept as an alias so nothing that
+ *  imported the old name breaks silently while it is migrated. */
+export const INDEX_REPEAT_SPREAD = PENALTY_REPEAT_SPREAD;
 
 export function divergenceBandFor(index: number | null): DivergenceBand | null {
   if (index == null || !Number.isFinite(index)) return null;
@@ -1135,9 +1236,26 @@ export function divergenceBandFor(index: number | null): DivergenceBand | null {
  * plausibly have landed it in the neighbouring band. The UI says "(near boundary)" and means it:
  * IP-1286's five readings straddle exactly this case, sitting 4–9 points under the 45 threshold.
  */
-export function bandIsUncertain(index: number | null): boolean {
+export function bandIsUncertain(
+  index: number | null, penalty?: number | null, evaluated?: number | null,
+): boolean {
   if (index == null || !Number.isFinite(index)) return false;
-  return Object.values(BAND_THRESHOLDS).some((t) => Math.abs(index - t) <= INDEX_REPEAT_SPREAD);
+  const band = divergenceBandFor(index);
+  if (!band) return false;
+  // ⚠️ COMPUTED FROM THE MEASUREMENT, NOT FROM A RESTATED CONSTANT. Move the penalty by the spread
+  // that was actually observed and ask whether the BAND changes. On a rate the same wobble matters
+  // less on a long episode than on a short one — which is true, and a fixed index window cannot
+  // express it.
+  if (penalty != null && evaluated != null && evaluated > 0) {
+    const at = (p: number) => Math.max(0, Math.round(100 - (100 * Math.max(0, p)) / (SEVERITY_PENALTY.major * evaluated)));
+    for (const p of [penalty - PENALTY_REPEAT_SPREAD, penalty + PENALTY_REPEAT_SPREAD]) {
+      if (divergenceBandFor(at(p)) !== band) return true;
+    }
+    return false;
+  }
+  // No denominator to convert with (a stored row from before round 15): fall back to the widest
+  // honest reading — the old fixed window — rather than claiming a precision we cannot compute.
+  return Object.values(BAND_THRESHOLDS).some((t) => Math.abs(index - t) <= PENALTY_REPEAT_SPREAD);
 }
 
 // ── scoring status (item 5) ──────────────────────────────────────────────────────────────────
@@ -1185,11 +1303,14 @@ export function scoringStatusFor(a: {
 
 /** The score to STORE. Null under `no_expectations` — an absent standard yields no number, and a
  *  null is the only honest way to say that in an integer column. */
-export function storedDivergenceIndex(index: number, status: ScoringStatus): number | null {
+export function storedDivergenceIndex(index: number | null, status: ScoringStatus): number | null {
   // Both of these mean "there is no number here": no expectation was formed at all, or part of the
   // expected course is missing. `all_capped` keeps its number — that arithmetic is real, it is just
   // weakly evidenced, and the status says so.
-  return status === 'no_expectations' || status === 'incomplete_checkpoints' ? null : index;
+  if (status === 'no_expectations' || status === 'incomplete_checkpoints') return null;
+  // Round 15: the rate is itself null when nothing assessable was measured, and that null means
+  // the same thing — there is no number here — so it passes straight through.
+  return index;
 }
 
 // ── resolver findings (decision 33) ─────────────────────────────────────────────────────────

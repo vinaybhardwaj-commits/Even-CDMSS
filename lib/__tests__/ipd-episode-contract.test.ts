@@ -851,7 +851,7 @@ test('a hole in the expected course cannot be scored over', () => {
   // tested FIRST, so it outranks no_expectations and all_capped
   const fn = core.slice(core.indexOf('export function scoringStatusFor'), core.indexOf('export function storedDivergenceIndex'));
   assert.ok(fn.indexOf('incomplete_checkpoints') < fn.indexOf('no_expectations'));
-  assert.ok(core.includes("status === 'no_expectations' || status === 'incomplete_checkpoints' ? null : index"),
+  assert.ok(core.includes("if (status === 'no_expectations' || status === 'incomplete_checkpoints') return null;"),
     'and the index is stored NULL');
   const ui = code('app/admin/ipd-audit/episodes/ui.tsx');
   assert.ok(ui.includes('part of the expected course is missing'), 'the UI gives the reason');
@@ -1629,6 +1629,58 @@ test('round 13 item 3: both halves of the measurement are stored, and nothing re
   }
   // APPENDED. Round 11 renumbered this statement and left two casts behind on their old
   // placeholders; the placeholder-position gate below catches that, and appending avoids it.
-  assert.match(store, /\$54,\$55,\$56::jsonb,\n\s*\$57,\$58\)/,
+  assert.match(store, /\$54,\$55,\$56::jsonb,\n\s*\$57,\$58,\$59,\$60\)/,
     'the new parameters are at the end, so no existing $n moved');
+});
+
+
+test('ROUND 15: every column the worklist PAGE reads is named in the worklist QUERY', () => {
+  // ⚠️ THE DEFECT THIS EXISTS FOR. `dbf07b9a` added divergence_band, band_uncertain and
+  // scoring_status to the INSERT and to the page, and never to the SELECT. `r.divergence_band` was
+  // therefore undefined on every row, DivergenceChip took its "no band was stored" branch, and the
+  // worklist read "not scorable" for every episode — on a table full of scored ones. Nothing
+  // failed, nothing threw, and no test looked at both halves at once.
+  const store = read('lib/ipd-episode/store.ts');
+  const page = read('app/admin/ipd-audit/episodes/page.tsx');
+  const query = store.slice(store.indexOf('export async function episodeWorklist'));
+  const select = query.slice(query.indexOf('SELECT'), query.indexOf('FROM ipd_episode_audits'));
+
+  const readFields = new Set<string>();
+  for (const m of page.matchAll(/\br\.([a-z_][a-z0-9_]*)/g)) readFields.add(m[1]);
+  assert.ok(readFields.size > 5, 'the page really does read row fields');
+  for (const field of readFields) {
+    assert.ok(new RegExp(`\\b${field}\\b`).test(select),
+      `the page reads r.${field}, so the worklist SELECT must name it`);
+  }
+  // and the three that were missing are explicitly among them now
+  for (const field of ['divergence_band', 'band_uncertain', 'scoring_status']) {
+    assert.ok(readFields.has(field), `${field} is read by the page`);
+    assert.ok(new RegExp(`\\b${field}\\b`).test(select), `${field} is selected`);
+  }
+});
+
+test('ROUND 15 ITEM 1: the absolutes are stored, selected and rendered beside the band', () => {
+  const ddl = read(join('migrations', '0052_ipd_episode_audits.sql'));
+  const route = read('app/api/admin/migrate-ipd-episode-audits/route.ts');
+  const store = read('lib/ipd-episode/store.ts');
+  const ui = code('app/admin/ipd-audit/episodes/ui.tsx');
+  for (const col of ['penalty_total', 'expectations_evaluated']) {
+    assert.match(ddl, new RegExp(`${col}\\s+INTEGER`), `${col} is declared`);
+    assert.ok(route.includes(`ADD COLUMN IF NOT EXISTS ${col} INTEGER`), `${col} is back-filled`);
+    assert.ok(store.includes(col), `${col} is written and selected`);
+  }
+  assert.ok(ui.includes('export function DivergenceCounts('), 'and rendered by the same component tree as the band');
+  for (const page of ['app/admin/ipd-audit/episodes/page.tsx', 'app/admin/ipd-audit/episodes/[id]/page.tsx']) {
+    assert.ok(read(page).includes('<DivergenceCounts'), `${page} shows the counts`);
+  }
+});
+
+test('ROUND 15 ITEM 1: the index is a rate, and the denominator excludes what could not be measured', () => {
+  const core = code('lib/ipd-episode/judge-core.ts');
+  assert.ok(core.includes('const maxPenalty = SEVERITY_PENALTY.major * evaluated;'),
+    'the ceiling is 8 × the expectations evaluated');
+  assert.ok(core.includes("findings.filter((f) => f.verdict !== 'unassessable').length"),
+    'a question the pipeline could not answer is not in the denominator');
+  assert.ok(core.includes('if (evaluated === 0) return null;'),
+    'and nothing measured is null, never 0 and never 100');
 });

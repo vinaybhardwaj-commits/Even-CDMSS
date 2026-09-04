@@ -34,6 +34,31 @@ export const NO_DIVERGENCE_COPY = 'No divergence found against the expected cour
  * A number is also shown when there is NO number: `scoring_status` other than `ok` renders "not
  * scorable" and the reason, so an unscorable episode can never acquire a reassuring band.
  */
+/**
+ * ROUND 15 ITEM 1 — THE COUNTS TRAVEL WITH THE BAND, ALWAYS.
+ *
+ * The index is a RATE now (penalty over the worst this episode could have scored), and a rate on
+ * its own is not enough to triage a worklist: two episodes can band identically while one holds
+ * four findings and the other forty. The band says how this admission compares; these say how much
+ * there is to read. V's instruction is that a clinician needs both and neither alone, so they are
+ * rendered by the SAME component as the band rather than left to each surface to remember.
+ */
+export function DivergenceCounts({ penalty, evaluated, divergent }: {
+  penalty: number | null; evaluated: number | null; divergent: number | null;
+}) {
+  if (penalty == null && evaluated == null && divergent == null) return null;
+  return (
+    <span className="inline-flex items-baseline gap-1 text-[10.5px] text-slate-500"
+      title="The band is a rate — penalty over the worst this episode could have scored. These are the absolute figures it divides: how many divergent findings there are, out of how many expectations this engine could actually evaluate, and the penalty they carry.">
+      <span className="tabular-nums font-medium text-slate-600">{divergent ?? 0}</span>
+      <span>divergent of</span>
+      <span className="tabular-nums font-medium text-slate-600">{evaluated ?? 0}</span>
+      <span>evaluated · penalty</span>
+      <span className="tabular-nums font-medium text-slate-600">{penalty ?? 0}</span>
+    </span>
+  );
+}
+
 export function DivergenceChip({ band, uncertain, status }: {
   band: string | null; uncertain?: boolean; status?: string | null;
 }) {
@@ -71,12 +96,21 @@ export function DivergenceChip({ band, uncertain, status }: {
 /**
  * The raw index, on drill-in only, labelled for what it is. Never on the list.
  */
-export function InternalIndex({ index, uncertain }: { index: number | null; uncertain?: boolean }) {
+export function InternalIndex({ index, uncertain, penalty, evaluated }: {
+  index: number | null; uncertain?: boolean; penalty?: number | null; evaluated?: number | null;
+}) {
   if (index == null) return null;
   return (
-    <span className="inline-flex items-baseline gap-1.5 text-[11px] text-slate-400">
+    <span className="inline-flex flex-wrap items-baseline gap-1.5 text-[11px] text-slate-400">
       <span className="font-medium uppercase tracking-wide">Internal index</span>
       <span className="font-semibold tabular-nums text-slate-500">{index}</span>
+      {/* ROUND 15: the arithmetic is shown, not asserted — a rate whose terms are hidden is a
+          number a reader has to take on trust, and this one is new. */}
+      {penalty != null && evaluated ? (
+        <span className="tabular-nums text-slate-500">
+          = 100 − 100 × {penalty} / (8 × {evaluated})
+        </span>
+      ) : null}
       <span>± 5 repeat-run spread on identical input — not a per-case ranking{uncertain ? ', and within 5 of a band threshold' : ''}</span>
     </span>
   );
