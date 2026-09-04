@@ -434,7 +434,15 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
     const diffMs = Date.now() - tDiff;
     if (!a1.ok) {
       await recordSkip({ encounterId, reason: 'diff_failed', dischargedAt: envelope.dischargedAt, engineVersion,
-        diagnostics: diagnosticsNow({ diff_ms: diffMs, diff_finish_reason: a1.finishReason, diff_truncated: a1.truncated }),
+        // The round 13 item 3 measurement belongs on the FAILURE path too: an episode whose diff
+        // could not run is exactly the one whose prompt size someone will want to know.
+        diagnostics: diagnosticsNow({
+          diff_ms: diffMs, diff_finish_reason: a1.finishReason, diff_truncated: a1.truncated,
+          diff_prompt_chars: a1.promptChars, digest_entries: digest.entries.length,
+          digest_ungrouped: digest.ungroupedCount,
+          diff_refused_for_budget: a1.budget.refusedForBudget,
+          diff_remaining_ms: a1.budget.remainingMsAtAttempt,
+        }),
         detail: a1.error ?? 'diff pass failed' });
       await finishTraceIfRunning(traceId, 'error', a1.error ?? 'diff pass failed');
       return { encounterId, skip: 'diff_failed', error: a1.error ?? 'diff pass failed', traceId, latencyMs: Date.now() - t0, notes: assemblyNotes };
