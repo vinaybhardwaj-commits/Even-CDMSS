@@ -42,6 +42,10 @@ export interface ExpectationMatcher {
   terms: string[];
 }
 
+/** The `section` value `run.ts` gives an escalation trigger. Named here because the resolver's
+ *  conditional gate keys on it, and a typo would silently reopen the hole it closes. */
+export const ESCALATION_SECTION = 'escalation';
+
 export const RESOLUTIONS = ['present', 'absent_class_present', 'absent_class_missing', 'ambiguous_confounded'] as const;
 export type Resolution = (typeof RESOLUTIONS)[number];
 
@@ -567,6 +571,38 @@ export interface ResolvedOutcome {
  * generation, and it is recorded as one rather than scored as an omission.
  */
 export function resolveEntry(entry: ResolvableEntry, events: readonly EpisodeEvent[]): ResolvedOutcome {
+  // ⚠️ ROUND 17 ITEM 1 — AN ESCALATION TRIGGER IS A CONDITIONAL, AND CODE CANNOT EVALUATE ITS
+  // ANTECEDENT. THIS GATE WAS PROMPT-ONLY UNTIL NOW.
+  //
+  // "If SBP < 90, start noradrenaline" is not an expectation that something happened. It is an
+  // expectation that something happened IF something else did. Whether the trigger fired is a
+  // question about vitals and bedside observation, and this mirror carries neither — so the
+  // resolver cannot tell "the action was omitted" from "the condition never arose".
+  //
+  // Until this branch, nothing enforced that. `run.ts` pushes every trigger into the resolver with
+  // the MODEL'S OWN matcher, and the pipeline only behaved because `prompts.ts` suggests
+  // `{"kind": "other"}` in the escalation slot of its schema example. A model returning
+  // `{kind: 'drug', terms: ['noradrenaline']}` — a perfectly reasonable reading of the field —
+  // would have had the trigger resolved as a drug lookup: no noradrenaline order, pharmacy data
+  // present, therefore `absent_class_present`, therefore DIVERGENT. A patient who never became
+  // hypotensive would be marked as having been denied a vasopressor.
+  //
+  // This file's own posture is that a prompt is an instruction and only code is a guarantee, and
+  // this was the last hard constraint on the engine resting on the other side of that line.
+  //
+  // `absent_class_missing` is the resolution because it is the one that means "this pipeline cannot
+  // answer" — and §4.2a exempts it from the `unassessable` postcondition for exactly that reason.
+  if (entry.section === ESCALATION_SECTION) {
+    return {
+      resolution: 'absent_class_missing',
+      verdict: 'unassessable',
+      severity: entry.proposedSeverity,
+      statement: `Expected on condition: ${entry.item}. This is a conditional, and this engine cannot check one: whether the trigger fired is a question about vitals and clinical observation, which this mirror does not carry. No conclusion is drawn about whether the action was needed or taken.`,
+      matchedEvent: null, matchedTerm: null,
+      confound: 'an escalation trigger is conditional and its antecedent cannot be evaluated from this mirror',
+    };
+  }
+
   const m = entry.matcher;
   if (!m || !m.terms.length) {
     return {

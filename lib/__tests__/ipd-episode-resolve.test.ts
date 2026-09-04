@@ -9,9 +9,10 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
   classIsRepresented, confoundFor, findMatch, termMatches, haystackFor, eventTypesFor,
-  resolveEntry, resolveAll, resolutionCounts, panelContaining,
+  resolveEntry, resolveAll, resolutionCounts, panelContaining, ESCALATION_SECTION, MATCHER_KINDS,
   CLINICAL_SHORTHAND, expandClinicalShorthand,
   type ExpectationMatcher, type ResolvableEntry,
 } from '../ipd-episode/resolve-core';
@@ -398,4 +399,54 @@ test('ITEM 5: shorthand cannot manufacture a match out of nothing', () => {
   const events = [noteEvent(1, 'patient comfortable, no fresh complaints')];
   const r = resolveEntry(entry({ dayIndex: 1, matcher: { kind: 'note', terms: ['abdominal examination'] } }), events);
   assert.notEqual(r.resolution, 'present', 'a note with no examination shorthand still resolves absent');
+});
+
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+// ROUND 17 ITEM 1 — THE ESCALATION GATE, IN CODE
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+
+test('ITEM 1: a trigger with a DRUG matcher does not become a divergent omission', () => {
+  // THE EXACT CASE. The prompt's schema example suggests {"kind":"other"} in the escalation slot,
+  // and until round 17 that suggestion was the only thing standing between a conditional and a
+  // false finding. A model returning a drug matcher — a perfectly reasonable reading of "the
+  // action they should trigger" — would have had this resolved as a drug lookup: no noradrenaline
+  // order, pharmacy data present, therefore absent_class_present, therefore DIVERGENT. A patient
+  // who never became hypotensive, marked as denied a vasopressor.
+  const events = [drugOrder('PARACETAMOL 1G'), drugOrder('CEFAZOLIN 1G')];
+  const r = resolveEntry(entry({
+    section: 'escalation',
+    item: 'SBP < 90 mmHg → start noradrenaline',
+    matcher: { kind: 'drug', terms: ['noradrenaline'] },
+  }), events);
+  assert.notEqual(r.verdict, 'divergent', 'a conditional that never fired is not an omission');
+  assert.equal(r.verdict, 'unassessable');
+  assert.equal(r.resolution, 'absent_class_missing');
+  assert.match(r.statement, /conditional/);
+  assert.match(r.confound ?? '', /antecedent cannot be evaluated/);
+});
+
+test('ITEM 1: the gate holds for EVERY matcher kind, not just the one that was reported', () => {
+  const events = [drugOrder('NORADRENALINE 2MG'), labOrder('LACTATE'), noteEvent(0, 'shock reviewed')];
+  for (const kind of MATCHER_KINDS) {
+    const r = resolveEntry(entry({
+      section: 'escalation', item: 'trigger → action',
+      matcher: { kind, terms: ['noradrenaline', 'lactate', 'shock'] },
+    }), events);
+    assert.equal(r.verdict, 'unassessable', `kind ${kind} must not produce a judgement`);
+    assert.notEqual(r.resolution, 'present', `kind ${kind} must not claim the condition was met`);
+  }
+});
+
+test('ITEM 1: the gate is keyed on the section, and NON-escalation sections are untouched', () => {
+  const events = [drugOrder('PARACETAMOL 1G')];
+  const therapeutic = resolveEntry(entry({
+    section: 'therapeutics', item: 'VTE prophylaxis',
+    matcher: { kind: 'drug', terms: ['enoxaparin'] },
+  }), events);
+  assert.equal(therapeutic.verdict, 'divergent', 'a plain expectation still resolves normally');
+  // and run.ts pushes escalation entries under the exact constant the gate reads
+  assert.equal(ESCALATION_SECTION, 'escalation');
+  const run = readFileSync('lib/ipd-episode/run.ts', 'utf8');
+  assert.match(run, /push\(ESCALATION_SECTION,/, 'no repeated literal to drift from the gate');
 });

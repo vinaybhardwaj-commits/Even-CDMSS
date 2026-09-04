@@ -13,7 +13,7 @@ import {
   applyTierCRule, applySeverityCap, entryWasUncited, attachAttribution, attributedParty, completenessPct,
   countFindings, divergenceIndex, penaltyTotal, expectationsEvaluated, normalizeFidelityFindings, evidenceTiersOf, finalizeFindings,
   parseFindings, resolveFindingCitations, validateCommentary, asLvcCategory, SEVERITY_PENALTY,
-  PARSE_FRAGMENT_CHARS, classifyCitationProvenance, applyLiteratureCap, findingHasTierAEvidence, scoringStatusFor,
+  PARSE_FRAGMENT_CHARS, classifyCitationProvenance, findingHasTierAEvidence, scoringStatusFor,
   storedDivergenceIndex, impliedFindingType, capSeverityAt, CAP_SEVERITY_CEILING,
   divergenceBandFor, bandIsUncertain, DIVERGENCE_BANDS, BAND_THRESHOLDS, PENALTY_REPEAT_SPREAD,
   dropJudgedOmissions, enforceUnassessable, findingsFromResolved, domainForSection,
@@ -1086,30 +1086,6 @@ test('a chunk whose source was never recorded counts as literature, never as nor
   // the conservative reading: treating an unknown source as a standard would lift a cap on nothing
   assert.equal(classifyCitationProvenance([55555], SOURCES, NORMATIVE), 'literature');
   assert.equal(classifyCitationProvenance([4021, 55555], SOURCES, NORMATIVE), 'mixed');
-});
-
-test('THE CAP: a major finding standing only on literature is cut to moderate, and stays divergent', () => {
-  const lit = f({ finding_id: 'x', severity: 'major', verdict: 'divergent', citation_ids: [7788], citation_provenance: 'literature' });
-  const res = applyLiteratureCap(lit);
-  assert.equal(res.capped, true);
-  assert.equal(res.finding.severity, 'moderate');
-  assert.equal(res.finding.verdict, 'divergent',
-    'the record can still show the course left the expected one — literature bounds how loudly, not whether');
-});
-
-test('the cap does not touch a normative or mixed finding, nor a finding already below major', () => {
-  for (const prov of ['normative', 'mixed'] as const) {
-    const r = applyLiteratureCap(f({ finding_id: 'x', severity: 'major', citation_provenance: prov }));
-    assert.equal(r.capped, false, prov);
-    assert.equal(r.finding.severity, 'major', `one normative citation is enough to lift the cap (${prov})`);
-  }
-  for (const sev of ['moderate', 'minor'] as const) {
-    const r = applyLiteratureCap(f({ finding_id: 'x', severity: sev, citation_provenance: 'literature' }));
-    assert.equal(r.capped, false);
-    assert.equal(r.finding.severity, sev);
-  }
-  // no citations at all: the uncited cap already owns that case
-  assert.equal(applyLiteratureCap(f({ finding_id: 'x', severity: 'major', citation_provenance: null })).capped, false);
 });
 
 test('item 10: provenance is still MEASURED, and no longer capped — literature keeps its weight', () => {

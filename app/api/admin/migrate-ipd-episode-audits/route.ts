@@ -94,7 +94,6 @@ export async function POST(req: NextRequest) {
       model_checkpoint      TEXT,
       model_judge           TEXT,
       trace_id              TEXT,
-      de_identified         BOOLEAN DEFAULT TRUE,
       error_detail          TEXT,
       raw_judge_error       JSONB
     )`;
@@ -124,6 +123,9 @@ export async function POST(req: NextRequest) {
     await sql`ALTER TABLE ipd_episode_audits ADD COLUMN IF NOT EXISTS digest_entries INTEGER`;
     await sql`ALTER TABLE ipd_episode_audits ADD COLUMN IF NOT EXISTS penalty_total INTEGER DEFAULT 0`;
     await sql`ALTER TABLE ipd_episode_audits ADD COLUMN IF NOT EXISTS expectations_evaluated INTEGER DEFAULT 0`;
+    // ROUND 17 ITEM 5: drop the assertion column that asserted nothing. Idempotent, and safe —
+    // it was DEFAULT TRUE and never written, so no row loses a value anyone chose.
+    await sql`ALTER TABLE ipd_episode_audits DROP COLUMN IF EXISTS de_identified`;
     await sql`ALTER TABLE ipd_episode_audits ADD COLUMN IF NOT EXISTS stage_timings JSONB`;
     await sql`ALTER TABLE ipd_episode_audits ALTER COLUMN app_source SET DEFAULT 'standalone'`;
     steps.audits_columns = 'ok';

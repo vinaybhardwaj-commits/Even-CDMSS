@@ -1629,7 +1629,7 @@ test('round 13 item 3: both halves of the measurement are stored, and nothing re
   }
   // APPENDED. Round 11 renumbered this statement and left two casts behind on their old
   // placeholders; the placeholder-position gate below catches that, and appending avoids it.
-  assert.match(store, /\$54,\$55,\$56::jsonb,\n\s*\$57,\$58,\$59,\$60\)/,
+  assert.match(store, /\$54,\$55,\$56::jsonb,\n\s*\$57,\$58,\$59,\$60,\$61\)/,
     'the new parameters are at the end, so no existing $n moved');
 });
 
@@ -1724,4 +1724,40 @@ test('ROUND 15: the UI copy states no fixed index window, because there no longe
   assert.match(ui, /moved by the repeat-run spread measured on identical input/);
   assert.match(ui, /the same wobble matters less on an admission with more expectations/i,
     'and why it is computed per episode rather than from a window');
+});
+
+
+test('ROUND 17 ITEM 5: app_source is WRITTEN, and de_identified is GONE', () => {
+  const store = read('lib/ipd-episode/store.ts');
+  const ddl = read(join('migrations', '0052_ipd_episode_audits.sql'));
+  const route = read('app/api/admin/migrate-ipd-episode-audits/route.ts');
+
+  // WRITTEN: preview and production share one DATABASE_URL (decision 31), so which deployment
+  // produced a row is a real question. The idiom is the repo's own.
+  assert.match(store, /const APP_SOURCE = process\.env\.APP_SOURCE \|\| 'standalone';/);
+  assert.match(store, /expectations_evaluated, app_source\)/, 'named in the INSERT');
+  assert.match(store, /^\s*APP_SOURCE,$/m, 'and passed as a parameter');
+
+  // DROPPED: an assertion column that asserted nothing — DEFAULT TRUE, never written, therefore
+  // TRUE on every row whatever ran, including throughout the period when real_course carried a
+  // theatre assistant's name (round 14 item 9).
+  const ddlBody = ddl.slice(ddl.indexOf('CREATE TABLE IF NOT EXISTS ipd_episode_audits'));
+  assert.ok(!/^\s{2}de_identified\s+BOOLEAN/m.test(ddlBody), 'not declared any more');
+  assert.match(route, /DROP COLUMN IF EXISTS de_identified/, 'and dropped idempotently');
+  assert.ok(!/de_identified/.test(store), 'and nothing writes or reads it');
+});
+
+test('ROUND 17 ITEM 6: episodeAuditById names its columns, and names ALL of them', () => {
+  const store = read('lib/ipd-episode/store.ts');
+  const ddl = read(join('migrations', '0052_ipd_episode_audits.sql'));
+  const fn = store.slice(store.indexOf('export async function episodeAuditById'));
+  assert.ok(!/SELECT \* FROM ipd_episode_audits/.test(fn), 'no SELECT *');
+
+  // and the named list is exactly the table — the check episodeWorklist did not have for six rounds
+  const tbl = ddl.slice(ddl.indexOf('CREATE TABLE IF NOT EXISTS ipd_episode_audits'));
+  const declared = new Set([...tbl.slice(0, tbl.indexOf('\n);')).matchAll(/^ {2}([a-z_]+)\s+[A-Z]/gm)].map((m) => m[1]));
+  const sql = fn.slice(fn.indexOf('`SELECT id,'), fn.indexOf('FROM ipd_episode_audits'));
+  const named = new Set([...sql.matchAll(/\b([a-z][a-z0-9_]*)\b/g)].map((m) => m[1]).filter((w) => w !== 'select'));
+  for (const c of declared) assert.ok(named.has(c), `column ${c} is declared but not selected`);
+  for (const c of named) assert.ok(declared.has(c), `${c} is selected but not a column`);
 });

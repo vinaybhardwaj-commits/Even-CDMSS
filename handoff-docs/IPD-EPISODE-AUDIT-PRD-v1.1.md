@@ -364,6 +364,33 @@ either branch contains a real name. Nothing had merged and only one machine had 
 is what made a force-push safe; the standing no-force-push rule was suspended by V for these two
 branches and this purpose only.
 
+### 1.16 Round 17 — final tidy before merge (V, 2026-09-03)
+
+| # | Change |
+|---|---|
+| 1 | **The escalation gate is code now.** It was prompt-only: `run.ts` pushed every trigger into the resolver with the MODEL'S matcher, and the pipeline behaved only because `prompts.ts` suggests `{"kind":"other"}` in the escalation slot. A model returning `{kind:'drug', terms:['noradrenaline']}` would have had "if SBP < 90 → noradrenaline" resolved as a drug lookup — no order, pharmacy data present, therefore **divergent**. A patient who never became hypotensive, marked as denied a vasopressor. An escalation trigger is a CONDITIONAL and this mirror carries no vitals, so its antecedent cannot be evaluated; it now always resolves `absent_class_missing` / `unassessable`, keyed on `ESCALATION_SECTION` so no repeated literal can drift from the gate. This was the last hard constraint on the engine resting on a prompt. |
+| 2 | Fixture patient renamed to `Testpatient Gamma`, matching `Testperson Alpha` / `Beta`. |
+| 3 | `applyLiteratureCap` and the `INDEX_REPEAT_SPREAD` alias deleted, with the two scoring tests that exercised the dead cap. The two CONTRACT tests are kept: they assert the cap is *absent* from the chain, which is the half that still guards something. `entryWasUncited` loses its `@deprecated` — it is live, feeding `n_uncited_entries`. |
+| 4 | `bandIsUncertain`'s doc no longer cites a 45 threshold, which has not existed since decision 37, nor a fixed index window, which decision 38 replaced. |
+| 5 | **`app_source` written, `de_identified` dropped** — see below. |
+| 6 | `episodeAuditById` names its 64 columns instead of `SELECT *`, with a test that the list and the DDL match in both directions. |
+
+**Decision 39 — the two assertion columns (round 17 item 5).**
+
+`app_source` is now **written** from `process.env.APP_SOURCE`, the idiom `lib/db.ts`,
+`appropriateness-runs.ts` and `audit-suppression-store.ts` already use. Preview and production
+share one `DATABASE_URL` (decision 31), so which deployment produced a row is a real question about
+the data, and a column that answers it earns its place.
+
+`de_identified` is **dropped**. It was `DEFAULT TRUE`, never written by the pipeline, and therefore
+`TRUE` on every row whatever ran — an assertion column asserting nothing. Worse, it read `TRUE`
+throughout the period when `real_course` was carrying a theatre assistant's name in an OT note
+(round 14 item 9): the one thing it claimed was the one thing that was not true. A column that can
+only ever agree with itself invites a confidence nobody has checked, which is the failure
+`scoring_status` exists to prevent one level up. De-identification is enforced where it happens —
+the Deidentifier in assembly, the column allow-lists in `db13.ts`, `isPersonFieldName`, and the
+source-read tests that hold all three — and it is checkable there.
+
 ### 4.2a `unassessable` must be earned (added 2026-09-02, decision 33)
 
 A finding may carry `unassessable` only if its `evidence_basis` is empty or every cited source is Tier C. Anything else is rewritten to `context_dependent` in code and counted in `n_unassessable_rejected`. Resolver findings with `resolution = 'absent_class_missing'` are exempt: that gap was established by code rather than claimed by a model.

@@ -547,10 +547,12 @@ export function applySeverityCap(f: EpisodeFinding): { finding: EpisodeFinding; 
 }
 
 /**
- * @deprecated Round 14 item 10 folded both caps into `applySeverityCap`. Kept only so the
- * uncited-ENTRY question stays answerable for the report: it says whether the expectation a
- * finding was measured against was itself cited, which is still worth counting even though it no
- * longer caps anything on its own.
+ * Whether the expectation a finding was measured against carried a citation of its own.
+ *
+ * NOT DEPRECATED, and not a cap: round 14 item 10 folded both caps into `applySeverityCap`, and
+ * this survived that as a MEASUREMENT. It feeds `n_uncited_entries`, which is how "how much of
+ * this episode rests on expectations nothing normative backed" stays answerable now that the
+ * answer no longer silences anything.
  */
 export function entryWasUncited(f: EpisodeFinding, entryRefs: Map<string, CheckpointEntryRef>): boolean {
   if (f.pass !== 'divergence') return false;
@@ -677,20 +679,6 @@ export function classifyCitationProvenance(
   return n > 0 ? 'normative' : 'literature';
 }
 
-/**
- * The literature cap: the SAME `moderate` ceiling as the uncited cap, applied when nothing
- * normative backs the finding. Verdict untouched — this bounds how loudly a finding may speak,
- * never whether it may speak.
- *
- * Because both caps use `capSeverityAt` against the same ceiling, a finding subject to both lands
- * on `moderate` and stops there. That is the whole of "do not stack them".
- */
-export function applyLiteratureCap(f: EpisodeFinding): { finding: EpisodeFinding; capped: boolean } {
-  if (f.citation_provenance !== 'literature') return { finding: f, capped: false };
-  const severity = capSeverityAt(f.severity, CAP_SEVERITY_CEILING);
-  if (severity === f.severity) return { finding: f, capped: false };
-  return { finding: { ...f, severity }, capped: true };
-}
 
 /**
  * ROUND 14 ITEM 1 — BILLING RECORDS DISPENSING, NOT ADMINISTRATION, AND CODE MUST HOLD THE LINE.
@@ -1228,9 +1216,6 @@ export const BAND_THRESHOLDS = { minor: 95, moderate: 88, substantial: 80 } as c
  */
 export const PENALTY_REPEAT_SPREAD = 5;
 
-/** @deprecated Round 15: the measurement is in penalty points. Kept as an alias so nothing that
- *  imported the old name breaks silently while it is migrated. */
-export const INDEX_REPEAT_SPREAD = PENALTY_REPEAT_SPREAD;
 
 export function divergenceBandFor(index: number | null): DivergenceBand | null {
   if (index == null || !Number.isFinite(index)) return null;
@@ -1241,9 +1226,18 @@ export function divergenceBandFor(index: number | null): DivergenceBand | null {
 }
 
 /**
- * True when the index sits within the repeat-run spread of ANY threshold — i.e. a re-run could
- * plausibly have landed it in the neighbouring band. The UI says "(near boundary)" and means it:
- * IP-1286's five readings straddle exactly this case, sitting 4–9 points under the 45 threshold.
+ * True when this episode's own penalty, moved by the repeat-run spread measured on identical
+ * input, would put it in a DIFFERENT band — i.e. a re-run could plausibly land it either side of a
+ * line. The UI says "(near boundary)" and means it.
+ *
+ * ⚠️ THE DOC HERE USED TO CITE A 45 THRESHOLD, which has not existed since decision 37 re-banded
+ * against the rate (95 / 88 / 80). It also described a fixed index window, which decision 38
+ * replaced: the spread was measured in PENALTY points, so its worth in index points depends on the
+ * denominator and differs on every episode.
+ *
+ * The live example is IP-1286: index 79, penalty 95 across 56 evaluated expectations, one point
+ * inside `substantial`. Five penalty points move it to 80 and across the line, so it reports
+ * uncertain — which is the mechanism working, not a threshold to tune away.
  */
 export function bandIsUncertain(
   index: number | null, penalty?: number | null, evaluated?: number | null,

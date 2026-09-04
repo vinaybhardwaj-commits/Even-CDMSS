@@ -185,15 +185,15 @@ test('note summary drops the seven excluded names and passes everything else thr
     { name: 'fycjtkuvyj', valueString: 'x' }, { name: 'liubf', valueString: 'x' },
     { name: 'observationId', valueString: 'obs-1' }, { name: 'doctor_id', valueString: 'DOC-9' },
     { name: 'tag_data', valueString: '{"a":1}' },
-    { name: 'T-3', valueString: 'Ravi Kumar remains febrile' },
+    { name: 'T-3', valueString: 'Testpatient Gamma remains febrile' },
     { name: 'T-35', valueString: '' },
   ]));
-  const scrub = (t: string) => t.split('Ravi Kumar').join('[PATIENT]');
+  const scrub = (t: string) => t.split('Testpatient Gamma').join('[PATIENT]');
   const out = noteSummaryFrom(entries, scrub);
   for (const gone of ['esfewqf', 'Inver43', 'fycjtkuvyj', 'liubf', 'observationId', 'doctor_id', 'tag_data', 'DOC-9', 'obs-1']) {
     assert.ok(!out.includes(gone), `${gone} must not reach a note summary`);
   }
-  assert.ok(out.includes('[PATIENT]') && !out.includes('Ravi Kumar'), 'the de-identifier ran');
+  assert.ok(out.includes('[PATIENT]') && !out.includes('Testpatient Gamma'), 'the de-identifier ran');
   assert.ok(!out.includes('T-35'), 'an empty valueString contributes nothing');
 });
 

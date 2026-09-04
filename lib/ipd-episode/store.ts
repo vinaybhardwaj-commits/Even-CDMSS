@@ -47,6 +47,9 @@ function warn(label: string, e: unknown): void {
 }
 
 /** Engine version (decision 27). A bump audits an admission again BESIDE its old row, never over it. */
+/** Which deployment wrote a row. Preview and production share a database (decision 31). */
+const APP_SOURCE = process.env.APP_SOURCE || 'standalone';
+
 export const IPD_EPISODE_ENGINE_VERSION = 'ipd-episode-audit/0.1';
 
 /** The sibling engine whose score the UI shows beside this one, labelled as its own (decision 14). */
@@ -388,7 +391,7 @@ export async function saveEpisodeAudit(row: EpisodeAuditRow, checkpoints: Checkp
          prompt_events, assembled_events, stage_timings,
          capped_count, checkpoint_count, evidence_tiers, real_course, findings, admission_context, commentary,
          model_checkpoint, model_judge, trace_id, error_detail, raw_judge_error,
-         diff_prompt_chars, digest_entries, penalty_total, expectations_evaluated)
+         diff_prompt_chars, digest_entries, penalty_total, expectations_evaluated, app_source)
        VALUES ($1,TRUE,$2,$3,$4,$5,
                $6,$7,$8,$9,$10,$11,
                $12,$13,$14,$15,$16,$17,
@@ -399,7 +402,7 @@ export async function saveEpisodeAudit(row: EpisodeAuditRow, checkpoints: Checkp
                $42,$43,$44::jsonb,$45,$46,$47::jsonb,
                $48::jsonb,$49::jsonb,$50,$51::jsonb,$52,$53,
                $54,$55,$56::jsonb,
-               $57,$58,$59,$60)
+               $57,$58,$59,$60,$61)
        RETURNING id`,
       [
         runSeq,
@@ -434,6 +437,13 @@ export async function saveEpisodeAudit(row: EpisodeAuditRow, checkpoints: Checkp
         // Round 15: NEVER NULL when the episode scored. `num` because a null here would make
         // SUM() and AVG() skip the row in exactly the cohort query these two exist to serve.
         num(row.penaltyTotal), num(row.expectationsEvaluated),
+        // ROUND 17 ITEM 5. Written, not defaulted: preview and production share one DATABASE_URL
+        // (decision 31), so which deployment produced a row is a real question about the data. The
+        // idiom is the repo's own — lib/db.ts, appropriateness-runs.ts, audit-suppression-store.ts.
+        // APPENDED, like every addition since round 13. The first attempt put it third in the
+        // column list against $59, and the round-12 placeholder gate failed it immediately: that
+        // gate requires $1..$N sequential precisely so a renumber cannot go unnoticed.
+        APP_SOURCE,
       ],
     );
     const first = res[0];
@@ -513,7 +523,29 @@ export async function episodeWorklist(a: { limit?: number; sort?: 'divergence' |
 
 export async function episodeAuditById(id: string): Promise<EpisodeListRow | null> {
   if (!/^[0-9a-fA-F-]{10,64}$/.test(id)) return null;
-  const rows = await run(`SELECT * FROM ipd_episode_audits WHERE id = $1 LIMIT 1`, [id])
+  // ⚠️ ROUND 17 ITEM 6 — NAMED, NOT `SELECT *`. Not a PHI risk on this table (no name, uhid, age,
+  // gender or mobile column exists on it by §7.4), but it is the same pattern whose ABSENCE in
+  // `episodeWorklist` made the list surface read "not scorable" for every episode for six rounds:
+  // a query and a page that disagree about which fields exist, with nothing to fail when they do.
+  // Naming them means the detail page's reads are checkable against this list.
+  const rows = await run(
+    `SELECT id, audited_at, app_source, engine_version, run_seq, is_current,
+            encounter_id, ip_uid, member_id, facility_name, speciality,
+            admitted_at, discharged_at, los_days, discharge_type, extraction_version,
+            divergence_index, divergence_band, band_uncertain, scoring_status, completeness_pct,
+            penalty_total, expectations_evaluated,
+            n_findings, n_divergence_pass, n_fidelity_pass, n_omission, n_commission, n_timing,
+            n_sequencing, n_divergent, n_context_dependent, n_unassessable, n_concordant,
+            n_low_value, n_dropped_invalid, n_parse_failed,
+            n_unassessable_rejected, n_judged_omissions_dropped, n_findings_truncated,
+            n_resolver_grouped, n_resolver_ungrouped,
+            judge_temperature, resolution_counts,
+            checkpoint_policy, checkpoint_concurrency, checkpoint_wall_ms,
+            prompt_events, assembled_events, diff_prompt_chars, digest_entries, stage_timings,
+            capped_count, checkpoint_count, evidence_tiers, real_course, findings,
+            admission_context, commentary,
+            model_checkpoint, model_judge, trace_id, error_detail, raw_judge_error
+     FROM ipd_episode_audits WHERE id = $1 LIMIT 1`, [id])
     .catch((e: unknown) => { warn('episodeAuditById', e); return [] as Record<string, unknown>[]; });
   return rows[0] ?? null;
 }

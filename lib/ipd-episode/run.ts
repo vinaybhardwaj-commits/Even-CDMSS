@@ -36,7 +36,7 @@ import {
   type EpisodeFinding,
 } from './judge-core';
 import { ONE_CALL_WORST_CASE_MS } from './model-call';
-import { resolveAll, resolutionCounts, type ResolvableEntry } from './resolve-core';
+import { resolveAll, resolutionCounts, ESCALATION_SECTION, type ResolvableEntry } from './resolve-core';
 import { fetchProgressNotes, fetchDischargeSummary } from './db13';
 import {
   IPD_EPISODE_ENGINE_VERSION, fetchExtractionByIpUid, recordSkip, clearSkip, saveEpisodeAudit,
@@ -419,7 +419,9 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
       course.expected_diagnostics.forEach((e, i) => push('diagnostics', i, e.item, e.rationale, e.by_day, e.citation_ids, e.matcher, e.proposed_severity));
       course.expected_therapeutics.forEach((e, i) => push('therapeutics', i, e.item, e.rationale, e.by_day, e.citation_ids, e.matcher, e.proposed_severity));
       course.expected_monitoring.forEach((e, i) => push('monitoring', i, e.item, e.rationale, null, e.citation_ids, e.matcher, e.proposed_severity));
-      course.escalation_triggers.forEach((e, i) => push('escalation', i, `${e.trigger} → ${e.action}`, e.action, null, e.citation_ids, e.matcher, e.proposed_severity));
+      // ROUND 17 ITEM 1: the section string is what the resolver's conditional gate keys on, so it
+      // comes from the constant rather than a literal repeated here.
+      course.escalation_triggers.forEach((e, i) => push(ESCALATION_SECTION, i, `${e.trigger} → ${e.action}`, e.action, null, e.citation_ids, e.matcher, e.proposed_severity));
     }
     // Resolved against the SAME filtered list the diff pass sees — no discharge event, so an
     // expectation cannot be satisfied by something recorded only in the discharge summary.

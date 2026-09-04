@@ -141,7 +141,14 @@ CREATE TABLE IF NOT EXISTS ipd_episode_audits (
   model_checkpoint      TEXT,
   model_judge           TEXT,
   trace_id              TEXT,
-  de_identified         BOOLEAN DEFAULT TRUE,
+  -- ⚠️ `de_identified` WAS HERE AND IS GONE (round 17 item 5). It was an assertion column that
+  -- asserted nothing: DEFAULT TRUE, never written by the pipeline, therefore TRUE on every row
+  -- whatever ran. Worse, it was TRUE throughout the period when `real_course` was carrying a
+  -- theatre assistant's name in an OT note (round 14 item 9) — so the one thing it claimed was the
+  -- one thing that was not true. A column that can only ever agree with itself invites a
+  -- confidence nobody has checked, which is the same failure `scoring_status` exists to prevent.
+  -- De-identification is enforced where it happens: the Deidentifier in assembly, the column
+  -- allow-lists in db13.ts, `isPersonFieldName`, and the source-read tests that hold all three.
 
   -- Whatever went wrong on an episode that still produced a row, in prose: findings repaired,
   -- findings discarded, a rejected commentary, an entirely uncited expected course.
