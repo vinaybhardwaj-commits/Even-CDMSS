@@ -25,7 +25,7 @@ export const NO_DIVERGENCE_COPY = 'No divergence found against the expected cour
  */
 /**
  * ⚠️ THE BAND IS WHAT IS REPORTED. THE NUMBER IS NOT SHOWN HERE, AND THAT IS A MEASUREMENT
- * DECISION, NOT A PRESENTATION ONE. `divergence_index` has a measured ±5 repeat-run spread on
+ * DECISION, NOT A PRESENTATION ONE. `divergence_index` has a measured repeat-run spread on
  * identical input — five consecutive runs of one admission scored 40, 37, 36, 41, 36 — so a figure
  * on this row would claim a precision the engine cannot support, and two episodes five points
  * apart would look ranked when they are not distinguishable. The index is stored, and available on
@@ -82,10 +82,11 @@ export function DivergenceChip({ band, uncertain, status }: {
     : band === 'minor divergence' ? 'text-slate-700' : 'text-emerald-800';
   return (
     <span className="inline-flex flex-wrap items-baseline gap-x-1.5"
-      title="Reported as a band because the underlying index has a measured ±5 repeat-run spread on identical input">
+      title="Reported as a band because the underlying index moves between runs on identical input — by a measured amount, which the band is wider than">
       <span className={`text-[13.5px] font-semibold ${tone}`}>{band}</span>
       {uncertain ? (
-        <span className="text-[10.5px] font-medium text-amber-700" title="within 5 points of a band threshold — a re-run could land this either side">
+        <span className="text-[10.5px] font-medium text-amber-700"
+          title="This episode's own penalty, moved by the repeat-run spread measured on identical input, would put it in a different band — so a re-run could land it either side of this line. Computed from this episode's figures, not from a fixed window: the same wobble matters less on an admission with more expectations to divide it across.">
           (near boundary)
         </span>
       ) : null}
@@ -111,7 +112,15 @@ export function InternalIndex({ index, uncertain, penalty, evaluated }: {
           = 100 − 100 × {penalty} / (8 × {evaluated})
         </span>
       ) : null}
-      <span>± 5 repeat-run spread on identical input — not a per-case ranking{uncertain ? ', and within 5 of a band threshold' : ''}</span>
+      {/* ⚠️ NO FIXED NUMBER HERE, DELIBERATELY (round 15). The spread was measured in PENALTY
+          points, and as a rate it is worth a different number of index points on every episode —
+          about one on a 51-expectation admission, less on a longer one. Quoting "±5" against the
+          rate would overstate the noise fourfold; quoting any single figure would be wrong for
+          every episode but one. What is true on all of them is the SHAPE of the claim. */}
+      <span>
+        moves between runs on identical input — not a per-case ranking
+        {uncertain ? ', and this episode sits close enough to a band threshold that a re-run could cross it' : ''}
+      </span>
     </span>
   );
 }

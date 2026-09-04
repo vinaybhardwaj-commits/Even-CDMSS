@@ -1706,3 +1706,22 @@ test('ROUND 15: the response reports the SAME band values it stored, from the sa
     assert.ok(returned.includes(field), `the response carries ${field}`);
   }
 });
+
+
+test('ROUND 15: the UI copy states no fixed index window, because there no longer is one', () => {
+  const ui = read('app/admin/ipd-audit/episodes/ui.tsx');
+  const page = read('app/admin/ipd-audit/episodes/page.tsx');
+  // The ±5 was measured in PENALTY points on a 51-expectation episode — about 1.2 index points
+  // there, less on a longer stay. Any single figure quoted against the rate is wrong for every
+  // episode but one, and "±5" specifically overstates the noise about fourfold.
+  const rendered = (src: string) => src.replace(/\{\/\*[\s\S]*?\*\/\}/g, '');
+  for (const [name, src] of [['ui.tsx', ui], ['page.tsx', page]] as const) {
+    assert.ok(!/±\s*5|within 5 (points|of)/.test(rendered(src)),
+      `${name} must not quote a fixed index window against a rate`);
+  }
+  // and it says what the flag now MEANS
+  assert.match(ui, /would put it in a different band/, 'the tooltip states the actual test');
+  assert.match(ui, /moved by the repeat-run spread measured on identical input/);
+  assert.match(ui, /the same wobble matters less on an admission with more expectations/i,
+    'and why it is computed per episode rather than from a window');
+});

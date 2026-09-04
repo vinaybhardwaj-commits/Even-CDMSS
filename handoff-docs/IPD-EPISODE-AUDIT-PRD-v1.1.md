@@ -254,18 +254,66 @@ index cannot leave 0…100. The floor is now a belt on a fastened belt.
 **`penalty_total` and `expectations_evaluated` are stored and shown beside the band**, with
 `n_divergent`. The rate bands the episode; the counts say how much there is to read.
 
-### 1.13 Round 15 item 2 — re-banded, PROVISIONAL pending V
+### 1.13 Decision 37 — the bands, settled (V, 2026-09-03)
 
 | band | rate | meaning |
 |---|---|---|
-| no divergence found | ≥ 97 | under 3% of the maximum |
-| minor divergence | 90–96 | up to a tenth |
-| moderate divergence | 80–89 | up to a fifth |
-| substantial divergence | < 80 | more than a fifth of everything expected went wrong |
+| no divergence found | ≥ 95 | under a twentieth of expectations diverged |
+| minor divergence | 88–94 | up to about a tenth |
+| moderate divergence | 80–87 | up to a fifth |
+| substantial divergence | < 80 | more than a fifth |
 
-The old 90 / 70 / 45 were set against a TOTAL. Against a rate, 45 would require 55% of every
-expectation evaluated to have diverged at major severity — unreachable — so `substantial` would
-never have fired again. **V settles the final numbers; these are proposed from the data.**
+The old 90 / 70 / 45 were set against a TOTAL, where 45 meant "55 penalty points" and any episode
+with seven major findings could reach it. Against a rate the same numbers mean something else
+entirely: 45 would require 55% of every expectation evaluated to have diverged at major severity,
+which no real admission will do. Left unchanged, `substantial divergence` would have become
+unreachable — the mirror image of the defect decision 38 exists to fix.
+
+**ANCHORED TO WHAT A PROPORTION MEANS, NOT FITTED TO THE FIVE EPISODES MEASURED.** Five cases
+cannot support a fitted scale, and fitting one would repeat the error the band itself was
+introduced to avoid — reading a precision into the instrument that it does not have. Each boundary
+is a plain fraction of the worst an episode could have scored, and should be argued in those terms
+or not at all.
+
+The one number the data did settle is the top boundary. It was proposed at 97 and moved to 95
+because **nothing measured reached 97**: the best of the five (IPNO-416) sat at 92, so a 97
+threshold would have made `no divergence found` as unreachable as `substantial` had been. 95 leaves
+a genuinely clean admission somewhere to land.
+
+**IP-1286 sits at 79 — one point inside `substantial` — with `band_uncertain` true. That is the
+mechanism working, not a boundary to tune away.** Its penalty is 95 across 56 evaluated
+expectations, and the measured repeat spread of 5 penalty points moves it to 80, across the line.
+The flag exists to say exactly that; moving the threshold to quiet it would replace a reported
+uncertainty with a hidden one.
+
+Settling `minor` at 88 also made 87 a near-boundary value, so IP-1313 and IP-1483 (both 87) join
+IP-1286 as `band_uncertain`. Three of five read as near-boundary. The band NAMES are unchanged for
+all five under either threshold set; only the honesty flag moved.
+
+**The five, as stored on 2026-09-04:**
+
+| | LOS | index | band | uncertain | penalty | evaluated | divergent |
+|---|--|--|---|--|--|--|--|
+| IPNO-416 | 3 | 92 | minor | – | 48 | 72 | 7 |
+| IP-1313 | 0 | 87 | moderate | yes | 34 | 33 | 9 |
+| IP-1483 | 7 | 87 | moderate | yes | 110 | 109 | 18 |
+| IP-1286 | 2 | 79 | substantial | yes | 95 | 56 | 19 |
+| IPNO-495 | 11 | 75 | substantial | – | 237 | 119 | 38 |
+
+⚠️ Those rows were written under the PROVISIONAL 97 / 90 / 80. Bands are identical under the
+settled thresholds; `band_uncertain` for IP-1313 and IP-1483 is stored `false` and would be `true`
+if recomputed. `band_uncertain` is a derived column — a pure function of the stored index, penalty
+and denominator — so it can be refreshed without running a model. Left as stored, and flagged,
+rather than written to on no instruction.
+
+### 1.13a The `band_uncertain` copy carries no number
+
+The UI said "±5 repeat-run spread" and "within 5 points of a band threshold". Both were measured in
+PENALTY points on a 51-expectation episode — about 1.2 index points there, less on a longer stay —
+so quoting ±5 against the rate overstated the noise roughly fourfold, and any single figure is
+wrong for every episode but one. The copy now states the test itself: *this episode's own penalty,
+moved by the measured spread, would put it in a different band*, and says why it is computed per
+episode. A source-read test forbids a fixed index window in either surface.
 
 **And the repeat spread keeps the units it was measured in.** IP-1286's five runs spread 5 PENALTY
 points. As a rate that is 100 × 5 / (8 × evaluated) — about 1.2 index points on its 51 expectations,

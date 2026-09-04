@@ -1182,28 +1182,37 @@ export type DivergenceBand = (typeof DIVERGENCE_BANDS)[number];
  * scale to the only case we have looked at, which is worse than using a stated prior.
  */
 /**
- * ROUND 15 ITEM 2 — RE-BANDED FOR A RATE. PROVISIONAL: V SETTLES THE NUMBERS.
+ * DECISION 37 — THE BANDS, SETTLED (V, 2026-09-03) against the rate of decision 38.
  *
  * The old thresholds (90 / 70 / 45) were set against a TOTAL, where 45 meant "55 penalty points"
- * and was reachable by any episode with seven major findings. Against a rate the same numbers mean
+ * and any episode with seven major findings could reach it. Against a rate the same numbers mean
  * something else entirely: 45 would require 55% of every expectation evaluated to have diverged at
- * major severity, which no real admission will ever do. Left unchanged, every episode measured so
- * far lands in the top two bands and `substantial divergence` becomes unreachable — the mirror
- * image of the defect this round exists to fix.
+ * major severity, which no real admission will do. Left unchanged, `substantial divergence` would
+ * have become unreachable — the mirror image of the defect decision 38 exists to fix.
  *
- * These are proposed from what the index now MEANS — the share of the worst score this episode
- * could have had:
+ *   ≥ 95  no divergence found     under a twentieth of expectations diverged
+ *   88-94 minor divergence        up to about a tenth
+ *   80-87 moderate divergence     up to a fifth
+ *   < 80  substantial divergence  more than a fifth
  *
- *   ≥ 97  no divergence found      under 3% of the maximum: nothing worth a clinician's time
- *   90-96 minor divergence         up to a tenth: real findings, none of them pressing
- *   80-89 moderate divergence      up to a fifth: a pattern worth reading before the next admission
- *   < 80  substantial divergence   more than a fifth of everything expected went wrong
+ * ⚠️ ANCHORED TO WHAT A PROPORTION MEANS, NOT FITTED TO THE FIVE EPISODES MEASURED. Five cases
+ * cannot support a fitted scale, and fitting one would be the same error the band itself was
+ * introduced to avoid — reading precision into an instrument that does not have it. Each boundary
+ * is a plain fraction of the worst an episode could have scored, and it should be argued in those
+ * terms or not at all.
  *
- * A fifth of every expectation diverging is a lot of care not delivered as anticipated, and that
- * is the line "substantial" should sit on. The measured episodes are reported to V beside this
- * table so the numbers can be argued from data rather than from the shape of the sentence.
+ * The one number the data DID settle is the top boundary. It was proposed at 97 and moved to 95
+ * because nothing measured reached 97: the best episode of the five (IPNO-416) sat at 92, so a
+ * 97 threshold would have made `no divergence found` as unreachable as `substantial` had been.
+ * 95 leaves a genuinely clean admission somewhere to land.
+ *
+ * ⚠️ AND IP-1286 SITS AT 79, ONE POINT INSIDE `substantial`, WITH band_uncertain TRUE. That is the
+ * mechanism working, not a boundary to tune away. Its penalty is 95 across 56 evaluated
+ * expectations; the measured repeat spread of 5 penalty points moves it to 80, across the line.
+ * The flag exists to say exactly that, and moving the threshold to quiet it would replace a
+ * reported uncertainty with a hidden one.
  */
-export const BAND_THRESHOLDS = { minor: 97, moderate: 90, substantial: 80 } as const;
+export const BAND_THRESHOLDS = { minor: 95, moderate: 88, substantial: 80 } as const;
 
 /**
  * The measured repeat-run spread, IN PENALTY POINTS — which is what was actually measured, and

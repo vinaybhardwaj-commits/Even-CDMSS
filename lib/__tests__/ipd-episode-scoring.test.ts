@@ -432,18 +432,18 @@ test('ROUND 15: the repeat spread keeps the units it was MEASURED in — penalty
 });
 
 test('ROUND 15: band_uncertain asks whether the MEASURED wobble would change the band', () => {
-  // 51 expectations, penalty 45 → index 89, one point under the 90 threshold. Five penalty points
-  // is ~1.2 index points, so this one genuinely could land either side.
-  assert.equal(bandIsUncertain(89, 45, 51), true);
-  // the same index in the middle of a band is confident, however the penalty moves
-  assert.equal(bandIsUncertain(85, 61, 51), false, '85 is four clear of both 80 and 90');
+  // 51 expectations, penalty 49 → index 88, exactly on the `minor` threshold. Five penalty points
+  // is ~1.2 index points there, so this one genuinely could land either side.
+  assert.equal(bandIsUncertain(88, 49, 51), true);
+  // the same instrument in the middle of a band is confident, however the penalty moves
+  assert.equal(bandIsUncertain(84, 65, 51), false, '84 is four clear of both 80 and 88');
 });
 
 test('ROUND 15: the SAME wobble matters less on a longer episode, and the flag says so', () => {
-  // Five penalty points against 30 evaluated expectations is 2.1 index points; against 200 it is
-  // 0.3. A fixed index window cannot express that, and a rate must.
-  const shortStay = bandIsUncertain(91, 22, 30);   // 91, threshold 90 one point below
-  const longStay = bandIsUncertain(91, 144, 200);  // same index, far more expectations
+  // Five penalty points against 30 evaluated expectations is 2.1 index points; against 400 it is
+  // 0.16. A fixed index window cannot express that, and a rate must.
+  const shortStay = bandIsUncertain(89, 27, 30);     // 89, one point above the 88 threshold
+  const longStay = bandIsUncertain(89, 352, 400);    // same index, far more expectations
   assert.equal(shortStay, true, 'on a short episode the wobble crosses the threshold');
   assert.equal(longStay, false, 'on a long one it cannot');
 });
@@ -459,18 +459,43 @@ test('ROUND 15: a pre-round-15 row with no denominator falls back to the widest 
   assert.equal(bandIsUncertain(60), false, 'far from every threshold');
 });
 
-test('ROUND 15 ITEM 2: the four bands, re-banded for a rate', () => {
+test('DECISION 37: the four bands, settled against the rate', () => {
   // The old 90/70/45 were set against a TOTAL. Against a rate, 45 would need 55% of every
   // expectation to have diverged at major — unreachable — so `substantial` would never fire.
-  assert.deepEqual(BAND_THRESHOLDS, { minor: 97, moderate: 90, substantial: 80 });
+  assert.deepEqual(BAND_THRESHOLDS, { minor: 95, moderate: 88, substantial: 80 });
   assert.equal(divergenceBandFor(100), 'no divergence found');
-  assert.equal(divergenceBandFor(97), 'no divergence found');
-  assert.equal(divergenceBandFor(96), 'minor divergence');
-  assert.equal(divergenceBandFor(90), 'minor divergence');
-  assert.equal(divergenceBandFor(89), 'moderate divergence');
-  assert.equal(divergenceBandFor(80), 'moderate divergence');
-  assert.equal(divergenceBandFor(79), 'substantial divergence');
+  assert.equal(divergenceBandFor(95), 'no divergence found', 'under a twentieth');
+  assert.equal(divergenceBandFor(94), 'minor divergence');
+  assert.equal(divergenceBandFor(88), 'minor divergence', 'up to about a tenth');
+  assert.equal(divergenceBandFor(87), 'moderate divergence');
+  assert.equal(divergenceBandFor(80), 'moderate divergence', 'up to a fifth');
+  assert.equal(divergenceBandFor(79), 'substantial divergence', 'more than a fifth');
   assert.equal(divergenceBandFor(0), 'substantial divergence');
+});
+
+test('DECISION 37: the five measured episodes land where the settled bands put them', () => {
+  // index, penalty, evaluated — as stored on 2026-09-04 after the round-15 re-run.
+  const measured = [
+    { id: 'IPNO-416', index: 92, penalty: 48, evaluated: 72, band: 'minor divergence', uncertain: false },
+    { id: 'IP-1313', index: 87, penalty: 34, evaluated: 33, band: 'moderate divergence', uncertain: true },
+    { id: 'IP-1483', index: 87, penalty: 110, evaluated: 109, band: 'moderate divergence', uncertain: true },
+    { id: 'IP-1286', index: 79, penalty: 95, evaluated: 56, band: 'substantial divergence', uncertain: true },
+    { id: 'IPNO-495', index: 75, penalty: 237, evaluated: 119, band: 'substantial divergence', uncertain: false },
+  ];
+  // ⚠️ THREE OF FIVE READ AS NEAR-BOUNDARY UNDER THE SETTLED THRESHOLDS, and that is the settling
+  // doing its work rather than a fault. Moving `minor` from 90 to 88 put 87 one point under a
+  // boundary, so IP-1313 and IP-1483 join IP-1286 — each genuinely within the measured spread of a
+  // line. The band NAMES are unchanged for all five either way; only the honesty flag moved.
+  assert.equal(measured.filter((m) => m.uncertain).length, 3);
+  for (const m of measured) {
+    assert.equal(divergenceIndex([]) === null, true);
+    assert.equal(Math.max(0, Math.round(100 - (100 * m.penalty) / (8 * m.evaluated))), m.index, `${m.id} index`);
+    assert.equal(divergenceBandFor(m.index), m.band, `${m.id} band`);
+    assert.equal(bandIsUncertain(m.index, m.penalty, m.evaluated), m.uncertain, `${m.id} uncertainty`);
+  }
+  // ⚠️ IP-1286 IS THE MECHANISM WORKING, NOT A BOUNDARY TO TUNE AWAY. It sits one point inside
+  // `substantial`, and five penalty points — the measured repeat spread — moves it to 80.
+  assert.equal(divergenceBandFor(80), 'moderate divergence');
 });
 
 // ── round 8: a missing checkpoint must not score, and the course is bounded ──────────────────

@@ -30,7 +30,7 @@ export default async function EpisodeAuditList({ searchParams }: {
   const encounterIds = rows.map((r) => String(r.encounter_id));
   const sibling = await dischargeEngineScores(encounterIds);
 
-  // ⚠️ THE INDEX IS NOT SORTABLE. Ordering rows by a figure with a ±5 repeat-run spread would
+  // ⚠️ THE INDEX IS NOT SORTABLE. Ordering rows by a figure that moves between runs would
   // present a ranking the measurement cannot support — the list would reorder itself on a re-run of
   // the same episodes. Sorting is by BAND (worst first), then by divergent-finding COUNT within
   // the band, which is a count and does not move the way the index does.
