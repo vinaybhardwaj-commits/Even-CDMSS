@@ -528,6 +528,62 @@ db13, not by guessing at names:
   controlled as before; an unknown one contributes something cleaned rather than nothing, and the
   next unknown template does not need a code change to be audited with evidence.
 
+### 1.21 Round 21 — the resolver was charging for work the record shows was done (V, 2026-09-03)
+
+Evidence: IPNO-486, index 77, band substantial, with 44 of its 106 penalty points charged for
+things the audit's own event list shows happened.
+
+**Item 1 — the search window is the whole episode.** Round 14 item 3 floored the search at the
+expectation's own day so a "repeat CBC" could not be answered by the order that prompted it. Right
+about repeats, wrong about everything else. An EEG billed on **day 0** was expected again at cp-d1
+and cp-d2; each searched only forward, found nothing, and scored a MAJOR omission — 16 points for a
+test that was performed, with the day-2 entry reading *"EEG with sleep and awake recordings (if not
+yet completed)"*. The model was asking whether it had already happened and the resolver could not
+look. **Class presence stays day-scoped**: matching asks "did this ever happen", class presence asks
+"could it have been observed in the window", and widening both would restore round 14 item 2's bug.
+
+**Item 2 — matcher terms are not a resolution key.** A matcher of *"iv line / intravenous access /
+peripheral line"* matches nothing in a catalogue whose entries are `VASOFIX 20G` (741),
+`CANNULAE-.-20G…BD-1's` (996), `IV SET` (853). And the day-1 antiepileptic matcher listed
+"brevipil" while the day-2 matcher did not, so one drug resolved present on one day and divergent on
+the next. Terms are now expanded through `CATALOGUE_SYNONYMS`, every entry read out of db13 with its
+row count. **Coverage: 37 of 833 matchers expanded (4.4%); 3 gained a match** — small, because item
+1 already recovers most of them, but it fixes the named case and the brand/generic drift is
+structural rather than incidental.
+
+**Item 3 — no divergent verdict off an unobservable premise.** `results_available` is false on every
+lab order and there is no vitals class, so *"correct the abnormality if low"* has an antecedent
+nothing here can evaluate. **22 of 833 entries (2.6%)** carry such a premise; they resolve
+`unassessable`.
+
+**Item 4 — imaging is auditable.** `classIsRepresented('imaging')` returned false unconditionally,
+so nine imaging expectations on IPNO-486 resolved `absent_class_missing` on an episode with four
+MRIs, a brain venogram, a whole-spine survey and a chest X-ray on day 0. Radiology IS in the mirror:
+`service_type = 'Radiology'` (3,180 rows). ⚠️ Its `ordered_item_name` is **empty** — the modality is
+in `service_item_name`. **12 of 35 imaging entries across the cohort are now matchable, and 9 of 12
+episodes carry radiology billing.** Imaging matchers are restricted to radiology orders so "chest
+x-ray" cannot be answered by a pharmacy line.
+
+**Item 5 — the boolean had no discriminating power.** `retrieval_offtopic` fired on 10 of 12
+episodes including the two cleanest (index 91 and 92). A per-checkpoint **ratio** is reported
+instead, and a separate narrower flag, `query_underspecified`, marks what day 0 actually suffered:
+a query under 30 characters is a construction failure, not an off-topic result. IPNO-486's day 0
+queried the literal string `"NEURO CASE"`.
+
+**Item 6 — the day-0 query is built from the first 24 hours.** That day carried eleven events —
+four MRIs, a venogram, a whole-spine survey, brivaracetam. The medical equivalent of the existing
+`day0FromOt` path now seeds the query from radiology `service_item_name`, lab `service_name`, and
+drug names **only where the catalogue recognises them as drugs**, which is what keeps round 7 item
+7's staplers out. It never repeats what the query already says.
+
+**MEASURED ACROSS THE TWELVE STORED EPISODES: 104 entry-level verdict changes out of 833 entries
+(12.5%); resolver penalty 896 → 522 (−42%).**
+
+⚠️ **The estimated indices below are reliable only for the seven episodes last run on current code**
+(the four Group 1 and the three Group 2). The other five were last audited in round 15 on much older
+code, so subtracting today's resolver delta from their stored totals is not arithmetic that holds —
+IPNO-416's impossible −32 penalty / index 105 is the tell, and it is left in the table as one.
+
 ### 4.2a `unassessable` must be earned (added 2026-09-02, decision 33)
 
 A finding may carry `unassessable` only if its `evidence_basis` is empty or every cited source is Tier C. Anything else is rewritten to `context_dependent` in code and counted in `n_unassessable_rejected`. Resolver findings with `resolution = 'absent_class_missing'` are exempt: that gap was established by code rather than claimed by a model.

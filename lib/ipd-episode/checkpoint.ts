@@ -19,7 +19,8 @@ import { assertKnownBedrockModel } from '../bedrock-core';
 import {
   buildCheckpointUser, buildRetrievalQuery, checkpointEntryRefs, countUncitedEntries,
   everyEntryUncited, parseExpectedCourse, assessTopicality, retrievedTitles, capExpectedCourse,
-  RETRIEVAL_TOP_K, type CheckpointEntryRef, type ExpectedCourse, type RetrievedExcerpt,
+  RETRIEVAL_TOP_K, queryIsUnderspecified,
+  type CheckpointEntryRef, type ExpectedCourse, type RetrievedExcerpt,
 } from './checkpoint-core';
 import { IPD_EPISODE_CHECKPOINT_SYSTEM } from './prompts';
 import { summariseEventsForPrompt, type EpisodeEvent } from './assemble-core';
@@ -131,6 +132,9 @@ export interface CheckpointResult {
   retrievalSkipped: boolean;
   /** The day 0 query was empty and fell back to an in-window OT surgery_name. */
   day0QueryFromOt: boolean;
+  /** ROUND 21 ITEM 5: the query itself was too short to search with — a construction failure,
+   *  reported separately from an off-topic RESULT because they need different fixes. */
+  queryUnderspecified: boolean;
   /** The generation settings this checkpoint actually ran with. */
   temperature: number;
   seed: number | null;
@@ -287,6 +291,7 @@ export async function runCheckpoint(input: RunCheckpointInput): Promise<Checkpoi
     offTopicExcerptCount: topicality.offTopicCount,
     normativeDropped,
     day0QueryFromOt: day0FromOt,
+    queryUnderspecified: queryIsUnderspecified(query),
     temperature: CHECKPOINT_TEMPERATURE,
     seed: CHECKPOINT_SEED,
     model: input.model,

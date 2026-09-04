@@ -228,6 +228,7 @@ CREATE TABLE IF NOT EXISTS ipd_episode_checkpoints (
   offtopic_excerpt_count INTEGER DEFAULT 0,
   -- The day 0 query was empty and fell back to the episode's OT surgery_name. That fallback reaches
   -- outside the cut-off window, so every row it touches says so and the frequency is measurable.
+  query_underspecified  BOOLEAN DEFAULT FALSE,
   day0_query_from_ot  BOOLEAN DEFAULT FALSE,
 
   -- What this checkpoint actually ran with. Temperature has been 0 since the first commit, so it

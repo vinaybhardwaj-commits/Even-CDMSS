@@ -13,7 +13,7 @@
 
 import { extractJsonObject } from '../lvc-value-core';
 import { collapseSpaces, PHARMACY_SERVICE_TYPE, type EpisodeEvent } from './assemble-core';
-import { MATCHER_KINDS, SUBJECT_CONCEPTS, subjectWords, type MatcherKind } from './resolve-core';
+import { MATCHER_KINDS, SUBJECT_CONCEPTS, subjectWords, isRadiologyOrder, catalogueConceptsIn, type MatcherKind } from './resolve-core';
 
 export const RETRIEVAL_TOP_K = 8;
 const NOTE_QUERY_CHARS = 400;
@@ -213,6 +213,8 @@ export const Q_NOTES_MAX = 6;
 /** How many of the most recent shift handovers may contribute (round 20 item 3b). Bounded because
  *  a handover exists on every shift and they repeat heavily. */
 export const Q_HANDOVERS_MAX = 3;
+/** How many day-0 imaging / lab / drug names may seed a query that had nothing else (item 6). */
+export const Q_DAY0_ITEMS = 6;
 export const Q_NARRATIVE_TOTAL_CHARS = 1200;
 
 const detailStr = (e: EpisodeEvent, key: string): string => {
@@ -344,19 +346,56 @@ export function buildRetrievalQuery(input: RetrievalQueryInput): RetrievalQueryR
   for (const l of labs) push(l);
 
   const query = collapseSpaces(parts.join(' ')).slice(0, Q_TOTAL_CHARS);
-  if (query) return { query, day0FromOt: false };
+  // ⚠️ ROUND 21 ITEM 6 — A QUERY THIS SHORT IS NOT A QUERY. The day-0 admission remark on IPNO-486
+  // was the literal string "NEURO CASE": ten characters, and every day-0 expectation on that
+  // episode was built from what eight passages about neurology in general happened to say. The
+  // orders placed in the first 24 hours say far more about what the admission IS.
+  if (query && !queryIsUnderspecified(query)) return { query, day0FromOt: false };
 
-  // ── the day 0 last resort (see episodeSurgeryNames) ──
-  if (input.isDayZero && input.episodeSurgeryNames?.length) {
-    const fallback = collapseSpaces(
-      Array.from(new Set(input.episodeSurgeryNames.filter(Boolean))).slice(0, Q_SURGERY_MAX).join(' '),
-    ).slice(0, Q_TOTAL_CHARS);
-    if (fallback) return { query: fallback, day0FromOt: true };
+  // ── the day 0 last resorts, in order of how much they say ──
+  if (input.isDayZero) {
+    // (a) ROUND 21 ITEM 6 — THE FIRST-24-HOUR ORDER STREAM, the medical equivalent of the OT path.
+    //
+    // IPNO-486's day 0 carried eleven events: four MRIs, a brain venogram, a whole-spine survey and
+    // brivaracetam. That is "brain imaging, venogram, spine imaging, antiepileptic" — a description
+    // of the admission — sitting unused while the query was a two-word phrase.
+    //
+    // ⚠️ RADIOLOGY AND LAB NAMES ONLY, PLUS DRUGS THROUGH THE CATALOGUE. Round 7 item 7 removed raw
+    // pharmacy `ordered_item_name` from queries because a SKU cannot be told from a drug brand
+    // ("ABSTACK 30-.-5MM-COVIDEN" is a stapler). That still holds: what is used here is the
+    // radiology `service_item_name` (clean modality text — "MRI Brain Plain With Contrast"), lab
+    // `service_name`, and drug names only where the catalogue recognises them as a drug, which is
+    // what keeps the staplers out.
+    const day0 = input.eventsBeforeCutoff;
+    const imaging = Array.from(new Set(day0.filter(isRadiologyOrder)
+      .map((e) => clinicalWordsOnly(detailStr(e, 'service_item_name'))).filter(Boolean))).slice(0, Q_DAY0_ITEMS);
+    const labNames = Array.from(new Set(day0.filter((e) => e.event_type === 'lab_order')
+      .map((e) => clinicalWordsOnly(drugBaseName(detailStr(e, 'service_name')))).filter(Boolean))).slice(0, Q_DAY0_ITEMS);
+    const drugs = Array.from(new Set(day0
+      .filter((e) => e.event_type === 'order' && detailStr(e, 'service_type') === PHARMACY_SERVICE_TYPE)
+      .flatMap((e) => catalogueConceptsIn(`${detailStr(e, 'ordered_item_name')} ${detailStr(e, 'service_item_name')}`))
+    )).slice(0, Q_DAY0_ITEMS);
+    const built = collapseSpaces([...imaging, ...labNames, ...drugs].join(' ')).slice(0, Q_TOTAL_CHARS);
+    // ⚠️ NEVER REPEAT WHAT THE QUERY ALREADY SAYS. A 27-character surgery name is a real clinical
+    // query that happens to be shorter than the floor; concatenating the same words onto it again
+    // and stamping day0FromOt would be a duplication dressed as a fallback.
+    const adds = (text: string) => text && !query.toLowerCase().includes(text.toLowerCase());
+    if (built && adds(built) && !queryIsUnderspecified(built)) {
+      // the short remark still adds the presenting phrase, and now it is not carrying the query
+      return { query: collapseSpaces(`${query} ${built}`).slice(0, Q_TOTAL_CHARS), day0FromOt: false };
+    }
+    // (b) the surgical path, unchanged
+    if (input.episodeSurgeryNames?.length) {
+      const fallback = collapseSpaces(
+        Array.from(new Set(input.episodeSurgeryNames.filter(Boolean))).slice(0, Q_SURGERY_MAX).join(' '),
+      ).slice(0, Q_TOTAL_CHARS);
+      if (adds(fallback)) return { query: collapseSpaces(`${query} ${fallback}`).slice(0, Q_TOTAL_CHARS), day0FromOt: true };
+    }
   }
 
-  // Nothing clinical was documented before this cut-off and there is no OT note to fall back on.
-  // An empty query is the honest answer; retrieval_offtopic and the citation counts will show it.
-  return { query: '', day0FromOt: false };
+  // A short query is still better than none; an empty one is the honest answer when there is
+  // nothing at all. `query_underspecified` on the row says which of the two this was.
+  return { query, day0FromOt: false };
 }
 
 // ── topicality (item 3) ─────────────────────────────────────────────────────────────────────
@@ -428,6 +467,40 @@ export const OFF_TOPIC_MIN = 2;
 
 export function offTopicThreshold(total: number): number {
   return Math.max(OFF_TOPIC_MIN, Math.ceil(total * OFF_TOPIC_FRACTION));
+}
+
+/**
+ * ROUND 21 ITEM 5 — THE RATIO, BECAUSE THE BOOLEAN HAS NO DISCRIMINATING POWER.
+ *
+ * `retrieval_offtopic` fired on 10 of 12 episodes, including the two CLEANEST in the cohort at
+ * index 91 and 92. A flag that is true on almost everything separates nothing; round 14 moved it
+ * from "never fires" to "always fires" and neither state is a signal.
+ *
+ * The RATIO is reported instead, per checkpoint, and it does discriminate: 8/8 is a different
+ * statement from 2/8 and the boolean collapsed them. The boolean is kept only as a coarse index
+ * for the worklist; the number beside it is what a reader should use.
+ */
+export function offTopicRatio(offTopicCount: number, total: number): number {
+  return total > 0 ? Math.round((100 * offTopicCount) / total) / 100 : 0;
+}
+
+/**
+ * ROUND 21 ITEM 5, SECOND HALF — A QUERY THIS SHORT IS A CONSTRUCTION FAILURE, NOT A BAD RESULT.
+ *
+ * Day 0 on IPNO-486 queried the literal string "NEURO CASE" — the whole admission remark — and got
+ * back eight neurology-flavoured passages that were off topic for THIS admission. Reporting that as
+ * `retrieval_offtopic` blames the corpus for something the query builder did: there was nothing to
+ * search with. The two failures need different names because they need different fixes.
+ *
+ * The threshold is deliberately generous. A real clinical query in this engine runs to hundreds of
+ * characters (measured: 641-1,200 on IPNO-573's later checkpoints); under 30 characters is not a
+ * thin query, it is a phrase.
+ */
+export const MIN_VIABLE_QUERY_CHARS = 30;
+
+export function queryIsUnderspecified(query: string | null | undefined): boolean {
+  const q = String(query ?? '').trim();
+  return q.length > 0 && q.length < MIN_VIABLE_QUERY_CHARS;
 }
 
 /** The canonical clinical concepts a piece of text is about (resolve-core's shared vocabulary). */

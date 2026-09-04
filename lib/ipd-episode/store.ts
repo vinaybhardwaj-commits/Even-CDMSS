@@ -332,6 +332,9 @@ export interface CheckpointWriteRow {
   finishReason: string | null;
   attempts: number;
   entriesTruncated: number;
+  /** ROUND 21 ITEM 5: the query was too short to search with — a construction failure,
+   *  reported separately from an off-topic RESULT because they need different fixes. */
+  queryUnderspecified?: boolean | null;
 }
 
 /**
@@ -465,9 +468,9 @@ export async function saveEpisodeAudit(row: EpisodeAuditRow, checkpoints: Checkp
            model, trace_id, uncited_entry_count, entry_count, citation_sources,
            retrieved_titles, retrieval_offtopic, offtopic_excerpt_count, day0_query_from_ot,
            temperature, seed, retrieval_skipped, max_tokens, finish_reason, attempts,
-           entries_truncated)
+           entries_truncated, query_underspecified)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8::int[],$9::jsonb,$10,$11,$12,$13,$14,$15,$16::jsonb,
-                 $17::text[],$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)`,
+                 $17::text[],$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28)`,
         [
           auditId, cp.dayIndex, cp.checkpointType, cp.inputCutoffAt, cp.inputEventCount,
           cp.retrievalQuery, cp.retrievalFailed, cp.citationIds,
@@ -478,6 +481,7 @@ export async function saveEpisodeAudit(row: EpisodeAuditRow, checkpoints: Checkp
           num(cp.offTopicExcerptCount), cp.day0QueryFromOt ?? false,
           cp.temperature, cp.seed, cp.retrievalSkipped ?? false,
           num(cp.maxTokens), cp.finishReason ?? null, num(cp.attempts), num(cp.entriesTruncated),
+          cp.queryUnderspecified ?? false,
         ],
       ).catch((e: unknown) => {
         warn(`saveEpisodeAudit checkpoint day ${cp.dayIndex} (${cp.checkpointType})`, e);

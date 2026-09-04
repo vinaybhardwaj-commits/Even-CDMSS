@@ -323,34 +323,43 @@ test('GROUPING: the two counts describe the same list, and neither can be read a
 // ROUND 14 ITEMS 2, 3 AND 5 — THE DAY WINDOW, AND THE SHORTHAND
 // ═══════════════════════════════════════════════════════════════════════════════════════════════
 
-test('ITEM 3: a repeat expectation is NOT satisfied by the order that prompted it', () => {
-  // r-32 on IPNO-416: "repeat CBC" expected at the day-2 checkpoint, marked present by the DAY 0
-  // order. The audit reported a thing was done using as proof the very order whose repetition was
-  // being asked for — a silent false negative, and the exact failure the engine exists to catch.
+test('ROUND 21 ITEM 1: an expectation resolves across the WHOLE EPISODE, not its own day forward', () => {
+  // ⚠️ THIS REVERSES ROUND 14 ITEM 3, DELIBERATELY (V, round 21 item 1). That rule floored the
+  // search at the expectation's own day so a "repeat CBC" could not be satisfied by the order that
+  // prompted it. Right about repeats, wrong about everything else: most expectations are a
+  // checkpoint noticing on day N that something ought to have happened, and the floor turned
+  // "already done on day 0" into "never done".
+  //
+  // IPNO-486 measured it: an EEG billed on DAY 0, expected again at cp-d1 and cp-d2, each searching
+  // only from its own day forward — two MAJOR omissions, 16 of that episode's 106 penalty points,
+  // for a test the event list shows was performed. The day-2 entry even read "(if not yet
+  // completed)": the model was asking whether it had already happened and the resolver could not look.
   const events = [labOrder('COMPLETE BLOOD COUNT', 0)];
   const r = resolveEntry(entry({ dayIndex: 2, byDay: 2, matcher: { kind: 'lab', terms: ['complete blood count'] } }), events);
-  assert.notEqual(r.resolution, 'present', 'the day-0 order is not a day-2 repeat');
+  assert.equal(r.resolution, 'present', 'a day-0 order now answers a day-2 expectation');
+  assert.match(r.statement, /day 0/, 'and the statement names the day it actually happened');
 });
 
-test('ITEM 3: an order ON or AFTER the expectation’s day does satisfy it', () => {
-  for (const day of [2, 3]) {
+test('ROUND 21 ITEM 1: an order on ANY day satisfies, and the day is reported honestly', () => {
+  for (const day of [0, 2, 3]) {
     const r = resolveEntry(
       entry({ dayIndex: 2, matcher: { kind: 'lab', terms: ['complete blood count'] } }),
       [labOrder('COMPLETE BLOOD COUNT', day)],
     );
     assert.equal(r.resolution, 'present', `a day-${day} order satisfies a day-2 expectation`);
-    assert.match(r.statement, new RegExp(`day ${day}`), 'and the statement names the day it actually happened');
+    assert.match(r.statement, new RegExp(`day ${day}`));
   }
 });
 
-test('ITEM 3: the window is the day the expectation was FORMED, not its by_day deadline', () => {
-  // formed at day 2, wanted by day 4: an order on day 3 counts (it is after the checkpoint), and
-  // lateness against by_day is a timing question, not an eligibility one.
-  const r = resolveEntry(
-    entry({ dayIndex: 2, byDay: 4, matcher: { kind: 'lab', terms: ['complete blood count'] } }),
-    [labOrder('COMPLETE BLOOD COUNT', 3)],
-  );
-  assert.equal(r.resolution, 'present');
+test('ROUND 21 ITEM 1: class presence is STILL day-scoped — the two are different questions', () => {
+  // Matching asks "did this ever happen"; class presence asks "could it have been observed in the
+  // window this expectation was about". Widening both would put back the four day-3 findings that
+  // fired on a day with zero notes.
+  const notesEarly = [noteEvent(0), noteEvent(1), noteEvent(2)];
+  const r = resolveEntry(entry({ dayIndex: 3, matcher: { kind: 'note', terms: ['stent assessment'] } }), notesEarly);
+  assert.equal(r.resolution, 'absent_class_missing');
+  assert.equal(r.verdict, 'unassessable');
+  assert.match(r.confound ?? '', /from day 3 onward/);
 });
 
 test('ITEM 2: a class empty in the expectation’s OWN window is unassessable, not divergent', () => {

@@ -945,8 +945,14 @@ test('the query is built from a WHITELIST of clinical fields, not by stripping a
   }
   // and pharmacy SKUs no longer reach retrieval at all
   const cpCore = code('lib/ipd-episode/checkpoint-core.ts');
-  assert.ok(!cpCore.includes("detailStr(e, 'ordered_item_name')"),
-    'ABSTACK and SODIUM proved twice that a SKU cannot be cleaned into a clinical term');
+  // ⚠️ ROUND 21 ITEM 6 reads `ordered_item_name` for the day-0 backfill, so the assertion moved
+  // from "the field is never touched" to "its value never reaches the query raw". ABSTACK and
+  // SODIUM proved twice that a SKU cannot be CLEANED into a clinical term — so it is not cleaned,
+  // it is looked up: only names the catalogue recognises as a drug survive, and a stapler yields
+  // nothing at all.
+  assert.ok(cpCore.includes('catalogueConceptsIn('), 'drug names reach the query only via the catalogue');
+  assert.ok(!/push\(\s*detailStr\(e, 'ordered_item_name'\)/.test(cpCore),
+    'and no raw SKU is ever pushed into the query');
 });
 
 test('the diff temperature is named and recorded on the row', () => {
@@ -1069,7 +1075,8 @@ test('topicality is per excerpt, with a count beside the boolean', () => {
 
 test('NOTHING in retrieval reaches outside the cut-off — the day 0 fallback reads the filtered window', () => {
   const core = code('lib/ipd-episode/checkpoint-core.ts');
-  assert.ok(core.includes('input.isDayZero && input.episodeSurgeryNames?.length'), 'day 0 only');
+  assert.ok(core.includes('if (input.isDayZero) {'), 'both day-0 last resorts are gated on day 0');
+  assert.ok(core.includes('input.episodeSurgeryNames?.length'), 'and the surgical one still needs OT names');
   const run = code('lib/ipd-episode/run.ts');
   // ⚠️ the fallback used to be handed `events` (the WHOLE episode), so an OT note at 11:53 selected
   // day 0's evidence against a 03:03 cut-off. It now reads input_events, the same filtered list
@@ -1091,16 +1098,20 @@ test('the extracted case reaches only the two places that are entitled to it', (
     'runFidelityPass — the one pass whose job is to read it');
 });
 
-test('a thin query is an honest answer, not a gap to backfill', () => {
+test('ROUND 21 ITEM 6: a thin query is BACKFILLED FROM THE RECORD, never invented', () => {
   const cpCore = code('lib/ipd-episode/checkpoint-core.ts');
-  // nothing invents content when the window is empty: the builder only ever pushes strings it
-  // found on the filtered events, and returns '' when it found none
-  assert.ok(cpCore.includes("const query = collapseSpaces(parts.join(' ')).slice(0, Q_TOTAL_CHARS);"));
-  assert.ok(cpCore.includes("return { query: '', day0FromOt: false };"),
-    'an empty window yields an empty query — nothing invents clinical words');
-  // the ONE fallback is the day 0 OT note, and it is gated and stamped (round 5 item 3)
+  // ⚠️ THIS REVERSES "a thin query is an honest answer". It was honest and it was also useless:
+  // IPNO-486's day 0 queried the literal string "NEURO CASE" while eleven events sat unused.
+  // What backfills it is still only what the FILTERED window holds — radiology service names, lab
+  // service names, and drug names the catalogue recognises — so nothing is invented.
+  assert.ok(cpCore.includes('const day0 = input.eventsBeforeCutoff;'),
+    'the backfill reads the cut-off window, never the episode');
+  assert.ok(cpCore.includes('catalogueConceptsIn('),
+    'drug names go through the catalogue, which is what keeps staplers out (round 7 item 7)');
+  assert.ok(!/ordered_item_name.*push\(/.test(cpCore), 'raw pharmacy SKUs never reach the query');
+  // the surgical fallback is still the only path that STAMPS day0FromOt
   const fallbacks = (cpCore.match(/day0FromOt: true/g) ?? []).length;
-  assert.equal(fallbacks, 1, 'exactly one fallback path exists');
+  assert.equal(fallbacks, 1, 'exactly one stamped fallback path exists');
 });
 
 test('retrieved titles and the off-topic flag are stored as columns, not buried in jsonb', () => {

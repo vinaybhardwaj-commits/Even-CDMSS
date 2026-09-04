@@ -92,7 +92,10 @@ export function classIsRepresented(
       return events.some((e) => e.event_type === 'note' || e.event_type === 'initial_assessment'
         || e.event_type === 'handover');
     case 'imaging':
+      // ITEM 4: radiology IS in this mirror — as billing lines, not as a radiology table.
+      return events.some(isRadiologyOrder);
     case 'vitals':
+      // Still absent by construction: no vitals table joins on encounter_id (§2 of the reference).
       return false;
     case 'other':
     default:
@@ -228,7 +231,7 @@ export function confoundFor(
 export function panelContaining(
   terms: readonly string[], events: readonly EpisodeEvent[], fromDay: number | null,
 ): { event: EpisodeEvent; panel: string; term: string } | null {
-  const wanted = terms.map((t) => t.trim().toLowerCase()).filter(Boolean);
+  const wanted = expandTermsWithCatalogue(terms);
   if (!wanted.length) return null;
   for (const e of events) {
     if (e.event_type !== 'lab_order') continue;
@@ -245,6 +248,138 @@ export function panelContaining(
     }
   }
   return null;
+}
+
+/**
+ * ROUND 21 ITEM 2 — THE HOSPITAL'S OWN CATALOGUE, BECAUSE MATCHER TERMS ARE NOT A RESOLUTION KEY.
+ *
+ * Two failures on IPNO-486 alone, both structural rather than unlucky:
+ *
+ *   · a matcher of "iv line / intravenous access / peripheral line" matches NOTHING in a catalogue
+ *     whose actual entries are `VASOFIX 20G` (741 rows), `CANNULAE-.-20G-…BD-1's` (996), `IV SET`
+ *     (853), `VENFLON`, `INFUSION SET`. The clinical concept and the billing string share no word.
+ *   · the day-1 antiepileptic matcher listed "brevipil" and the day-2 matcher did not, so the SAME
+ *     drug resolved present on one day and divergent on the next. The model's term list is a
+ *     guess at what the catalogue calls a thing, and it varies between checkpoints of one episode.
+ *
+ * So terms are expanded against a table derived from db13's own item and service names before any
+ * match is attempted. Every entry below was READ OUT OF THE CATALOGUE, with its row count, not
+ * recalled: the antiepileptic block exists because the catalogue carries both
+ * `LEVETIRACETAM-INJECTION-100MG-LEVIPIL 5ML INJ` and a bare `BREVIPIL 10MG INJ`, so brand and
+ * generic each have to reach the other.
+ *
+ * Expansion is BIDIRECTIONAL and additive: a matcher naming the generic finds the brand, a matcher
+ * naming the brand finds the generic, and nothing that matched before stops matching.
+ */
+export const CATALOGUE_SYNONYMS: readonly (readonly string[])[] = [
+  // vascular access — the failing case, all counts from kx_billing_records
+  ['iv line', 'iv access', 'intravenous access', 'peripheral line', 'peripheral cannula',
+   'venous access', 'vasofix', 'cannula', 'cannulae', 'venflon', 'iv set', 'infusion set',
+   'scalp vein', 'iv cannulazation', 'iv cannulation'],
+  // antiepileptics — brand and generic both appear as bare strings in the catalogue
+  ['brivaracetam', 'brevipil', 'brivasure'],
+  ['levetiracetam', 'levipil'],
+  ['valproate', 'sodium valproate', 'divalproex', 'encorate'],
+  ['lacosamide', 'lacosam'],
+  ['phenytoin', 'eptoin'],
+  // imaging modalities — names live in `service_item_name` under service_type 'Radiology'
+  ['x-ray', 'xray', 'x ray', 'radiograph', 'chest film'],
+  ['ultrasound', 'usg', 'sonography', 'ultrasonography'],
+  ['ct', 'cect', 'computed tomography', 'ct scan'],
+  ['mri', 'magnetic resonance', 'mr imaging'],
+  ['doppler', 'colour doppler', 'color doppler'],
+  ['venogram', 'venography', 'mr venogram'],
+  // neurophysiology — `EEG - Bedside` (27), `EEG` (3), `EEG - Routine` (1), all service_type Procedure
+  ['eeg', 'electroencephalogram', 'electroencephalography'],
+  ['ecg', 'ekg', 'electrocardiogram'],
+  // common ward procedures whose billing string differs from the clinical phrase
+  ['urinary catheter', 'foley', 'catheterisation', 'catheterization', 'foleys'],
+  ['ryles tube', 'nasogastric', 'ng tube', 'rt insertion'],
+  ['central line', 'cvc', 'central venous catheter', 'triple lumen'],
+  ['blood transfusion', 'prbc', 'packed cell', 'packed red'],
+  ['dialysis', 'haemodialysis', 'hemodialysis', 'hd', 'sledd'],
+];
+
+const SYNONYM_INDEX: Map<string, string[]> = (() => {
+  const m = new Map<string, string[]>();
+  for (const group of CATALOGUE_SYNONYMS) {
+    for (const term of group) {
+      const key = term.toLowerCase();
+      m.set(key, [...(m.get(key) ?? []), ...group.map((g) => g.toLowerCase()).filter((g) => g !== key)]);
+    }
+  }
+  return m;
+})();
+
+/** A matcher's terms, plus every catalogue synonym of each. Deduplicated, order-stable. */
+export function expandTermsWithCatalogue(terms: readonly string[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const add = (t: string) => { const k = t.toLowerCase().trim(); if (k && !seen.has(k)) { seen.add(k); out.push(k); } };
+  for (const t of terms) {
+    add(t);
+    for (const syn of SYNONYM_INDEX.get(t.toLowerCase().trim()) ?? []) add(syn);
+  }
+  return out;
+}
+
+/**
+ * The catalogue concepts a piece of item text mentions — the canonical (first) term of every
+ * synonym group it hits. Used by the day-0 query builder (item 6) to turn a pharmacy line into a
+ * clinical word: `BREVIPIL 10MG INJ` becomes `brivaracetam`, and a surgical stapler becomes
+ * nothing at all, which is what keeps round 7 item 7's lesson intact.
+ */
+export function catalogueConceptsIn(text: string): string[] {
+  const hay = String(text ?? '').toLowerCase();
+  const out: string[] = [];
+  for (const group of CATALOGUE_SYNONYMS) {
+    if (group.some((t) => termMatches(t, hay))) {
+      const canonical = group[0];
+      if (!out.includes(canonical)) out.push(canonical);
+    }
+  }
+  return out;
+}
+
+/**
+ * ROUND 21 ITEM 3 — NEVER SCORE DIVERGENT OFF A PREMISE THIS PIPELINE CANNOT OBSERVE.
+ *
+ * `results_available` is false on EVERY lab order in this database and there is no vitals class at
+ * all, so an expectation whose action is CONDITIONAL on a value — "correct the abnormality if low",
+ * "titrate to a target", "repeat if deranged" — has an antecedent nothing here can evaluate. Scoring
+ * its absence as a major omission asserts that a correction was needed, which is precisely the fact
+ * the substrate withholds.
+ *
+ * This is the same argument as the escalation gate (round 17/18); it applies wherever the premise
+ * is a number nobody recorded, not only in the escalation section.
+ */
+const VALUE_CONDITIONAL = /\b(if (it is |the |they are |there is |values? |levels? )?(low|high|abnormal|elevated|raised|deranged|reduced|persistent|worsening|positive|negative|below|above|<|>)|if (hypo|hyper)[a-z]+|as (clinically )?indicated by|based on (the )?(result|value|level)|titrat\w+ to|target (of )?[<>]?\s*\d|maintain\w* (\w+ )*(above|below|between)|correct(ion)? (of )?\w* ?if|(replace|supplement)\w* if|when (values?|levels?) )/i;
+
+export function premiseIsUnobservable(item: string): boolean {
+  return VALUE_CONDITIONAL.test(String(item ?? ''));
+}
+
+/**
+ * ROUND 21 ITEM 4 — IMAGING IS AUDITABLE NOW.
+ *
+ * `classIsRepresented('imaging')` returned false unconditionally, so nine imaging expectations on
+ * IPNO-486 resolved `absent_class_missing` on an episode carrying four MRIs, a brain venogram, a
+ * whole-spine survey and a chest X-ray on day 0. It protected the score by accident and made the
+ * whole class unauditable.
+ *
+ * Radiology IS in this mirror, in the billing table: `service_type = 'Radiology'` (3,180 rows,
+ * `department = 'Diagnostic- Radiology'` 3,191). ⚠️ Its `ordered_item_name` is EMPTY — the modality
+ * lives in `service_item_name` ("X-Ray Chest Pa", "CT BRAIN PLAIN", "MRI Brain Plain With
+ * Contrast", "Ultrasound Abdomen & Pelvis"), which `haystackFor` already reads.
+ *
+ * Matching an imaging expectation therefore looks at RADIOLOGY ORDERS ONLY, never at every order —
+ * otherwise "chest x-ray" could be satisfied by a pharmacy line mentioning a chest drain.
+ */
+const RADIOLOGY_SERVICE = /radiolog|imaging/i;
+
+export function isRadiologyOrder(e: EpisodeEvent): boolean {
+  if (e.event_type !== 'order') return false;
+  return RADIOLOGY_SERVICE.test(`${detail(e, 'service_type')} ${detail(e, 'department')}`);
 }
 
 // ── matching ────────────────────────────────────────────────────────────────────────────────
@@ -281,6 +416,7 @@ export function eventTypesFor(kind: MatcherKind): readonly EpisodeEvent['event_t
     case 'lab': return ['lab_order'];
     case 'drug': return ['order'];
     case 'procedure': return ['ot_note', 'order'];
+    case 'imaging': return ['order'];
     case 'note': return ['note', 'initial_assessment', 'handover'];
     default: return [];
   }
@@ -524,12 +660,15 @@ export function findMatch(
 ): MatchHit | null {
   const types = eventTypesFor(matcher.kind);
   if (!types.length) return null;
+  // ITEM 2: the model's term list is a guess at what the catalogue calls a thing. Expand it.
+  const terms = expandTermsWithCatalogue(matcher.terms);
   for (const e of events) {
     if (!types.includes(e.event_type)) continue;
-    // THE FILTER THE OLD COMMENT ONLY DESCRIBED.
+    // ITEM 4: an imaging expectation is answered by RADIOLOGY orders, never by any order at all.
+    if (matcher.kind === 'imaging' && !isRadiologyOrder(e)) continue;
     if (fromDay != null && e.day_index < fromDay) continue;
     const hay = haystackFor(e);
-    for (const term of matcher.terms) {
+    for (const term of terms) {
       if (termMatches(term, hay)) return { event: e, term };
     }
   }
@@ -636,6 +775,24 @@ export function resolveEntry(
     };
   }
 
+  // ⚠️ ROUND 21 ITEM 3 — AN EXPECTATION CONDITIONAL ON A VALUE NOBODY RECORDED.
+  //
+  // `results_available` is false on every lab order in this database and there is no vitals class,
+  // so "correct the abnormality if low" has an antecedent this pipeline cannot evaluate. Calling
+  // its absence a major omission asserts that a correction was needed — the exact fact the
+  // substrate withholds. Same argument as the escalation gate, applied wherever the premise is a
+  // number nobody wrote down.
+  if (premiseIsUnobservable(entry.item)) {
+    return {
+      resolution: 'absent_class_missing',
+      verdict: 'unassessable',
+      severity: entry.proposedSeverity,
+      statement: `Expected: ${entry.item}. This engine cannot judge it: the action is conditional on a value — a lab result or a vital sign — and this pipeline carries neither (every lab order here has results_available = false, and there is no vitals class at all). Whether the condition was met is unknown, so whether the action was owed is unknown.`,
+      matchedEvent: null, matchedTerm: null,
+      confound: 'the expectation is conditional on a lab value or vital sign, which this mirror does not carry',
+    };
+  }
+
   const m = entry.matcher;
   if (!m || !m.terms.length) {
     return {
@@ -648,9 +805,31 @@ export function resolveEntry(
     };
   }
 
-  // ITEM 3. The window opens on the day the expectation was FORMED. An event the checkpoint had
-  // already seen cannot be what satisfies what it went on to expect.
-  const fromDay = entry.dayIndex;
+  // ⚠️ ROUND 21 ITEM 1 — THE WHOLE EPISODE TO DATE, NOT THE EXPECTATION'S OWN DAY FORWARD.
+  //
+  // Round 14 item 3 set this floor to `entry.dayIndex` to stop a "repeat CBC" being satisfied by
+  // the very order that prompted it. That reasoning was right about repeats and wrong about
+  // everything else, because most expectations are not repeats — they are the checkpoint noticing,
+  // on day N, that something ought to have happened.
+  //
+  // IPNO-486 measured the cost. An EEG was billed on DAY 0. The day-1 checkpoint expected an EEG
+  // and the day-2 checkpoint expected one again; both searched only from their own day forward,
+  // found nothing, and each scored a MAJOR omission — 16 of that episode's 106 penalty points, for
+  // a test the audit's own event list shows was done. The day-2 entry's text reads, in full,
+  // "EEG with sleep and awake recordings (IF NOT YET COMPLETED)": the model was explicitly asking
+  // whether it had already happened, and the resolver was structurally unable to look.
+  //
+  // So the search is the whole episode to date. The repeat case that round 14 fixed is now handled
+  // where it belongs — in item 2's catalogue matching and in the model's own wording — rather than
+  // by a day floor that silently converts "already done" into "never done".
+  const fromDay = null;
+
+  // ⚠️ CLASS PRESENCE STAYS DAY-SCOPED (round 14 item 2), and the two are NOT the same question.
+  // MATCHING asks "did this ever happen in this admission" — the whole episode is the right search.
+  // CLASS PRESENCE asks "could this even have been observed in the window the expectation was
+  // about" — and there the day still matters: four day-3 findings once fired on a day with zero
+  // notes because notes existed on days 0-2. Widening this one too would put those back.
+  const classFromDay = entry.dayIndex;
 
   const hit = findMatch(m, fromDay, events);
   if (hit) {
@@ -680,18 +859,18 @@ export function resolveEntry(
 
   // ITEM 2. Day-scoped, not admission-scoped: was this class recorded AT ALL in the window the
   // expectation could have been met in?
-  if (!classIsRepresented(m.kind, events, fromDay)) {
+  if (!classIsRepresented(m.kind, events, classFromDay)) {
     return {
       resolution: 'absent_class_missing',
       verdict: 'unassessable',
       severity: entry.proposedSeverity,
       statement: m.kind === 'vitals' || m.kind === 'imaging'
         ? `Expected: ${entry.item}. This pipeline cannot answer whether it happened: ${m.kind} data is absent from the mirror entirely.`
-        : `Expected: ${entry.item}. This pipeline cannot answer whether it happened: no ${m.kind} record of any kind exists from day ${fromDay} onward, so "not done" and "not recorded that day" cannot be told apart.`,
+        : `Expected: ${entry.item}. This pipeline cannot answer whether it happened: no ${m.kind} record of any kind exists from day ${classFromDay} onward, so "not done" and "not recorded that day" cannot be told apart.`,
       matchedEvent: null, matchedTerm: null,
       confound: m.kind === 'vitals' || m.kind === 'imaging'
         ? `no ${m.kind} data in this mirror`
-        : `no ${m.kind} data recorded from day ${fromDay} onward`,
+        : `no ${m.kind} data recorded from day ${classFromDay} onward`,
     };
   }
 
@@ -711,7 +890,7 @@ export function resolveEntry(
     resolution: 'absent_class_present',
     verdict: 'divergent',
     severity: entry.proposedSeverity,
-    statement: `Expected: ${entry.item}. No matching ${m.kind} record exists from day ${fromDay} onward, and ${m.kind} data IS recorded in that window — so the absence is real.`,
+    statement: `Expected: ${entry.item}. No matching ${m.kind} record exists anywhere in this admission, and ${m.kind} data IS recorded from day ${classFromDay} onward — so the absence is real.`,
     matchedEvent: null, matchedTerm: null, confound: null,
   };
 }

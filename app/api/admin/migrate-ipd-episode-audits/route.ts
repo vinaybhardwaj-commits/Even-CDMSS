@@ -154,6 +154,7 @@ export async function POST(req: NextRequest) {
     // No row therefore loses a value anyone chose or could have checked. If a future column needs
     // dropping, it gets its own note like this one — a DROP must never appear here unexplained.
     await sql`ALTER TABLE ipd_episode_audits DROP COLUMN IF EXISTS de_identified`;
+    await sql`ALTER TABLE ipd_episode_checkpoints ADD COLUMN IF NOT EXISTS query_underspecified BOOLEAN DEFAULT FALSE`;
     await sql`ALTER TABLE ipd_episode_audits ADD COLUMN IF NOT EXISTS stage_timings JSONB`;
     await sql`ALTER TABLE ipd_episode_audits ALTER COLUMN app_source SET DEFAULT 'standalone'`;
     steps.audits_columns = 'ok';
@@ -216,6 +217,7 @@ export async function POST(req: NextRequest) {
       retrieval_offtopic  BOOLEAN DEFAULT FALSE,
       retrieval_skipped   BOOLEAN DEFAULT FALSE,
       offtopic_excerpt_count INTEGER DEFAULT 0,
+      query_underspecified  BOOLEAN DEFAULT FALSE,
       day0_query_from_ot  BOOLEAN DEFAULT FALSE,
       temperature         DOUBLE PRECISION,
       seed                INTEGER,

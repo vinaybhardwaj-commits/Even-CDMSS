@@ -944,13 +944,12 @@ test('the day 0 fallback takes OT names from the CUT-OFF WINDOW, so it can never
   assert.equal(inWindow.query, 'Open inguinal hernia repair');
   assert.equal(inWindow.day0FromOt, false, 'rule 1 supplied it — the fallback was never reached');
 
-  // nothing in the window and nothing passed: the query stays thin, as instructed
+  // ROUND 21 ITEM 6: nothing in the window and nothing passed — the query is empty, not invented
   const thin = buildRetrievalQuery({
     eventsBeforeCutoff: [ev({ event_id: 'adm', event_type: 'admission', summary: 'x' })],
     isDayZero: true,
-    episodeSurgeryNames: [],
   });
-  assert.equal(thin.query, '', 'a thin day 0 query is the honest answer');
+  assert.equal(thin.query, '', 'an empty window still yields an empty query');
   assert.equal(thin.day0FromOt, false);
 });
 

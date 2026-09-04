@@ -615,6 +615,7 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
       retrievalOffTopic: c.retrievalOffTopic,
       offTopicExcerptCount: c.offTopicExcerptCount,
       day0QueryFromOt: c.day0QueryFromOt,
+      queryUnderspecified: c.queryUnderspecified,
       temperature: c.temperature,
       seed: c.seed,
       maxTokens: c.maxTokens,
