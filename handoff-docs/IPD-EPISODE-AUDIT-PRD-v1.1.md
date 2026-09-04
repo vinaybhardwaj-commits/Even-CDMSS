@@ -396,9 +396,12 @@ source-read tests that hold all three — and it is checkable there.
 §14 said *"V merges `ipd-episode-audit` into `main` with a merge commit, no squash, no rebase"*.
 That is amended: the branch is **squash-merged as one commit**.
 
-**The reason is the history, not the shape.** The fixture patient name `Ravi Kumar` is clean at the
-tip — round 17 renamed it to `Testpatient Gamma` — but it is still present in the blobs of 24 of
-the branch's 27 commits, because it was there from the build commit onward. A merge commit carries
+**The reason is the history, not the shape.** The fixture patient name that round 17 replaced with
+`Testpatient Gamma` is clean at the tip, but it is still present in the blobs of 24 of the branch's
+27 commits, because it was there from the build commit onward. (The old value is deliberately not
+written here: quoting it in the document that explains why it must not reach `main` would put it
+straight back into the one commit the squash carries there — which is exactly what happened on the
+first draft of this paragraph.) A merge commit carries
 that history onto `main`; a squash does not. The alternative was a third force-push and rewrite,
 and a squash reaches the same place without one.
 
