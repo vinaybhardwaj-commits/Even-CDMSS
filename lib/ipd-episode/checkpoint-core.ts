@@ -207,6 +207,11 @@ export function clinicalWordsOnly(text: string): string {
   return collapseSpaces(kept.join(' '));
 }
 
+/** How many progress notes the accumulated problem list may draw on, and the shared character
+ *  budget across them. Bounded so a long stay cannot grow the query without limit (item 8). */
+export const Q_NOTES_MAX = 6;
+export const Q_NARRATIVE_TOTAL_CHARS = 1200;
+
 const detailStr = (e: EpisodeEvent, key: string): string => {
   const v = (e.detail as Record<string, unknown>)?.[key];
   return v == null ? '' : String(v).trim();
@@ -261,12 +266,40 @@ export function buildRetrievalQuery(input: RetrievalQueryInput): RetrievalQueryR
     .sort((a, b) => String(a.occurred_at ?? '').localeCompare(String(b.occurred_at ?? '')))[0];
   if (assessment) push(whitelisted(assessment));
 
-  // 4. the most recent progress note before the cut-off
-  const note = [...events]
+  // 4. ROUND 14 ITEM 8 — THE ACCUMULATED PROBLEM LIST, NOT THE LATEST NOTE.
+  //
+  // ⚠️ THIS IS THE DIRECT CAUSE OF THE DAY-3 STENT CLUSTER. The query used the most recent note
+  // alone, and on IPNO-416 day 3 that note read, in full: "Follow-up visit Clinicaly better.
+  // Euvolemic Blood pressure stable. Urine output adequate - Continue the same therapeutic
+  // measurs". A terse improving-patient note carries no problem list, so the day-3 and
+  // episode-level queries were left with the OT surgery name and nothing else. Retrieval returned
+  // eight stent-procedure documents, and the checkpoint duly expected stent monitoring — six
+  // findings' worth, on a stent that was working.
+  //
+  // A patient's problems do not disappear because today's note is short. The live problem list is
+  // what ACCUMULATED across the notes so far, so the query is built from the most recent notes
+  // BACKWARD, oldest content first, until the character budget is spent. Day 3 then still carries
+  // "pyelonephritis, hydroureteronephrosis, urosepsis, pancreatitis, acute on CKD, hyperkalaemia"
+  // from days 0-2, which is what the admission is actually about.
+  //
+  // The cut-off still binds absolutely: `events` is the filtered window, so this reaches further
+  // back in time, never forward.
+  const notes = [...events]
     .filter((e) => e.event_type === 'note' && e.occurred_at && e.summary.trim())
-    .sort((a, b) => String(a.occurred_at).localeCompare(String(b.occurred_at)))
-    .pop();
-  if (note) push(whitelisted(note));
+    .sort((a, b) => String(a.occurred_at).localeCompare(String(b.occurred_at)));
+  const recentFirst = notes.slice(-Q_NOTES_MAX).reverse();
+  let narrativeBudget = Q_NARRATIVE_TOTAL_CHARS;
+  const noteParts: string[] = [];
+  for (const n of recentFirst) {
+    if (narrativeBudget <= 0) break;
+    const text = whitelisted(n).slice(0, narrativeBudget);
+    if (!text.trim()) continue;
+    noteParts.push(text);
+    narrativeBudget -= text.length;
+  }
+  // Oldest first within the block, so the query reads as the problem list developed rather than
+  // as a reversed transcript.
+  for (const t of noteParts.reverse()) push(t);
 
   // ⚠️ PHARMACY ITEM NAMES ARE NO LONGER IN THE QUERY, and that is the honest end of three
   // attempts. `ordered_item_name` is an inventory string: "ABSTACK 30-.-5MM-COVIDEN-1's" is a
@@ -348,6 +381,32 @@ const Q_GENERIC = new Set([
  *  because one distinctive word can still be coincidence and two rarely is. */
 export const MIN_SHARED_TERMS = 2;
 
+/**
+ * ROUND 14 ITEM 7, HALF TWO — THE THRESHOLD THAT COULD NOT FIRE. THIRD TIME OF ASKING.
+ *
+ * The test required a strict MAJORITY: `off * 2 > excerpts.length`. With the standard slate of
+ * eight excerpts that needs five. On IPNO-416 the day-3 and episode checkpoints each had FOUR off
+ * topic and reported `false`; every checkpoint in the episode reported `false`. Round 6 replaced an
+ * all-or-nothing test with a majority for exactly this reason and did not go far enough, which is
+ * how the same flag has now been raised three times.
+ *
+ * A QUARTER IS THE THRESHOLD, and the reasoning is about what the flag is FOR. This is not a
+ * measure of whether retrieval was mostly good; it is a warning that the expected course was
+ * partly built on passages about a different problem. Two of eight excerpts about paediatric
+ * oncology in an adult nephrology case is already enough to pull an expectation sideways — which
+ * is what item 8 shows actually happened. The flag is advisory, never blocking, so the cost of
+ * firing it early is a line in a diagnostic column; the cost of it never firing is three rounds of
+ * a signal that does not exist.
+ *
+ * A minimum of two keeps a single unlucky excerpt on a short slate from raising it.
+ */
+export const OFF_TOPIC_FRACTION = 0.25;
+export const OFF_TOPIC_MIN = 2;
+
+export function offTopicThreshold(total: number): number {
+  return Math.max(OFF_TOPIC_MIN, Math.ceil(total * OFF_TOPIC_FRACTION));
+}
+
 export function clinicalTerms(text: string): Set<string> {
   const out = new Set<string>();
   for (const raw of (text || '').toLowerCase().split(/[^a-z0-9]+/)) {
@@ -389,7 +448,13 @@ export function assessTopicality(
   if (q.size === 0 || excerpts.length === 0) return { offTopic: false, offTopicCount: 0, total: excerpts.length };
   let off = 0;
   for (const x of excerpts) {
-    const terms = distinctive(`${x.label} ${x.text}`);
+    // ⚠️ ROUND 14 ITEM 7, HALF ONE — JUDGE THE TITLE, NOT THE BODY. Topicality is a property of
+    // what a passage is ABOUT, and the label says that; a 1,100-character body shares vocabulary
+    // with almost anything clinical. On IPNO-416's day-2 checkpoint the slate included
+    // "Oncologic Emergencies in Infants and Children", "hyperkalemia in children" and a Weil's
+    // syndrome case report — in an adult nephrology admission — and only ONE excerpt was counted
+    // off topic, because the long bodies happened to share two distinctive words each.
+    const terms = distinctive(x.label);
     let shared = 0;
     for (const t of terms) if (q.has(t)) { shared++; if (shared >= MIN_SHARED_TERMS) break; }
     // A single shared distinctive word is coincidence often enough to be worthless as a signal —
@@ -397,7 +462,7 @@ export function assessTopicality(
     const need = Math.min(MIN_SHARED_TERMS, q.size);
     if (shared < need) off++;
   }
-  return { offTopic: off * 2 > excerpts.length, offTopicCount: off, total: excerpts.length };
+  return { offTopic: off >= offTopicThreshold(excerpts.length), offTopicCount: off, total: excerpts.length };
 }
 
 /** Kept as the boolean-only view for callers that want it. */

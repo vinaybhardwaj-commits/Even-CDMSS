@@ -161,6 +161,69 @@ shaping reaches it. `PROVIDER_BUDGETS.bedrock` already carries `audit_ipd` (200 
 (380 s × 1), and `bedrock.ts` says "an audit-class caller passes its own". This engine has never
 passed one. **Nothing was raised — this is the flag V's instruction asked for.**
 
+### 1.9 Round 14 — eleven items (V, 2026-09-04)
+
+*Items, not numbered decisions, on the round-12 precedent — except item 10, which V framed as an
+amendment to earlier decisions and is recorded as one below.*
+
+| # | Change |
+|---|---|
+| 1 | **Billing records dispensing, not administration.** The diff prompt now says so at length; a same-timestamp batch is rendered as ONE POSTING rather than a flat list of drug names; and a `commission` finding whose evidence is billing-only, on a day the notes do not corroborate, is capped at `minor` **with the caveat written into its statement**. Corroboration is deliberately weak — any note that day — because "does the note support this" is a judgement and this layer refuses to make judgements. |
+| 2 | **Class presence is day-scoped.** `classIsRepresented` takes the expectation's own window. Where the class is silent in that window, "not done" and "not recorded" are indistinguishable and the verdict is `unassessable`. What day-scoping would have swallowed is raised directly instead: `missingDischargeDayNote` reports **no progress note on the discharge day** as a Tier A `major` documentation finding. A handover does not count; a LOS-0 stay raises nothing. |
+| 3 | **Matching respects the expectation's day.** The old day test was an `if` with an **empty body** — `byDay` reached the function and did nothing, so every "present" statement read day 0. The window now opens on the day the expectation was FORMED. `by_day` stays a statement about lateness, which is a `timing` question, not an eligibility test. |
+| 4 | **Grouping on the subject, not the term list.** Purpose clauses, qualifiers and parentheticals are cut; what remains is canonicalised to concepts. An escalation entry groups on its trigger, not the action it routes to. **Measured on IPNO-416: 79 expectation entries → 45 classes (was 68), and the round-13 digest 79 → 43 (was 67).** The six stent findings become two. |
+| 5 | **Clinical shorthand, expanded before any negative is asserted.** Every expansion was read off the real notes, not recalled — `C/S/B` resolved as *Case Seen By* from its own context. Additive and whole-token only. |
+| 6 | **Panels that contain the analyte resolve it PRESENT and name the panel.** A KFT covers creatinine, urea and electrolytes; a CBC explains nothing about them. Only a panel this table cannot enumerate remains a confound, and it names what it might be hiding. |
+| 7 | **`retrieval_offtopic` fires.** Two changes: each excerpt is judged on its TITLE (a 1,100-character body borrows the query's own vocabulary — which is why paediatric oncology in an adult nephrology case counted as on-topic), and the threshold is a QUARTER, not a majority. Four of eight had reported `false` on every checkpoint of IPNO-416. |
+| 8 | **The retrieval query is the accumulated problem list.** Day 3's note read, in full, "Follow-up visit Clinicaly better. Euvolemic Blood pressure stable. Urine output adequate" — so the query kept only the OT surgery name, retrieval returned eight stent documents, and the checkpoint expected stent monitoring six times. Notes are now walked most-recent-backward under a shared character budget. |
+| 9 | **A field whose NAME says it holds a person never enters the note summary.** `ot_asst` held A THEATRE ASSISTANT'S FULL NAME in a row marked `de_identified = TRUE`. Matched on the field name, not the value — the lesson from the retrieval whitelist directly above it: a value-based rule can only remove the names someone has already seen. Attribution is unaffected; it reads real columns. |
+| 11 | **The engine declares itself audit-class.** See §1.10. |
+
+### 1.10 Decision 36 — the severity cap, narrowed (V, 2026-09-03; amends round 6 item 1 and round 4 item 8)
+
+On IPNO-416 **all 58 major findings were capped** — 19 by the uncited-expectation rule, 39 by the
+literature-only rule, stacked on one ceiling. With the 8-point term unreachable, `divergence_index`
+degenerates to 100 − 4 × (divergent count): severity stops carrying information and any duplication
+defect maps one-for-one onto the headline number.
+
+And the caps bit hardest on the best findings. *No stent assessment in any of seven progress notes*
+and *no note at all on the discharge day* rest on the record and cite no guideline, because none is
+needed to observe that a note is missing.
+
+**A finding keeps its blinded proposed severity, `major` included, if it has EITHER at least one
+citation (literature counts) OR corroborating Tier A evidence in `evidence_basis`.** Only a finding
+with neither is capped to `moderate`. `citation_provenance` is still classified and counted, so
+"how much of this score rests on guidelines" stays answerable; it simply no longer silences
+anything. `severity_before_cap`, `capped` and `capped_count` are unchanged.
+
+**Recomputed on IPNO-416's stored findings: `capped_count` 58 → 10, `divergence_index` 48 → 20,**
+with the 13 divergent findings now 7 major + 6 moderate rather than almost all moderate.
+
+### 1.11 Decision 37 — the call class, and the guard that was too eager (V, 2026-09-03/04)
+
+The three Opus passes declare `PROVIDER_BUDGETS.bedrock.audit` (380 s, one attempt). This is a
+**misclassification fix, not a new ceiling**: the engine passed no class, so `bedrockGenerate`
+defaulted it to `utility` — 110 s, the class documented as "a short bounded call (critic,
+classifier, expansion). Seconds." `lib/bedrock.ts` already said an audit-class caller passes its
+own; this one never did.
+
+**Checkpoints stay `utility`.** They generate in 15–35 s (IP-1483's slowest, 40.2 s), so 110 s is
+~3× their worst observed time and three cheap retries are the right posture for a short call.
+Moving them to 380 s × 1 would trade three chances at a 35 s call for one.
+
+**`audit`, not `audit_ipd`.** 200 s is below IPNO-416's measured 212,402 ms diff, so `audit_ipd`
+would still have failed the one episode that passed; and `audit_ipd` is sized against the sibling
+IPD analyze (`IPD_ANALYZE_LEGS`), so sharing it would couple this engine's ceiling to changes made
+for the discharge engine's reasons.
+
+**AND THIS CORRECTED ROUND 13.** The round-13 guard refused whenever a whole class worst case did
+not fit — which had already broken the commentary route: its box is 300 s, one `utility` call's
+worst case is 332 s, so pass B would have been refused on **every** episode. The guarantee that
+matters is that a call cannot outlive the box, and that is better kept by BOUNDING the call to the
+time available than by declining to make it. `planAttempt` now shrinks to fit, with one attempt
+ceilinged at what remains, and refuses only below a 60 s viability floor — where a judge pass on a
+150–200 KB prompt has no realistic chance.
+
 ### 4.2a `unassessable` must be earned (added 2026-09-02, decision 33)
 
 A finding may carry `unassessable` only if its `evidence_basis` is empty or every cited source is Tier C. Anything else is rewritten to `context_dependent` in code and counted in `n_unassessable_rejected`. Resolver findings with `resolution = 'absent_class_missing'` are exempt: that gap was established by code rather than claimed by a model.

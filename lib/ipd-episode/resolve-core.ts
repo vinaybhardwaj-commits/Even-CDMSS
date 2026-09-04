@@ -57,8 +57,25 @@ export type Resolution = (typeof RESOLUTIONS)[number];
  * `chart_radiology_report` has zero rows — the reference's own instruction is "treat radiology as
  * unavailable". An expectation of either therefore resolves `unassessable` on EVERY episode, which
  * is the honest answer: this pipeline cannot tell you whether a chest film was done.
+ *
+ * ⚠️ ROUND 14 ITEM 2 — THE WINDOW, NOT THE ADMISSION. `fromDay` scopes the question to the days the
+ * expectation could have been satisfied in, and that changes the answer.
+ *
+ * On IPNO-416 four day-3 findings fired as real divergences on a day with ZERO progress notes,
+ * because notes existed on days 0 to 2 and the class was therefore "represented". Admission-scoped
+ * presence answers a question nobody asked: it says the hospital writes notes, not that it wrote
+ * one on the day the expectation was about. Where the class is empty in the expectation's OWN
+ * window, "it did not happen" and "nothing was recorded that day" are indistinguishable, and
+ * `unassessable` is the only honest verdict.
+ *
+ * The day the class went silent is not lost with it — `discharge-day` documentation gaps become a
+ * finding of their own in judge-core (`missingDischargeDayNote`), which is the signal that
+ * day-scoping would otherwise swallow.
  */
-export function classIsRepresented(kind: MatcherKind, events: readonly EpisodeEvent[]): boolean {
+export function classIsRepresented(
+  kind: MatcherKind, events: readonly EpisodeEvent[], fromDay: number | null = null,
+): boolean {
+  if (fromDay != null) events = events.filter((e) => e.day_index >= fromDay);
   switch (kind) {
     case 'lab':
       return events.some((e) => e.event_type === 'lab_order');
@@ -89,8 +106,75 @@ export function classIsRepresented(kind: MatcherKind, events: readonly EpisodeEv
  *  dispensed inside one of these never appears under its own `ordered_item_name`. */
 const PACKAGE_HINT = /\b(package|bundle|bundled|kit|combo|scheme|surgery charge|ot charge|procedure charge|day care)\b/i;
 
-/** A lab ordered as a profile or panel: the constituent analyte has no row of its own. */
-const PANEL_HINT = /\b(profile|panel|screen|screening|series|complete blood count|cbc|lft|rft|kft|electrolytes|coagulation)\b/i;
+/**
+ * ROUND 14 ITEM 6 — WHICH PANEL CONTAINS WHICH ANALYTE, rather than "a panel was ordered, so who
+ * can say".
+ *
+ * The old rule found ANY panel-shaped lab order in the episode and blamed the absence on it. On
+ * IPNO-416 that made r-1 (creatinine, urea) and r-4 (electrolytes) `context_dependent` against the
+ * CBC panel — which contains none of those — while a KFT ordered on day 0 contains all of them.
+ * Both should have been PRESENT. A confound attributed to a panel that cannot hold the analyte is
+ * not a caveat, it is a wrong answer wearing a caveat's clothes.
+ *
+ * So a panel now RESOLVES an expectation when it demonstrably contains the analyte, and may only
+ * be offered as a confound when it is a panel this table cannot enumerate. Anything else is a
+ * plain absence.
+ */
+export const PANEL_CONTENTS: { match: RegExp; name: string; analytes: string[] }[] = [
+  {
+    match: /\b(kft|rft|renal function|kidney function|renal profile)\b/i,
+    name: 'renal function test',
+    analytes: ['creatinine', 'urea', 'bun', 'blood urea nitrogen', 'sodium', 'potassium', 'chloride',
+      'electrolyte', 'electrolytes', 'uric acid', 'egfr'],
+  },
+  {
+    match: /\b(lft|liver function|liver profile|hepatic panel)\b/i,
+    name: 'liver function test',
+    analytes: ['bilirubin', 'sgot', 'sgpt', 'ast', 'alt', 'alkaline phosphatase', 'alp', 'albumin',
+      'total protein', 'ggt'],
+  },
+  {
+    match: /\b(cbc|complete blood count|haemogram|hemogram|complete haemogram)\b/i,
+    name: 'complete blood count',
+    analytes: ['haemoglobin', 'hemoglobin', 'hb', 'wbc', 'tlc', 'total leucocyte', 'dlc', 'platelet',
+      'rbc', 'haematocrit', 'hematocrit', 'pcv', 'mcv', 'neutrophil', 'lymphocyte'],
+  },
+  {
+    match: /\b(electrolyte|electrolytes|serum electrolytes)\b/i,
+    name: 'serum electrolytes',
+    analytes: ['sodium', 'potassium', 'chloride', 'bicarbonate', 'na', 'k'],
+  },
+  {
+    match: /\b(coagulation|coagulation profile|pt\/inr|prothrombin)\b/i,
+    name: 'coagulation profile',
+    analytes: ['pt', 'prothrombin time', 'inr', 'aptt', 'ptt', 'bleeding time', 'clotting time'],
+  },
+  {
+    match: /\b(lipid profile|lipid panel)\b/i,
+    name: 'lipid profile',
+    analytes: ['cholesterol', 'triglyceride', 'hdl', 'ldl', 'vldl'],
+  },
+  {
+    match: /\b(thyroid profile|thyroid function|tft)\b/i,
+    name: 'thyroid function test',
+    analytes: ['tsh', 't3', 't4', 'free t4', 'free t3'],
+  },
+  {
+    match: /\b(abg|arterial blood gas|blood gas)\b/i,
+    name: 'arterial blood gas',
+    analytes: ['ph', 'pco2', 'po2', 'bicarbonate', 'hco3', 'lactate', 'base excess', 'oxygenation',
+      'acid base', 'acidosis'],
+  },
+  {
+    match: /\b(urine routine|urinalysis|urine r\/m|urine routine and microscopy)\b/i,
+    name: 'urine routine examination',
+    analytes: ['urine protein', 'proteinuria', 'urine albumin', 'pus cell', 'urine microscopy',
+      'urine ph', 'urine sugar'],
+  },
+];
+
+/** A panel-shaped order this table cannot enumerate: it may or may not hold the analyte. */
+const UNENUMERATED_PANEL_HINT = /\b(profile|panel|screen|screening|series)\b/i;
 
 export interface Confound { kind: MatcherKind; reason: string }
 
@@ -98,7 +182,9 @@ export interface Confound { kind: MatcherKind; reason: string }
  * Does something in this episode make a NEGATIVE lookup unsafe for this class? Returns the reason
  * when it does, so the stored finding can say WHY it is context_dependent rather than divergent.
  */
-export function confoundFor(kind: MatcherKind, events: readonly EpisodeEvent[]): Confound | null {
+export function confoundFor(
+  kind: MatcherKind, events: readonly EpisodeEvent[], terms: readonly string[] = [],
+): Confound | null {
   if (kind === 'drug') {
     const pkg = events.find((e) => e.event_type === 'order'
       && PACKAGE_HINT.test(`${detail(e, 'service_item_name')} ${detail(e, 'ordered_item_name')} ${detail(e, 'department')}`));
@@ -107,9 +193,17 @@ export function confoundFor(kind: MatcherKind, events: readonly EpisodeEvent[]):
     }
   }
   if (kind === 'lab') {
-    const panel = events.find((e) => e.event_type === 'lab_order' && PANEL_HINT.test(detail(e, 'service_name')));
+    // ITEM 6. Only a panel this table CANNOT enumerate is a confound; one it can enumerate has
+    // already answered the question in `panelContaining` — present if it holds the analyte, and
+    // silent if it does not, because a panel that cannot hold it explains nothing about it.
+    const panel = events.find((e) => e.event_type === 'lab_order'
+      && UNENUMERATED_PANEL_HINT.test(detail(e, 'service_name'))
+      && !PANEL_CONTENTS.some((p) => p.match.test(detail(e, 'service_name'))));
     if (panel) {
-      return { kind, reason: `a panel order (${detail(panel, 'service_name')}) can contain the analyte without naming it` };
+      return {
+        kind,
+        reason: `an unenumerated panel order (${detail(panel, 'service_name')}) may contain ${terms.length ? `"${terms[0]}"` : 'the analyte'} without naming it`,
+      };
     }
   }
   if (kind === 'procedure') {
@@ -117,6 +211,33 @@ export function confoundFor(kind: MatcherKind, events: readonly EpisodeEvent[]):
     // separately recorded anywhere.
     if (events.some((e) => e.event_type === 'ot_note')) {
       return { kind, reason: 'an operative step performed within a recorded procedure is not separately billed or noted' };
+    }
+  }
+  return null;
+}
+
+/**
+ * ITEM 6. The panel order that demonstrably CONTAINS one of these terms, if one was placed in the
+ * window. Naming it is the whole point: "creatinine was covered by the renal function test ordered
+ * on day 0" is an answer; "a panel was ordered" is not.
+ */
+export function panelContaining(
+  terms: readonly string[], events: readonly EpisodeEvent[], fromDay: number | null,
+): { event: EpisodeEvent; panel: string; term: string } | null {
+  const wanted = terms.map((t) => t.trim().toLowerCase()).filter(Boolean);
+  if (!wanted.length) return null;
+  for (const e of events) {
+    if (e.event_type !== 'lab_order') continue;
+    if (fromDay != null && e.day_index < fromDay) continue;
+    const name = detail(e, 'service_name');
+    for (const p of PANEL_CONTENTS) {
+      if (!p.match.test(name)) continue;
+      for (const term of wanted) {
+        // Either direction: the expectation may name "creatinine" or "serum creatinine level".
+        if (p.analytes.some((a) => term === a || term.includes(a) || a.includes(term))) {
+          return { event: e, panel: p.name, term };
+        }
+      }
     }
   }
   return null;
@@ -138,7 +259,12 @@ export function haystackFor(e: EpisodeEvent): string {
     case 'order':
       return `${detail(e, 'ordered_item_name')} ${detail(e, 'service_item_name')} ${detail(e, 'service_type')} ${detail(e, 'department')}`;
     case 'ot_note':
-      return `${detail(e, 'surgery_name')} ${e.summary}`;
+      return expandClinicalShorthand(`${detail(e, 'surgery_name')} ${e.summary}`);
+    case 'note':
+    case 'initial_assessment':
+    case 'handover':
+      // ITEM 5: a note is where shorthand lives, and where a false negative costs the most.
+      return expandClinicalShorthand(e.summary);
     default:
       return e.summary;
   }
@@ -154,6 +280,81 @@ export function eventTypesFor(kind: MatcherKind): readonly EpisodeEvent['event_t
     case 'note': return ['note', 'initial_assessment', 'handover'];
     default: return [];
   }
+}
+
+/**
+ * ROUND 14 ITEM 5 — CLINICAL SHORTHAND, EXPANDED BEFORE ANY NEGATIVE IS ASSERTED.
+ *
+ * "P/A- SOFT NONTENDER" IS an abdominal examination. The resolver could not see that, so an
+ * expectation phrased "abdominal examination documented" resolved absent against a note that
+ * plainly contained one — a false omission, which is worse than a missed one: it is the audit
+ * inventing a failure.
+ *
+ * EVERY EXPANSION BELOW WAS READ OFF THE REAL NOTES, not recalled. The IPNO-416 course was grepped
+ * for slash-shorthand and each token resolved from its own context:
+ *
+ *   "C/S/B Dr <name>: 1) Bilateral acute pyelonephritis…"   → Case Seen By  (a review header)
+ *   "o/e pallor+ BP-110/70 … S/E- CVS-S1S2+ RS-B/L NVBS+ CNS-NAD P/A- SOFT NONTENDER"
+ *   "S/P B/L DJ stenting - POD 0"                            → status post, bilateral, post-op day
+ *   "I/O-2433/2505"                                          → intake/output
+ *
+ * V named P/A, O/E, S/E, C/S/B, POD and K/C/O. The rest of this table is what the same notes
+ * actually contained beside them, listed in the report.
+ *
+ * ⚠️ EXPANSION IS ADDITIVE AND WHOLE-TOKEN ONLY. The shorthand is APPENDED to the haystack, never
+ * substituted, so nothing that matched before stops matching; and the token must stand alone, so
+ * "hd" inside "childhood" cannot become "dialysis".
+ */
+export const CLINICAL_SHORTHAND: Record<string, string> = {
+  // examination headers — the ones that turn a negative into a false omission
+  'p/a': 'per abdomen abdominal examination abdomen',
+  'o/e': 'on examination examination examined',
+  's/e': 'systemic examination examination',
+  'l/e': 'local examination examination',
+  'p/r': 'per rectum rectal examination',
+  'p/v': 'per vaginum vaginal examination',
+  'c/s/b': 'case seen by review reviewed ward round',
+  'c/c/c': 'conscious coherent cooperative',
+  // system headers
+  'r/s': 'respiratory system respiratory chest',
+  'cvs': 'cardiovascular system cardiac heart',
+  'cns': 'central nervous system neurological',
+  'p/s': 'peripheral smear',
+  // status and history
+  'k/c/o': 'known case of history known',
+  's/p': 'status post',
+  'h/o': 'history of history',
+  'pod': 'post operative day postoperative',
+  'b/l': 'bilateral',
+  'd/w': 'discussed with discussion',
+  'r/v': 'review reviewed',
+  // findings and measures that an expectation is likely to name
+  'nad': 'no abnormality detected normal',
+  'nvbs': 'normal vesicular breath sounds air entry',
+  'i/o': 'intake output fluid balance urine output',
+  'u/o': 'urine output',
+  'spo2': 'oxygen saturation saturation',
+  'grbs': 'random blood sugar glucose capillary blood glucose',
+  'rbs': 'random blood sugar glucose',
+  'fbs': 'fasting blood sugar glucose',
+  'hd': 'haemodialysis hemodialysis dialysis',
+  'mhd': 'maintenance haemodialysis dialysis',
+  'ot': 'operation theatre surgery',
+  'inj': 'injection',
+  'tab': 'tablet',
+};
+
+/**
+ * Append the expansion of every shorthand token present in the text. Deterministic and additive.
+ */
+export function expandClinicalShorthand(text: string): string {
+  const t = (text || '').toLowerCase();
+  const extra: string[] = [];
+  for (const [token, expansion] of Object.entries(CLINICAL_SHORTHAND)) {
+    const esc = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    if (new RegExp(`(^|[^a-z0-9/])${esc}([^a-z0-9/]|$)`).test(t)) extra.push(expansion);
+  }
+  return extra.length ? `${text} ${extra.join(' ')}` : text;
 }
 
 const norm = (s: string) => s.toLowerCase();
@@ -173,23 +374,32 @@ export function termMatches(term: string, haystack: string): boolean {
 export interface MatchHit { event: EpisodeEvent; term: string }
 
 /**
- * Find an event satisfying this expectation at or after `byDay`.
+ * ROUND 14 ITEM 3 — AN EXPECTATION IS SATISFIED FROM THE DAY IT WAS FORMED, NOT BEFORE IT.
  *
- * "At or after" is deliberate: an expectation stated as "by day 1" is met by an action on day 1 or
- * day 2, and an action BEFORE the expectation was formed also counts — the checkpoint could only
- * expect what had not yet happened, so an earlier occurrence means the course was already ahead of
- * it. Narrowing this to an exact day would manufacture omissions out of timing.
+ * ⚠️ THE OLD CODE SEARCHED THE WHOLE ADMISSION, and not by intent — the day test was written as an
+ * `if` with an EMPTY BODY and a comment where the filter should have been, so `byDay` reached the
+ * function and did nothing. Every "present" statement on IPNO-416 therefore read "day 0": r-32
+ * (repeat CBC, expected day 2) and r-47 (KFT, expected day 3) were both marked satisfied by the
+ * day-0 order, although correct later orders existed and could have been cited instead.
+ *
+ * A "repeat" expectation answered by the order that PROMPTED it is a silent false negative — the
+ * audit reporting that a thing was done, using as proof the very thing whose repetition was being
+ * asked for. It hides precisely the failure this engine exists to find.
+ *
+ * `fromDay` is the day the expectation was FORMED — the checkpoint's own day, not `by_day`. A
+ * checkpoint at day 2 saw everything before day 2 when it wrote its expectations, so an event it
+ * had already seen cannot be what satisfies them. `by_day` remains a statement about lateness, and
+ * lateness is a `timing` question for the judge, not an eligibility test here.
  */
 export function findMatch(
-  matcher: ExpectationMatcher, byDay: number | null, events: readonly EpisodeEvent[],
+  matcher: ExpectationMatcher, fromDay: number | null, events: readonly EpisodeEvent[],
 ): MatchHit | null {
   const types = eventTypesFor(matcher.kind);
   if (!types.length) return null;
   for (const e of events) {
     if (!types.includes(e.event_type)) continue;
-    if (byDay != null && e.day_index < byDay) {
-      // An earlier event still counts (see above) — day only bounds the "not yet" direction.
-    }
+    // THE FILTER THE OLD COMMENT ONLY DESCRIBED.
+    if (fromDay != null && e.day_index < fromDay) continue;
     const hay = haystackFor(e);
     for (const term of matcher.terms) {
       if (termMatches(term, hay)) return { event: e, term };
@@ -245,7 +455,11 @@ export function resolveEntry(entry: ResolvableEntry, events: readonly EpisodeEve
     };
   }
 
-  const hit = findMatch(m, entry.byDay, events);
+  // ITEM 3. The window opens on the day the expectation was FORMED. An event the checkpoint had
+  // already seen cannot be what satisfies what it went on to expect.
+  const fromDay = entry.dayIndex;
+
+  const hit = findMatch(m, fromDay, events);
   if (hit) {
     return {
       resolution: 'present',
@@ -256,18 +470,39 @@ export function resolveEntry(entry: ResolvableEntry, events: readonly EpisodeEve
     };
   }
 
-  if (!classIsRepresented(m.kind, events)) {
+  // ITEM 6. Before calling a lab absent, ask whether a panel ORDERED IN THE WINDOW contains it.
+  // A named containment is an answer; the old blanket "a panel was ordered" was not.
+  if (m.kind === 'lab') {
+    const viaPanel = panelContaining(m.terms, events, fromDay);
+    if (viaPanel) {
+      return {
+        resolution: 'present',
+        verdict: 'concordant',
+        severity: entry.proposedSeverity,
+        statement: `Expected: ${entry.item}. The record shows it: a ${viaPanel.panel} ordered on day ${viaPanel.event.day_index} includes "${viaPanel.term}".`,
+        matchedEvent: viaPanel.event, matchedTerm: viaPanel.term, confound: null,
+      };
+    }
+  }
+
+  // ITEM 2. Day-scoped, not admission-scoped: was this class recorded AT ALL in the window the
+  // expectation could have been met in?
+  if (!classIsRepresented(m.kind, events, fromDay)) {
     return {
       resolution: 'absent_class_missing',
       verdict: 'unassessable',
       severity: entry.proposedSeverity,
-      statement: `Expected: ${entry.item}. This pipeline cannot answer whether it happened: no ${m.kind} data is represented for this admission${m.kind === 'vitals' || m.kind === 'imaging' ? ' — this class is absent from the mirror entirely' : ''}.`,
+      statement: m.kind === 'vitals' || m.kind === 'imaging'
+        ? `Expected: ${entry.item}. This pipeline cannot answer whether it happened: ${m.kind} data is absent from the mirror entirely.`
+        : `Expected: ${entry.item}. This pipeline cannot answer whether it happened: no ${m.kind} record of any kind exists from day ${fromDay} onward, so "not done" and "not recorded that day" cannot be told apart.`,
       matchedEvent: null, matchedTerm: null,
-      confound: `no ${m.kind} data in this episode`,
+      confound: m.kind === 'vitals' || m.kind === 'imaging'
+        ? `no ${m.kind} data in this mirror`
+        : `no ${m.kind} data recorded from day ${fromDay} onward`,
     };
   }
 
-  const confound = confoundFor(m.kind, events);
+  const confound = confoundFor(m.kind, events, m.terms);
   if (confound) {
     return {
       resolution: 'ambiguous_confounded',
@@ -283,7 +518,7 @@ export function resolveEntry(entry: ResolvableEntry, events: readonly EpisodeEve
     resolution: 'absent_class_present',
     verdict: 'divergent',
     severity: entry.proposedSeverity,
-    statement: `Expected: ${entry.item}. No matching ${m.kind} record exists for this admission, and ${m.kind} data IS recorded for it — so the absence is real.`,
+    statement: `Expected: ${entry.item}. No matching ${m.kind} record exists from day ${fromDay} onward, and ${m.kind} data IS recorded in that window — so the absence is real.`,
     matchedEvent: null, matchedTerm: null, confound: null,
   };
 }

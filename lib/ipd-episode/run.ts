@@ -30,6 +30,7 @@ import { checkpointModel, normativeSourcesForProvenance, runCheckpoint, type Che
 import { judgeModel, runDiffPass, runFidelityPass, JUDGE_TEMPERATURE } from './judge';
 import {
   buildExpectationDigest, evidenceTiersOf, finalizeFindings, completenessPct, resolveFindingCitations,
+  missingDischargeDayNote,
   scoringStatusFor, storedDivergenceIndex, findingsFromResolved, domainForSection,
   divergenceBandFor, bandIsUncertain,
   type EpisodeFinding,
@@ -467,10 +468,16 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
     // ── code-enforced rules, then the score ──
     // Ordinals → real chunk ids FIRST, per referencing checkpoint, so everything downstream (the
     // uncited cap, the stored findings, the UI) speaks one vocabulary.
+    // ROUND 14 ITEM 2, SECOND HALF. Raised by code, not by an expectation: day-scoping class
+    // presence turns a silent day into `unassessable`, and the discharge day going silent is
+    // exactly the gap worth reporting rather than excusing. Nothing expected it, so nothing else
+    // could have found it.
+    const dischargeNoteGap = missingDischargeDayNote(events, envelope.losDays);
     const raw: EpisodeFinding[] = [
       // the deterministic half: already carries its entry's citations, so it bypasses the
       // ordinal resolution the judged findings need
       ...resolverFindings,
+      ...(dischargeNoteGap ? [dischargeNoteGap] : []),
       ...resolveFindingCitations([...a1.findings, ...a2.findings], checkpointChunkIds, entryRefs),
     ];
 
@@ -533,7 +540,7 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
     const offTopic = checkpoints.filter((c) => c.retrievalOffTopic).length;
     const offTopicExcerpts = checkpoints.reduce((n, c) => n + c.offTopicExcerptCount, 0);
     if (offTopic > 0) {
-      errorDetail.push(`${offTopic} of ${checkpoints.length} checkpoint(s) had a majority of off-topic excerpts (${offTopicExcerpts} excerpt(s) in total)`);
+      errorDetail.push(`${offTopic} of ${checkpoints.length} checkpoint(s) flagged retrieval_offtopic (${offTopicExcerpts} off-topic excerpt(s) in total)`);
     }
     const normativeDropped = checkpoints.reduce((n, c) => n + c.normativeDropped, 0);
     if (normativeDropped > 0) {
@@ -696,9 +703,11 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
       notes: [
         ...assemblyNotes,
         ...(final.n_tier_c_rewritten ? [`${final.n_tier_c_rewritten} finding(s) rewritten to unassessable by the Tier C rule`] : []),
-        ...(final.n_uncited_capped ? [`${final.n_uncited_capped} finding(s) capped by the uncited-expectation rule`] : []),
+        ...(final.n_uncited_capped ? [`${final.n_uncited_capped} finding(s) capped — neither a citation nor Tier A evidence (item 10)`] : []),
+        ...(final.n_uncited_entries ? [`${final.n_uncited_entries} finding(s) measured against an uncited expectation (no longer a cap)`] : []),
+        ...(final.n_billing_only_capped ? [`${final.n_billing_only_capped} commission finding(s) held to minor — billing-only evidence on an uncorroborated day (item 1)`] : []),
         ...(final.n_fidelity_normalized ? [`${final.n_fidelity_normalized} fidelity finding(s) normalised to commission / no checkpoint`] : []),
-        ...(final.n_literature_capped ? [`${final.n_literature_capped} finding(s) capped from major to moderate — literature only, no normative citation`] : []),
+        ...(final.n_literature_capped ? [`${final.n_literature_capped} finding(s) stand on literature only, no normative citation (counted, not capped)`] : []),
         ...(scoringStatus !== 'ok' ? [`scoring_status ${scoringStatus} — this episode is not presented as scored`] : []),
         ...(offTopic ? [`${offTopic} checkpoint(s) flagged retrieval_offtopic (${offTopicExcerpts} off-topic excerpt(s))`] : []),
         ...(normativeDropped ? [`${normativeDropped} normative chunk(s) dropped below the similarity floor`] : []),

@@ -77,6 +77,9 @@ async function callWithRetry(
 ): Promise<{ text: string; error: string | null; finishReason: string | null; truncated: boolean; attempts: number; budget: ModelCallBudget }> {
   const r = await callModel({
     traceId, label, system, user, model, promptRef, maxTokens, deadlineAt,
+    // ROUND 14 ITEM 11. The three Opus passes are audit-class work and now say so; the checkpoint
+    // pass keeps `utility`, which is the right shape for a 15-35 s Haiku call.
+    callClass: 'audit',
     temperature: JUDGE_TEMPERATURE,
     truncationRetryInstruction:
       'YOUR PREVIOUS RESPONSE WAS CUT OFF because it was too long. Answer again with ONLY THE MOST '

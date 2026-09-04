@@ -49,7 +49,7 @@
  */
 
 import { governedChat } from '../trace';
-import { totalBudgetMs } from '../lab-provider-core';
+import { PROVIDER_BUDGETS, totalBudgetMs, type CallClass } from '../lab-provider-core';
 
 export interface ModelCallInput {
   traceId: string | undefined;
@@ -66,6 +66,21 @@ export interface ModelCallInput {
    * that asks for the same thing gets the same length.
    */
   truncationRetryInstruction: string;
+  /**
+   * ROUND 14 ITEM 11 — THE CALL CLASS THIS ENGINE DECLARES.
+   *
+   * Until now it declared none, so `bedrockGenerate` defaulted it to `utility`: 110 s per attempt,
+   * the class lib/lab-provider-core.ts documents as "a short bounded call (critic, classifier,
+   * expansion). Seconds." The two judge passes are not that. IPNO-416's diff generated for
+   * 212,402 ms; IPNO-495 (146,583-char prompt) and IP-1483 (214,094) each timed out on all three
+   * 110 s attempts. Every 7-day episode tried was unauditable, and the one that passed did so
+   * because a first attempt timed out and a second happened to come in under the wire.
+   *
+   * This is a MISCLASSIFICATION FIX, not a new ceiling. lib/bedrock.ts already says "an audit-class
+   * caller passes its own, exactly as it does for Vertex and OpenRouter"; this engine simply never
+   * did. Nothing in PROVIDER_BUDGETS changes.
+   */
+  callClass?: CallClass;
   /**
    * ROUND 13 ITEM 1. Epoch ms by which the INVOCATION — not this call — must be finished. No
    * attempt begins unless a whole `ONE_CALL_WORST_CASE_MS` still fits before it.
@@ -85,6 +100,12 @@ export interface ModelCallBudget {
   refusedForBudget: boolean;
   /** The worst case one call was measured against, so a reader need not re-derive it. */
   worstCaseMs: number;
+  /** The PROVIDER_BUDGETS class this call declared (item 11). */
+  callClass: CallClass;
+  /** The per-attempt ceiling actually sent to the transport, null if no attempt was made. */
+  perAttemptMs: number | null;
+  /** The class ladder did not fit, so ONE attempt was ceilinged at what was left. */
+  shrunkToFit: boolean;
 }
 
 export interface ModelCallResult {
@@ -149,6 +170,73 @@ export const TRANSPORT_ATTEMPTS = 1;
 export const ONE_CALL_WORST_CASE_MS = totalBudgetMs('bedrock', 'utility') ?? 332_250;
 
 /**
+ * ROUND 14 ITEM 11. The default class stays `utility` — every existing caller keeps the budget it
+ * has — and a call site that is audit-class says so.
+ *
+ * ⚠️ CHECKPOINTS STAY `utility`, DELIBERATELY. They are Haiku calls that generate in 15-35 s
+ * (IPNO-416: 15.1, 23.9, 20.2, 21.7, 19.3 s; IP-1483's slowest 40.2 s), so 110 s is roughly 3×
+ * their worst observed time — a ceiling that fits — and `utility`'s three tries are the right
+ * resilience posture for a call cheap enough to repeat. Giving them 380 s × 1 would trade three
+ * chances at a 35 s call for one, and lengthen the checkpoint stage's worst case from 332 s to
+ * 380 s for no gain.
+ *
+ * ⚠️ AND `audit` RATHER THAN `audit_ipd`, for two reasons beyond the number. (1) 200 s is BELOW
+ * IPNO-416's measured 212,402 ms diff, so `audit_ipd` would still have failed the one episode that
+ * passed. (2) `audit_ipd` is named for, and sized against, the sibling IPD document analyze —
+ * `IPD_ANALYZE_LEGS` in route-budget-guard.test.ts prices that engine's legs against it. Sharing
+ * it would couple this engine's ceiling to changes made for the discharge engine's reasons, and a
+ * future edit there would move a number here silently. `audit` is the looser coupling and the
+ * safer figure.
+ */
+export const DEFAULT_CALL_CLASS: CallClass = 'utility';
+
+/** The worst case for ONE call of a given class, sleeps included — the same arithmetic, per class. */
+export function worstCaseMsFor(callClass: CallClass): number {
+  return totalBudgetMs('bedrock', callClass) ?? ONE_CALL_WORST_CASE_MS;
+}
+
+/**
+ * ⚠️ SHRINK TO FIT, RATHER THAN REFUSE ON PRINCIPLE — and this corrects round 13.
+ *
+ * Round 13 read "never begin an attempt the remaining budget cannot finish" as "refuse whenever a
+ * whole class worst case does not fit". That is wrong in both directions, and it had already
+ * broken something: the commentary route's box is 300 s, one utility call's worst case is 332 s,
+ * so pass B would have been refused on EVERY episode — a route made unreachable by its own guard.
+ * Item 11's 380 s class would have made it worse.
+ *
+ * The guarantee that actually matters is that a call cannot outlive the box. That is better kept
+ * by BOUNDING the call to the time available than by declining to make it: `governedChat` accepts
+ * a per-attempt ceiling, so a call given 250 s of a 250 s remainder cannot overrun, and an episode
+ * whose fidelity pass takes 33 s (IPNO-416) still completes instead of being thrown away.
+ *
+ * A refusal is still the right answer when what remains is too small to finish anything — below
+ * this floor a judge pass on a 150-200 KB prompt has no realistic chance, and spending the last
+ * seconds of the box proving it is worse than recording the skip and moving on.
+ */
+export const MIN_VIABLE_ATTEMPT_MS = 60_000;
+
+/** A margin between the call's own ceiling and the deadline, for the round trip that returns it. */
+const CALL_RETURN_MARGIN_MS = 5_000;
+
+export interface AttemptPlan { perAttemptMs: number; maxTries: number; shrunk: boolean }
+
+/**
+ * What this attempt may spend. `remainingMs` null means unbudgeted — the class default stands.
+ * Returns null when the budget cannot fund an attempt worth making.
+ */
+export function planAttempt(callClass: CallClass, remainingMs: number | null): AttemptPlan | null {
+  const b = PROVIDER_BUDGETS.bedrock?.[callClass];
+  const perAttemptMs = b?.perAttemptMs ?? 110_000;
+  const maxTries = b?.maxTries ?? 1;
+  if (remainingMs == null) return { perAttemptMs, maxTries, shrunk: false };
+  if (remainingMs < MIN_VIABLE_ATTEMPT_MS) return null;
+  const full = worstCaseMsFor(callClass);
+  if (remainingMs >= full) return { perAttemptMs, maxTries, shrunk: false };
+  // Not enough for the class's full ladder: ONE attempt, ceilinged at what is actually left.
+  return { perAttemptMs: Math.max(0, remainingMs - CALL_RETURN_MARGIN_MS), maxTries: 1, shrunk: true };
+}
+
+/**
  * Call the model. Never throws — every failure comes back as `error`, because an audit that dies on
  * a provider hiccup is worse than one that records the hiccup.
  */
@@ -159,8 +247,14 @@ export async function callModel(input: ModelCallInput): Promise<ModelCallResult>
   let truncationsSeen = 0;
 
   const deadlineAt = input.deadlineAt ?? null;
+  const callClass = input.callClass ?? DEFAULT_CALL_CLASS;
+  // The guard measures against THIS call's class, not a single global figure: an audit-class call
+  // needs 380 s of room and a utility one 332 s, and refusing the wrong one is how a budget guard
+  // becomes either useless or an obstacle.
+  const worstCaseMs = worstCaseMsFor(callClass);
   const budget: ModelCallBudget = {
-    deadlineAt, remainingMsAtAttempt: [], refusedForBudget: false, worstCaseMs: ONE_CALL_WORST_CASE_MS,
+    deadlineAt, remainingMsAtAttempt: [], refusedForBudget: false, worstCaseMs, callClass,
+    perAttemptMs: null, shrunkToFit: false,
   };
   const done = (r: Omit<ModelCallResult, 'budget'>): ModelCallResult => ({ ...r, budget });
 
@@ -172,15 +266,16 @@ export async function callModel(input: ModelCallInput): Promise<ModelCallResult>
       // ⚠️ THE BUDGET CHECK COMES BEFORE THE ATTEMPT COUNTER, so a refused attempt is not counted
       // as one that was made. `attempts` is read downstream as "how many times did we ask the
       // provider", and a call we declined to place is not an ask.
-      if (deadlineAt != null) {
-        const remainingMs = deadlineAt - Date.now();
-        budget.remainingMsAtAttempt.push(remainingMs);
-        if (remainingMs < ONE_CALL_WORST_CASE_MS) {
-          budget.refusedForBudget = true;
-          lastError = `${input.label}: not started — ${Math.max(0, remainingMs)} ms of the invocation budget remained and one call can cost up to ${ONE_CALL_WORST_CASE_MS} ms`;
-          break;
-        }
+      const remainingMs = deadlineAt == null ? null : deadlineAt - Date.now();
+      if (remainingMs != null) budget.remainingMsAtAttempt.push(remainingMs);
+      const plan = planAttempt(callClass, remainingMs);
+      if (!plan) {
+        budget.refusedForBudget = true;
+        lastError = `${input.label}: not started — ${Math.max(0, remainingMs ?? 0)} ms of the invocation budget remained, below the ${MIN_VIABLE_ATTEMPT_MS} ms floor for a ${callClass}-class call`;
+        break;
       }
+      budget.perAttemptMs = plan.perAttemptMs;
+      budget.shrunkToFit = plan.shrunk;
       attempts++;
       if (attempt > 0) await new Promise((r) => setTimeout(r, 750 * Math.pow(2, attempt - 1)));
       try {
@@ -191,7 +286,13 @@ export async function callModel(input: ModelCallInput): Promise<ModelCallResult>
           ],
           temperature: input.temperature,
           max_tokens: input.maxTokens,
-        }, { bedrock: input.model, promptRef: input.promptRef });
+          // ⚠️ THE BUDGET IS PASSED, NOT INHERITED (item 11). Absent these two the transport falls
+          // back to `utility` inside bedrockGenerate, which is exactly how an audit workload ended
+          // up on a ceiling documented in seconds.
+        }, {
+          bedrock: input.model, promptRef: input.promptRef,
+          timeoutMs: plan.perAttemptMs, maxTries: plan.maxTries,
+        });
 
         finishReason = finishReasonOf(res);
         const text = contentOf(res);

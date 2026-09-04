@@ -11,7 +11,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   classIsRepresented, confoundFor, findMatch, termMatches, haystackFor, eventTypesFor,
-  resolveEntry, resolveAll, resolutionCounts,
+  resolveEntry, resolveAll, resolutionCounts, panelContaining,
+  CLINICAL_SHORTHAND, expandClinicalShorthand,
   type ExpectationMatcher, type ResolvableEntry,
 } from '../ipd-episode/resolve-core';
 import { findingsFromResolved, domainForSection, countFindings, resolverGroupKey } from '../ipd-episode/judge-core';
@@ -33,6 +34,11 @@ const labOrder = (name: string, day = 0) => ev({
   event_id: `l-${name}-${day}`, event_type: 'lab_order', day_index: day,
   detail: { service_name: name },
   provenance: { source_table: 'kx_lab_reports', source_record_id: `l-${name}`, source_timestamp: null },
+});
+
+const noteEvent = (day: number, summary = 'ward round, plan continued') => ev({
+  event_id: `n-${day}`, event_type: 'note', day_index: day, summary,
+  provenance: { source_table: 'kx_clinical_template_progress_reports', source_record_id: `n-${day}`, source_timestamp: null },
 });
 
 const entry = (o: Partial<ResolvableEntry> & { matcher: ExpectationMatcher | null }): ResolvableEntry => ({
@@ -119,14 +125,49 @@ test('a bundled billing line makes a missing drug AMBIGUOUS, not divergent', () 
   assert.match(r.confound ?? '', /hide a dispensed drug/);
 });
 
-test('a panel order makes a missing analyte AMBIGUOUS', () => {
+test('ITEM 6: a panel that CONTAINS the analyte resolves it PRESENT, and names the panel', () => {
+  // Was `ambiguous_confounded`. On IPNO-416 that rule made r-1 (creatinine, urea) and r-4
+  // (electrolytes) context_dependent against the CBC panel — which holds none of them — while a
+  // KFT ordered on day 0 holds all three. A confound attributed to a panel that cannot contain the
+  // analyte is a wrong answer wearing a caveat's clothes.
   const events = [labOrder('LIVER FUNCTION PROFILE')];
   const r = resolveEntry(entry({ matcher: { kind: 'lab', terms: ['bilirubin'] } }), events);
-  assert.equal(r.resolution, 'ambiguous_confounded');
-  assert.match(r.confound ?? '', /panel order/);
-  // and the confound is discoverable on its own
-  assert.ok(confoundFor('lab', events));
-  assert.equal(confoundFor('lab', [labOrder('SERUM SODIUM')]), null, 'a single named test confounds nothing');
+  assert.equal(r.resolution, 'present');
+  assert.equal(r.verdict, 'concordant');
+  assert.match(r.statement, /liver function test/, 'the panel is NAMED, not alluded to');
+  assert.match(r.statement, /bilirubin/);
+});
+
+test('ITEM 6: the IPNO-416 case exactly — a KFT covers creatinine, urea and electrolytes', () => {
+  const events = [labOrder('KFT'), labOrder('CBC')];
+  for (const terms of [['creatinine'], ['urea'], ['electrolytes'], ['sodium', 'potassium']]) {
+    const r = resolveEntry(entry({ matcher: { kind: 'lab', terms } }), events);
+    assert.equal(r.resolution, 'present', `${terms.join('/')} is covered by the KFT`);
+    assert.match(r.statement, /renal function test/);
+  }
+  // and the CBC is not offered as an explanation for any of them
+  for (const terms of [['creatinine'], ['electrolytes']]) {
+    const r = resolveEntry(entry({ matcher: { kind: 'lab', terms } }), events);
+    assert.ok(!/complete blood count/.test(r.statement), 'the CBC explains nothing about renal analytes');
+  }
+});
+
+test('ITEM 6: a panel that CANNOT contain the analyte is not a confound — the absence is real', () => {
+  const events = [labOrder('CBC')];
+  const r = resolveEntry(entry({ matcher: { kind: 'lab', terms: ['creatinine'] } }), events);
+  assert.equal(r.resolution, 'absent_class_present');
+  assert.equal(r.verdict, 'divergent');
+  assert.equal(confoundFor('lab', events, ['creatinine']), null);
+});
+
+test('ITEM 6: only an UNENUMERATED panel is still a confound, and it says which analyte', () => {
+  const events = [labOrder('AUTOIMMUNE SCREEN')];
+  const c = confoundFor('lab', events, ['anti-ccp']);
+  assert.ok(c, 'a panel this table cannot enumerate may genuinely hide the analyte');
+  assert.match(c!.reason, /unenumerated panel order/);
+  assert.match(c!.reason, /anti-ccp/, 'and names what it might be hiding');
+  assert.equal(confoundFor('lab', [labOrder('SERUM SODIUM')], ['creatinine']), null,
+    'a single named test confounds nothing');
 });
 
 test('an entry with NO matcher is uncheckable, and says so rather than scoring', () => {
@@ -160,10 +201,10 @@ test('findMatch returns the first satisfying event, or null', () => {
 // ── determinism, which is the whole point ───────────────────────────────────────────────────
 
 test('the resolver is a pure function: the same inputs give byte-identical output, every time', () => {
-  const events = [drugOrder('PARACETAMOL'), labOrder('LIVER FUNCTION PROFILE'), drugOrder('CEFAZOLIN')];
+  const events = [drugOrder('PARACETAMOL'), labOrder('AUTOIMMUNE SCREEN'), drugOrder('CEFAZOLIN')];
   const entries = [
     entry({ ref: 'cp-d0/therapeutics/1', matcher: { kind: 'drug', terms: ['enoxaparin'] } }),
-    entry({ ref: 'cp-d0/diagnostics/1', section: 'diagnostics', matcher: { kind: 'lab', terms: ['bilirubin'] } }),
+    entry({ ref: 'cp-d0/diagnostics/1', section: 'diagnostics', matcher: { kind: 'lab', terms: ['anti-ccp'] } }),
     entry({ ref: 'cp-d1/therapeutics/1', matcher: { kind: 'drug', terms: ['cefazolin'] } }),
     entry({ ref: 'cp-d1/monitoring/1', section: 'monitoring', matcher: { kind: 'vitals', terms: ['blood pressure'] } }),
   ];
@@ -176,7 +217,7 @@ test('the resolver is a pure function: the same inputs give byte-identical outpu
   // one of each path, which is also the clearest statement of what the resolver does:
   //   cefazolin ordered            -> present
   //   enoxaparin absent, drugs exist and nothing bundles -> absent_class_present (divergent)
-  //   bilirubin absent behind an LFT panel               -> ambiguous_confounded
+  //   anti-ccp absent behind an unenumerated screen      -> ambiguous_confounded
   //   blood pressure, a class this mirror lacks          -> absent_class_missing (unassessable)
   assert.deepEqual(counts, { present: 1, absent_class_present: 1, absent_class_missing: 1, ambiguous_confounded: 1 });
 });
@@ -273,4 +314,88 @@ test('GROUPING: the two counts describe the same list, and neither can be read a
   assert.equal(counters.n_resolver_grouped, 1, 'what the reader is shown');
   assert.equal(counters.n_resolver_ungrouped, 5, 'what it stands for');
   assert.equal(counters.n_findings, 1, 'the headline count is the presented one');
+});
+
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+// ROUND 14 ITEMS 2, 3 AND 5 — THE DAY WINDOW, AND THE SHORTHAND
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+
+test('ITEM 3: a repeat expectation is NOT satisfied by the order that prompted it', () => {
+  // r-32 on IPNO-416: "repeat CBC" expected at the day-2 checkpoint, marked present by the DAY 0
+  // order. The audit reported a thing was done using as proof the very order whose repetition was
+  // being asked for — a silent false negative, and the exact failure the engine exists to catch.
+  const events = [labOrder('COMPLETE BLOOD COUNT', 0)];
+  const r = resolveEntry(entry({ dayIndex: 2, byDay: 2, matcher: { kind: 'lab', terms: ['complete blood count'] } }), events);
+  assert.notEqual(r.resolution, 'present', 'the day-0 order is not a day-2 repeat');
+});
+
+test('ITEM 3: an order ON or AFTER the expectation’s day does satisfy it', () => {
+  for (const day of [2, 3]) {
+    const r = resolveEntry(
+      entry({ dayIndex: 2, matcher: { kind: 'lab', terms: ['complete blood count'] } }),
+      [labOrder('COMPLETE BLOOD COUNT', day)],
+    );
+    assert.equal(r.resolution, 'present', `a day-${day} order satisfies a day-2 expectation`);
+    assert.match(r.statement, new RegExp(`day ${day}`), 'and the statement names the day it actually happened');
+  }
+});
+
+test('ITEM 3: the window is the day the expectation was FORMED, not its by_day deadline', () => {
+  // formed at day 2, wanted by day 4: an order on day 3 counts (it is after the checkpoint), and
+  // lateness against by_day is a timing question, not an eligibility one.
+  const r = resolveEntry(
+    entry({ dayIndex: 2, byDay: 4, matcher: { kind: 'lab', terms: ['complete blood count'] } }),
+    [labOrder('COMPLETE BLOOD COUNT', 3)],
+  );
+  assert.equal(r.resolution, 'present');
+});
+
+test('ITEM 2: a class empty in the expectation’s OWN window is unassessable, not divergent', () => {
+  // THE IPNO-416 CASE: four day-3 findings fired as real divergences on a day with zero notes,
+  // because notes existed on days 0-2 and the class counted as "represented".
+  const notesEarly = [
+    noteEvent(0), noteEvent(1), noteEvent(2),
+  ];
+  const r = resolveEntry(entry({ dayIndex: 3, matcher: { kind: 'note', terms: ['stent assessment'] } }), notesEarly);
+  assert.equal(r.resolution, 'absent_class_missing');
+  assert.equal(r.verdict, 'unassessable');
+  assert.match(r.statement, /from day 3 onward/, 'and it says which window it could not answer for');
+  assert.match(r.confound ?? '', /from day 3 onward/);
+});
+
+test('ITEM 2: a class present IN the window still yields a real divergence', () => {
+  const events = [noteEvent(0), noteEvent(3)];
+  const r = resolveEntry(entry({ dayIndex: 3, matcher: { kind: 'note', terms: ['stent assessment'] } }), events);
+  assert.equal(r.resolution, 'absent_class_present');
+  assert.equal(r.verdict, 'divergent', 'a note WAS written that day and it does not mention the thing');
+});
+
+test('ITEM 5: clinical shorthand is expanded before a negative may be asserted', () => {
+  // "P/A- SOFT NONTENDER" IS an abdominal examination.
+  const events = [noteEvent(1, 'o/e pallor+ BP-110/70 S/E- CVS-S1S2+ RS-B/L NVBS+ CNS-NAD P/A- SOFT NONTENDER')];
+  const r = resolveEntry(entry({ dayIndex: 1, matcher: { kind: 'note', terms: ['abdominal examination'] } }), events);
+  assert.equal(r.resolution, 'present', 'P/A is an abdominal examination');
+  const sys = resolveEntry(entry({ dayIndex: 1, matcher: { kind: 'note', terms: ['systemic examination'] } }), events);
+  assert.equal(sys.resolution, 'present', 'S/E is a systemic examination');
+});
+
+test('ITEM 5: every shorthand V named is covered, and expansion is additive and whole-token', () => {
+  for (const tok of ['P/A', 'O/E', 'S/E', 'C/S/B', 'POD', 'K/C/O']) {
+    assert.ok(CLINICAL_SHORTHAND[tok.toLowerCase()], `${tok} is expanded`);
+    const out = expandClinicalShorthand(`note ${tok} something`);
+    assert.ok(out.startsWith(`note ${tok} something`), 'the original text is never substituted away');
+    assert.ok(out.length > `note ${tok} something`.length, `${tok} adds its expansion`);
+  }
+  // C/S/B is "Case Seen By" — read off the real note, where it precedes a doctor and a problem list
+  assert.match(CLINICAL_SHORTHAND['c/s/b'], /case seen by/);
+  // whole-token only: "hd" inside a word must not become dialysis
+  assert.equal(expandClinicalShorthand('childhood asthma'), 'childhood asthma');
+  assert.match(expandClinicalShorthand('for HD today'), /dialysis/);
+});
+
+test('ITEM 5: shorthand cannot manufacture a match out of nothing', () => {
+  const events = [noteEvent(1, 'patient comfortable, no fresh complaints')];
+  const r = resolveEntry(entry({ dayIndex: 1, matcher: { kind: 'note', terms: ['abdominal examination'] } }), events);
+  assert.notEqual(r.resolution, 'present', 'a note with no examination shorthand still resolves absent');
 });

@@ -136,7 +136,11 @@ VERDICTS.
 
 EVIDENCE IS THE WHOLE DISCIPLINE. Every finding must carry an evidence_basis: the exact source_table, source_record_id and source_timestamp of the events it rests on, copied verbatim from the event list. A finding with no evidence_basis is downgraded to unassessable in code. Absence of an event is evidence of omission ONLY in a source that would have recorded it — cite the sources you searched.
 
-WHAT THIS SUBSTRATE CANNOT TELL YOU. Orders record that something was ordered and charged, never that it was administered or when. Lab rows record that a test was ordered, collected and reported, never the result value. There are no vital signs, no radiology reports and no medication administration times. Never write a finding that depends on a value you were not given; that is what unassessable is for.
+WHAT THIS SUBSTRATE CANNOT TELL YOU. Lab rows record that a test was ordered, collected and reported, never the result value. There are no vital signs, no radiology reports and no medication administration times. Never write a finding that depends on a value you were not given; that is what unassessable is for.
+
+⚠️ BILLING RECORDS DISPENSING, NOT ADMINISTRATION. The order lines are pharmacy and consumable BILLING entries. A line means the pharmacy issued that item against this admission — not that it reached the patient, not when, not at what dose, and not that it was not returned. A batch of lines sharing one timestamp is ONE POSTING made at one moment by one clerk; it is not a sequence of clinical decisions and its contents are not a clinical narrative. A batch will routinely mix drugs with syringes, tubing, nebuliser masks and vitamins, because that is how a ward stocks a patient, not how a patient deteriorates.
+
+So NEVER read a batch of billing lines as evidence of a clinical event. Drugs associated with an emergency do not establish that an emergency occurred; the notes of that day do, and if the notes say nothing, then nothing is established. A commission finding built on billing lines alone, on a day whose notes do not corroborate it, is capped at severity minor in code and has a caveat appended to it — so writing one costs you the finding's weight and says in the output that it was unsupported.
 
 Set checkpoint_ref to the reference of the expectation this finding is measured against, exactly as it appears above. Every finding must have one, and it must be one of the references you were given.
 Set day_index to the day the divergence occurred.

@@ -26,8 +26,11 @@ import {
   IPD_EPISODE_CHECKPOINT_SYSTEM, IPD_EPISODE_COMMENTARY_SYSTEM, IPD_EPISODE_DIFF_SYSTEM,
   IPD_EPISODE_FIDELITY_SYSTEM,
 } from '../ipd-episode/prompts';
-import { callModel, ONE_CALL_WORST_CASE_MS, TRANSPORT_ATTEMPTS } from '../ipd-episode/model-call';
-import { totalBudgetMs } from '../lab-provider-core';
+import {
+  callModel, planAttempt, worstCaseMsFor, DEFAULT_CALL_CLASS, MIN_VIABLE_ATTEMPT_MS,
+  ONE_CALL_WORST_CASE_MS, TRANSPORT_ATTEMPTS,
+} from '../ipd-episode/model-call';
+import { PROVIDER_BUDGETS, totalBudgetMs } from '../lab-provider-core';
 
 const read = (p: string) => readFileSync(join(process.cwd(), p), 'utf8');
 const code = (p: string) => read(p).replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
@@ -958,15 +961,17 @@ test('the diff temperature is named and recorded on the row', () => {
 
 // ── round 5 ─────────────────────────────────────────────────────────────────────────────────
 
-test('ONE cap rule: both halves must cite, and severity is not an exemption', () => {
+test('ONE cap rule (round 14 item 10): citation OR Tier A evidence, and severity is not an exemption', () => {
   const core = code('lib/ipd-episode/judge-core.ts');
-  assert.ok(core.includes('const entryGrounded = !!entry && entry.citation_ids.length > 0;'));
-  assert.ok(core.includes('const findingGrounded = f.citation_ids.length > 0;'));
-  assert.ok(core.includes('if (entryGrounded && findingGrounded) return { finding: f, capped: false };'),
-    'grounded requires BOTH — one notion of grounded, not two');
-  // no severity branch may guard the cap
-  const fn = core.slice(core.indexOf('export function applyUncitedCap'), core.indexOf('export function dropInvalid') > 0 ? core.indexOf('export function dropInvalid') : core.indexOf('export function normalizeFidelityFindings'));
+  // The two stacked caps are gone; one rule remains, and it is a disjunction.
+  assert.ok(core.includes('if (f.citation_ids.length > 0 || findingHasTierAEvidence(f)) return { finding: f, capped: false };'),
+    'either kind of support is enough — requiring both is what made major unreachable');
+  assert.ok(!/export function applyUncitedCap\b/.test(core), 'the uncited cap no longer caps');
+  const fn = core.slice(core.indexOf('export function applySeverityCap'), core.indexOf('export function entryWasUncited'));
   assert.ok(!/severity === 'major'/.test(fn), 'major is not exempt — that would hold the loudest findings to the weakest standard');
+  // and the literature cap no longer lowers anything
+  assert.ok(!/applyLiteratureCap\(/.test(core.slice(core.indexOf('export function finalizeFindings'))),
+    'literature is classified and counted, not capped');
 });
 
 test('the cap trail is persisted on every finding, and capped_count on the row', () => {
@@ -1049,7 +1054,11 @@ test('worker selection and the UI list read is_current only', () => {
 test('topicality is per excerpt, with a count beside the boolean', () => {
   const core = code('lib/ipd-episode/checkpoint-core.ts');
   assert.ok(core.includes('export function assessTopicality('), 'the per-excerpt assessor exists');
-  assert.ok(core.includes('offTopic: off * 2 > excerpts.length'), 'the boolean fires on a majority');
+  // ROUND 14 ITEM 7: the majority rule could not fire on the slates this engine actually gets.
+  assert.ok(core.includes('offTopic: off >= offTopicThreshold(excerpts.length)'),
+    'the boolean fires at a quarter of the slate, which is a threshold eight excerpts can reach');
+  assert.ok(core.includes('const terms = distinctive(x.label);'),
+    'and each excerpt is judged on its title, not on a body that borrows the query’s vocabulary');
   const sqlText = read(join('migrations', '0052_ipd_episode_audits.sql'));
   const route = read('app/api/admin/migrate-ipd-episode-audits/route.ts');
   for (const col of ['offtopic_excerpt_count', 'day0_query_from_ot']) {
@@ -1173,17 +1182,24 @@ test('each checkpoint row records the source of every cited chunk, as a fact not
     'the chunk’s own source value is stored verbatim');
 });
 
-test('the literature cap is enforced in code and runs inside the one finalise chain', () => {
+test('round 14 item 10: literature is CLASSIFIED and COUNTED, and caps nothing', () => {
   const core = code('lib/ipd-episode/judge-core.ts');
-  assert.ok(core.includes('export function applyLiteratureCap('), 'the cap exists');
-  assert.ok(core.includes("if (f.citation_provenance !== 'literature') return { finding: f, capped: false };"));
-  assert.ok(core.includes('capSeverityAt(f.severity, CAP_SEVERITY_CEILING)'),
-    'it applies the SHARED ceiling, so the two caps cannot stack into something lower');
-  const litFn = core.slice(core.indexOf('export function applyLiteratureCap'), core.indexOf('export function applyLiteratureCap') + 500);
-  assert.ok(!litFn.includes('verdict'), 'it never touches a verdict');
-  assert.ok(core.includes('applyLiteratureCap(withProv)'), 'and it runs inside finalizeFindings');
-  // provenance must be classified before the cap can read it
-  assert.ok(core.indexOf('classifyCitationProvenance(capRes.finding') < core.indexOf('applyLiteratureCap(withProv)'));
+  // provenance survives — the question "how much of this score rests on guidelines" stays answerable
+  assert.ok(core.includes('classifyCitationProvenance(capRes.finding'), 'still classified');
+  assert.ok(core.includes("if (provenance === 'literature') litCapped++;"), 'and still counted');
+  // but it no longer runs as a cap inside the chain
+  const chain = core.slice(core.indexOf('export function finalizeFindings'));
+  assert.ok(!/applyLiteratureCap\(/.test(chain),
+    'a StatPearls passage is support for an expectation; it may not silence a finding built on one');
+});
+
+test('round 14 item 1: the billing ceiling runs BEFORE the severity cap, and is lower', () => {
+  const core = code('lib/ipd-episode/judge-core.ts');
+  assert.ok(core.includes("export const BILLING_ONLY_CEILING: Severity = 'minor';"),
+    'a dispensing-only claim is held below the ordinary ceiling');
+  assert.ok(core.indexOf('applyBillingOnlyCap(f0, events)') < core.indexOf('applySeverityCap(billRes.finding)'),
+    'order matters: a citation must not lift a billing-only claim back up');
+  assert.ok(core.includes('BILLING_ONLY_CAVEAT'), 'and the caveat is written into the statement a reader sees');
 });
 
 test('citation_provenance is stored on every finding so the cohort can be measured later', () => {
@@ -1465,7 +1481,7 @@ test('round 13 item 1: a call with no room left is REFUSED, and never reaches th
   assert.ok(r.error, 'and it fails the call, so the episode records a skip');
   assert.match(r.error!, /not started/);
   assert.match(r.error!, /ipd_episode_diff/, 'the reason names the call');
-  assert.match(r.error!, /332250/, 'and what one call can cost, so the next reader need not derive it');
+  assert.match(r.error!, /below the 60000 ms floor/, 'and why, in the units the floor is written in');
   assert.equal(r.text, '');
 });
 
@@ -1487,7 +1503,74 @@ test('round 13 item 1: an UNBUDGETED call still runs — the deadline is opt-in 
   const mc = readFileSync('lib/ipd-episode/model-call.ts', 'utf8');
   assert.match(mc, /deadlineAt\?: number \| null/, 'optional in the type');
   assert.match(mc, /const deadlineAt = input\.deadlineAt \?\? null/);
-  assert.match(mc, /if \(deadlineAt != null\)/, 'and the guard is skipped when there is no deadline');
+  // null remaining ⇒ the class default stands and nothing is refused
+  const plan = planAttempt('audit', null);
+  assert.ok(plan, 'an unbudgeted call is never refused');
+  assert.equal(plan!.shrunk, false);
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+// ROUND 14 ITEM 11 · THE CALL CLASS, AND THE REFUSAL THAT WAS TOO EAGER
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+
+test('item 11: the judge passes declare `audit`; the checkpoint pass stays `utility`', () => {
+  const judge = readFileSync('lib/ipd-episode/judge.ts', 'utf8');
+  const checkpoint = readFileSync('lib/ipd-episode/checkpoint.ts', 'utf8');
+  assert.match(judge, /callClass: 'audit'/, 'the three Opus passes are audit-class work');
+  assert.ok(!/callClass:/.test(checkpoint),
+    'checkpoints generate in 15-35 s and keep utility’s 110 s × 3 — a fitting ceiling and three cheap tries');
+  assert.equal(DEFAULT_CALL_CLASS, 'utility', 'and the default is unchanged, so no other caller moves');
+});
+
+test('item 11: `audit` not `audit_ipd` — 200 s is below the one diff that ever succeeded', () => {
+  const audit = PROVIDER_BUDGETS.bedrock.audit!;
+  const auditIpd = PROVIDER_BUDGETS.bedrock.audit_ipd!;
+  assert.equal(audit.perAttemptMs, 380_000);
+  assert.equal(auditIpd.perAttemptMs, 200_000);
+  // IPNO-416's diff generated for 212,402 ms. audit_ipd would have failed it too.
+  assert.ok(auditIpd.perAttemptMs < 212_402, 'audit_ipd would not have covered the one that passed');
+  assert.ok(audit.perAttemptMs > 212_402, 'audit does');
+});
+
+test('item 11: the budget is PASSED to the transport, never inherited', () => {
+  const mc = readFileSync('lib/ipd-episode/model-call.ts', 'utf8');
+  assert.match(mc, /timeoutMs: plan\.perAttemptMs, maxTries: plan\.maxTries/,
+    'absent these the transport silently falls back to utility inside bedrockGenerate');
+});
+
+test('item 11 / round 13 correction: a box smaller than one worst case SHRINKS the call, not refuses it', () => {
+  // THE REGRESSION THIS FIXES: the commentary route's box is 300 s and one utility worst case is
+  // 332 s, so the round-13 guard would have refused pass B on every episode — a route made
+  // unreachable by its own guard. An audit-class 380 s ceiling would have been worse.
+  const squeezed = planAttempt('audit', 250_000);
+  assert.ok(squeezed, 'still worth attempting');
+  assert.equal(squeezed!.shrunk, true);
+  assert.equal(squeezed!.maxTries, 1, 'one attempt, since there is no room for a ladder');
+  assert.ok(squeezed!.perAttemptMs <= 250_000,
+    'and it cannot outlive the box — which is the guarantee that actually mattered');
+  assert.ok(squeezed!.perAttemptMs >= 240_000, 'while still using nearly all of what is left');
+});
+
+test('item 11 / round 13 correction: below the viability floor it still refuses', () => {
+  assert.equal(planAttempt('audit', 30_000), null, 'a judge pass cannot finish in 30 s');
+  assert.equal(planAttempt('audit', MIN_VIABLE_ATTEMPT_MS - 1), null);
+  assert.ok(planAttempt('audit', MIN_VIABLE_ATTEMPT_MS), 'and at the floor it tries');
+});
+
+test('item 11: with room for the full ladder, the class budget is used unshrunk', () => {
+  const full = planAttempt('audit', 700_000);
+  assert.deepEqual(full, { perAttemptMs: 380_000, maxTries: 1, shrunk: false });
+  const util = planAttempt('utility', 700_000);
+  assert.deepEqual(util, { perAttemptMs: 110_000, maxTries: 3, shrunk: false });
+});
+
+test('item 11: the commentary route can now actually run pass B inside its 300 s box', () => {
+  const src = readFileSync('app/api/ipd-episode/commentary/route.ts', 'utf8');
+  const maxDuration = Number(/export const maxDuration = (\d+)/.exec(src)?.[1]);
+  const reserve = Number(/const COMMENTARY_RESERVE_MS = (\d+) \* 1000/.exec(src)?.[1]) * 1000;
+  const budget = maxDuration * 1000 - reserve;
+  assert.ok(budget < worstCaseMsFor('audit'), 'the box is genuinely smaller than one full call');
+  assert.ok(planAttempt('audit', budget), 'and pass B is attempted anyway, ceilinged to fit');
 });
 
 test('round 13 item 1: every production model call site passes a deadline', () => {

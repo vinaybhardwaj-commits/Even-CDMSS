@@ -9,14 +9,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  applyTierCRule, applyUncitedCap, attachAttribution, attributedParty, completenessPct,
+  applyTierCRule, applySeverityCap, entryWasUncited, attachAttribution, attributedParty, completenessPct,
   countFindings, divergenceIndex, normalizeFidelityFindings, evidenceTiersOf, finalizeFindings,
   parseFindings, resolveFindingCitations, validateCommentary, asLvcCategory, SEVERITY_PENALTY,
-  PARSE_FRAGMENT_CHARS, classifyCitationProvenance, applyLiteratureCap, scoringStatusFor,
+  PARSE_FRAGMENT_CHARS, classifyCitationProvenance, applyLiteratureCap, findingHasTierAEvidence, scoringStatusFor,
   storedDivergenceIndex, impliedFindingType, capSeverityAt, CAP_SEVERITY_CEILING,
   divergenceBandFor, bandIsUncertain, DIVERGENCE_BANDS, BAND_THRESHOLDS, INDEX_REPEAT_SPREAD,
   dropJudgedOmissions, enforceUnassessable, findingsFromResolved, domainForSection,
-  buildExpectationDigest, buildDiffUser,
+  buildExpectationDigest, buildDiffUser, applyBillingOnlyCap, notesOnDay, missingDischargeDayNote,
+  subjectWords, SUBJECT_CONCEPTS,
   type EpisodeFinding, type Severity, type Verdict, type Domain, type AuditPass,
   type DigestSource,
 } from '../ipd-episode/judge-core';
@@ -24,7 +25,7 @@ import {
   checkpointEntryRefs, parseExpectedCourse, buildRetrievalQuery, renderExpectedCourse,
   ordinalForChunkId, countUncitedEntries, everyEntryUncited, buildCheckpointUser,
   capExpectedCourse, MAX_ENTRIES_PER_CATEGORY,
-  clinicalTerms, retrievalIsOffTopic, assessTopicality, retrievedTitles, RETRIEVED_TITLE_CHARS,
+  clinicalTerms, retrievalIsOffTopic, assessTopicality, offTopicThreshold, retrievedTitles, RETRIEVED_TITLE_CHARS,
   drugBaseName, clinicalTextForQuery, stripPersonNames, clinicalWordsOnly, MIN_SHARED_TERMS,
   type CheckpointEntryRef,
 } from '../ipd-episode/checkpoint-core';
@@ -124,198 +125,123 @@ test('Tier C rule touches only `divergent` findings — a context_dependent one 
   assert.equal(applyTierCRule(cd).finding.verdict, 'context_dependent');
 });
 
-// ── 7. the uncited cap ───────────────────────────────────────────────────────────────────────
+// ── 7. THE SEVERITY CAP, NARROWED (round 14 item 10) ─────────────────────────────────────────
+//
+// Was two caps — uncited-expectation and literature-only — stacked on one ceiling. On IPNO-416 they
+// took ALL 58 major findings between them, which killed the 8-point term and reduced the index to
+// 100 − 4 × (divergent count). And they bit hardest on the best findings: "no stent assessment in
+// any of seven notes" and "no note at all on the discharge day" rest on the record and cite no
+// guideline, because none is needed to observe that a note is missing.
+//
+// One rule now: keep the blinded proposed severity if there is EITHER a citation (literature
+// counts) OR corroborating Tier A evidence. Cap only when there is neither.
 
-test('uncited cap: an A1 finding on an entry with no citations is capped to moderate, verdict intact', () => {
-  const map = refs([['cp-d1/diagnostics/1', []]]);
-  const res = applyUncitedCap(f({ finding_id: '1', severity: 'major', verdict: 'divergent', checkpoint_ref: 'cp-d1/diagnostics/1' }), map);
-  assert.equal(res.capped, true);
-  assert.equal(res.finding.severity, 'moderate');
-  assert.equal(res.finding.verdict, 'divergent');
+const tierA = (table = 'kx_clinical_template_progress_reports') =>
+  [{ source_table: table, source_record_id: 'r1', source_timestamp: null }];
+const tierC = [{ source_table: 'some_other_table', source_record_id: 'r9', source_timestamp: null }];
+// Tier B: enough to survive the Tier C rewrite, not enough to lift the severity cap. The two rules
+// are separate, and a fixture that conflates them tests neither.
+const tierB = [{ source_table: 'kx_clinical_template_shift_handovers', source_record_id: 'h1', source_timestamp: null }];
+
+test('item 10: a citation alone keeps major — literature counts', () => {
+  const r = applySeverityCap(f({ finding_id: '1', severity: 'major', verdict: 'divergent', citation_ids: [7788], evidence_basis: [] }));
+  assert.equal(r.capped, false);
+  assert.equal(r.finding.severity, 'major');
 });
 
-test('uncited cap does NOT apply to a fidelity finding — A2 measures against the record, not an expectation', () => {
-  const map = refs([['cp-d1/diagnostics/1', []]]);
-  const a2 = f({ finding_id: '1', pass: 'fidelity', domain: 'documentation', finding_type: 'commission', severity: 'major', checkpoint_ref: 'cp-d1/diagnostics/1' });
-  const res = applyUncitedCap(a2, map);
-  assert.equal(res.capped, false);
-  assert.equal(res.finding.severity, 'major');
-});
-
-test('uncited cap: BOTH the finding and its entry must cite — one alone is not enough', () => {
-  const map = refs([['cp-d1/diagnostics/1', [4021]]]);
-  const both = applyUncitedCap(f({ finding_id: '1', severity: 'major', checkpoint_ref: 'cp-d1/diagnostics/1', citation_ids: [4021] }), map);
-  assert.equal(both.capped, false, 'entry cited AND finding cited');
-  assert.equal(both.finding.severity, 'major');
-
-  // ⚠️ THE IP-1286 DEFECT: the entry was cited, the finding cited nothing, and the old rule read
-  // only the entry — so the major VTE finding kept full weight and supplied 8 of 12 penalty points
-  const findingUncited = applyUncitedCap(f({ finding_id: '2', severity: 'major', checkpoint_ref: 'cp-d1/diagnostics/1', citation_ids: [] }), map);
-  assert.equal(findingUncited.capped, true, 'a finding that cites nothing is not grounded, whatever its entry did');
-  assert.equal(findingUncited.finding.severity, 'moderate');
-  assert.equal(findingUncited.finding.verdict, 'divergent', 'and its verdict is untouched');
-
-  const entryUncited = applyUncitedCap(f({ finding_id: '3', severity: 'major', checkpoint_ref: 'cp-d1/therapeutics/9', citation_ids: [4021] }), refs([['cp-d1/therapeutics/9', []]]));
-  assert.equal(entryUncited.capped, true, 'an ungrounded expectation caps too');
-});
-
-test('THE CAP TOUCHES SEVERITY ONLY — an uncited finding keeps its verdict, including divergent', () => {
-  const map = refs([['cp-d0/diagnostics/1', []]]);
-  const r = applyUncitedCap(f({ finding_id: 'x', severity: 'major', verdict: 'divergent', checkpoint_ref: 'cp-d0/diagnostics/1' }), map);
-  assert.equal(r.capped, true);
-  assert.equal(r.finding.severity, 'moderate', 'the ceiling is moderate, not minor');
-  assert.equal(r.finding.verdict, 'divergent', 'the verdict is not the cap’s business');
-});
-
-test('the cap no longer ERASES concordant findings — the defect that cost IP-1286 nine of thirteen', () => {
-  const map = refs([['cp-d0/diagnostics/1', []]]);
-  for (const verdict of ['concordant', 'unassessable', 'context_dependent', 'divergent'] as const) {
-    const r = applyUncitedCap(f({ finding_id: verdict, severity: 'minor', verdict, checkpoint_ref: 'cp-d0/diagnostics/1' }), map);
-    assert.equal(r.finding.verdict, verdict, `${verdict} must survive the cap intact`);
-    assert.equal(r.capped, false, 'a minor finding is already at the ceiling, so nothing changes');
+test('item 10: Tier A record evidence alone keeps major — THE TWO FINDINGS THAT MATTERED MOST', () => {
+  // "no stent assessment in any of seven progress notes" — no citation, real record evidence.
+  const r = applySeverityCap(f({ finding_id: '1', severity: 'major', verdict: 'divergent', citation_ids: [], evidence_basis: tierA() }));
+  assert.equal(r.capped, false);
+  assert.equal(r.finding.severity, 'major', 'no guideline is needed to observe that a note is missing');
+  for (const t of ['kx_ip_admissions', 'kx_billing_records', 'kx_lab_reports', 'kx_discharge_summary_records']) {
+    assert.equal(applySeverityCap(f({ finding_id: t, severity: 'major', citation_ids: [], evidence_basis: tierA(t) })).capped, false, t);
   }
 });
 
-test('the ceiling lowers a major and leaves moderate and minor alone', () => {
-  const map = refs([['cp-d0/diagnostics/1', []]]);
-  const at = (severity: 'major' | 'moderate' | 'minor') =>
-    applyUncitedCap(f({ finding_id: severity, severity, verdict: 'divergent', checkpoint_ref: 'cp-d0/diagnostics/1' }), map);
-  assert.equal(at('major').finding.severity, 'moderate');
-  assert.equal(at('major').capped, true);
-  assert.equal(at('moderate').capped, false);
-  assert.equal(at('minor').finding.severity, 'minor');
+test('item 10: NEITHER citation nor Tier A evidence is the only thing capped', () => {
+  const r = applySeverityCap(f({ finding_id: '1', severity: 'major', verdict: 'divergent', citation_ids: [], evidence_basis: [] }));
+  assert.equal(r.capped, true);
+  assert.equal(r.finding.severity, 'moderate', 'the ceiling is moderate, not minor');
+  assert.equal(r.finding.verdict, 'divergent', 'the verdict is not the cap’s business');
+  // Tier C evidence is not corroboration
+  assert.equal(applySeverityCap(f({ finding_id: '2', severity: 'major', citation_ids: [], evidence_basis: tierC })).capped, true);
 });
 
-test('THE TWO CEILINGS ARE ONE CEILING — they do not stack down to minor', () => {
+test('item 10: the cap touches severity only, and never raises one', () => {
+  const bare = (severity: 'major' | 'moderate' | 'minor') =>
+    applySeverityCap(f({ finding_id: severity, severity, verdict: 'divergent', citation_ids: [], evidence_basis: [] }));
+  assert.equal(bare('major').finding.severity, 'moderate');
+  assert.equal(bare('major').capped, true);
+  assert.equal(bare('moderate').capped, false);
+  assert.equal(bare('minor').finding.severity, 'minor');
   assert.equal(CAP_SEVERITY_CEILING, 'moderate');
-  assert.equal(capSeverityAt('major', 'moderate'), 'moderate');
   assert.equal(capSeverityAt('minor', 'moderate'), 'minor', 'a ceiling never raises');
-  assert.equal(capSeverityAt(capSeverityAt('major', 'moderate'), 'moderate'), 'moderate', 'idempotent');
+});
 
-  // uncited AND literature-only: both caps fire, and the result is moderate — not minor
-  const map = refs([['cp-d0/diagnostics/1', []]]);
+test('item 10: no verdict is erased by the cap — the IP-1286 concordant-erasure guard still holds', () => {
+  for (const verdict of ['concordant', 'unassessable', 'context_dependent', 'divergent'] as const) {
+    const r = applySeverityCap(f({ finding_id: verdict, severity: 'minor', verdict, citation_ids: [], evidence_basis: [] }));
+    assert.equal(r.finding.verdict, verdict, `${verdict} must survive the cap intact`);
+    assert.equal(r.capped, false, 'a minor finding is already at the ceiling');
+  }
+});
+
+test('item 10: a fidelity finding is capped by the SAME rule — it has the record to stand on', () => {
+  const a2 = (basis: typeof tierC) => f({
+    finding_id: 'a2', pass: 'fidelity', domain: 'documentation', finding_type: 'commission',
+    severity: 'major', checkpoint_ref: null, citation_ids: [], evidence_basis: basis,
+  });
+  assert.equal(applySeverityCap(a2(tierA('kx_discharge_summary_records'))).capped, false,
+    'A2 cites the discharge record, which is Tier A — it keeps its weight');
+  assert.equal(applySeverityCap(a2(tierC)).capped, true, 'and an A2 finding on nothing is capped like any other');
+});
+
+test('item 10: THE ONE CAP DOES NOT STACK — a literature-cited finding is no longer capped at all', () => {
   const res = finalizeFindings([
-    f({ finding_id: 'both', severity: 'major', verdict: 'divergent', checkpoint_ref: 'cp-d0/diagnostics/1', citation_ids: [7788] }),
-  ], map, [], 0, SOURCES, NORMATIVE);
+    f({ finding_id: 'lit', severity: 'major', verdict: 'divergent', checkpoint_ref: 'cp-d0/diagnostics/1', citation_ids: [7788], evidence_basis: tierB }),
+  ], refs([['cp-d0/diagnostics/1', [7788]]]), [], 0, SOURCES, NORMATIVE);
   const only = res.findings[0];
-  assert.equal(only.severity, 'moderate', 'stacking would have produced minor');
-  assert.equal(only.verdict, 'divergent');
-  assert.equal(only.citation_provenance, 'literature');
-  assert.equal(res.divergence_index, 96, 'one moderate divergent finding');
+  assert.equal(only.citation_provenance, 'literature', 'provenance is still classified and stored');
+  assert.equal(only.capped, false, 'but it no longer silences the finding');
+  assert.equal(only.severity, 'major');
+  assert.equal(res.divergence_index, 92, 'one MAJOR divergent finding — the 8-point term is reachable again');
 });
 
-test('uncited cap: a NULL checkpoint_ref is capped — an A1 finding measured against nothing is the case the cap exists for', () => {
-  const map = refs([['cp-d1/diagnostics/1', [4021]]]);
-  const res = applyUncitedCap(f({ finding_id: '1', severity: 'major', verdict: 'divergent', checkpoint_ref: null }), map);
-  assert.equal(res.capped, true);
-  assert.equal(res.finding.severity, 'moderate');
-  assert.equal(res.finding.verdict, 'divergent');
-});
-
-test('uncited cap: an UNRESOLVABLE checkpoint_ref is capped too — citing nothing must not beat citing badly', () => {
-  const map = refs([['cp-d1/diagnostics/1', [4021]]]);
-  const res = applyUncitedCap(f({ finding_id: '1', severity: 'major', verdict: 'divergent', checkpoint_ref: 'cp-d9/diagnostics/7' }), map);
-  assert.equal(res.capped, true);
-  assert.equal(res.finding.severity, 'moderate');
-});
-
-test('uncited cap: capping the ungrounded cases removes the evasion — a major A1 finding cannot score by citing nothing', () => {
-  const map = refs([['cp-d0/diagnostics/1', [4021]]]);
-  const grounded = f({ finding_id: 'grounded', severity: 'major', checkpoint_ref: 'cp-d0/diagnostics/1', citation_ids: [4021] });
-  const evasive = f({ finding_id: 'evasive', severity: 'major', checkpoint_ref: null });
-  const res = finalizeFindings([grounded, evasive], map, [], 0, SOURCES, NORMATIVE);
-  assert.equal(res.n_uncited_capped, 1);
-  // the grounded major scores 8; the ungrounded one is now moderate and divergent, so it scores 4
-  assert.equal(res.divergence_index, 100 - 12);
-});
-
-test('the cap is auditable from the stored finding, not from a response string', () => {
+test('item 10: the uncited-ENTRY count survives as a report number, capping nothing', () => {
   const map = refs([['cp-d0/diagnostics/1', []]]);
+  assert.equal(entryWasUncited(f({ finding_id: '1', checkpoint_ref: 'cp-d0/diagnostics/1' }), map), true);
+  assert.equal(entryWasUncited(f({ finding_id: '2', checkpoint_ref: 'cp-d0/diagnostics/1' }), refs([['cp-d0/diagnostics/1', [4021]]])), false);
+  assert.equal(entryWasUncited(f({ finding_id: '3', checkpoint_ref: null }), map), true, 'measured against nothing');
+  assert.equal(entryWasUncited(f({ finding_id: '4', checkpoint_ref: 'cp-d9/x/7' }), map), true, 'unresolvable ref');
+  assert.equal(entryWasUncited(f({ finding_id: '5', pass: 'fidelity', checkpoint_ref: null }), map), false, 'A2 has no entry to cite');
+
+  // it is counted, and it caps nothing on its own: this finding has Tier A evidence
   const res = finalizeFindings([
-    f({ finding_id: 'capped', severity: 'major', verdict: 'divergent', checkpoint_ref: 'cp-d0/diagnostics/1' }),
-    f({ finding_id: 'clean', severity: 'moderate', verdict: 'divergent', checkpoint_ref: 'cp-d0/diagnostics/1', citation_ids: [4021] }),
-  ], refs([['cp-d0/diagnostics/1', [4021]]]), [], 0, SOURCES, NORMATIVE);
+    f({ finding_id: 'a', severity: 'major', verdict: 'divergent', checkpoint_ref: 'cp-d0/diagnostics/1', citation_ids: [], evidence_basis: tierA() }),
+  ], map, [], 0, SOURCES, NORMATIVE);
+  assert.equal(res.n_uncited_entries, 1, 'the expectation was uncited, and that is recorded');
+  assert.equal(res.n_uncited_capped, 0, 'and nothing was capped for it');
+  assert.equal(res.findings[0].severity, 'major');
+});
+
+test('item 10: the cap remains auditable from the stored finding, not from a response string', () => {
+  const map = refs([['cp-d0/diagnostics/1', [4021]]]);
+  const res = finalizeFindings([
+    f({ finding_id: 'capped', severity: 'major', verdict: 'divergent', checkpoint_ref: 'cp-d0/diagnostics/1', citation_ids: [], evidence_basis: tierB }),
+    f({ finding_id: 'clean', severity: 'moderate', verdict: 'divergent', checkpoint_ref: 'cp-d0/diagnostics/1', citation_ids: [4021], evidence_basis: tierB }),
+  ], map, [], 0, SOURCES, NORMATIVE);
   const capped = res.findings.find((x) => x.finding_id === 'capped')!;
   assert.equal(capped.capped, true);
   assert.equal(capped.verdict_before_cap, 'divergent', 'what the model said, before code intervened');
   assert.equal(capped.severity_before_cap, 'major');
   assert.equal(capped.verdict, 'divergent', 'the verdict survives — only severity moved');
   assert.equal(capped.severity, 'moderate');
-  const clean = res.findings.find((x) => x.finding_id === 'clean')!;
-  assert.equal(clean.capped, false);
-  assert.equal(clean.verdict_before_cap, 'divergent');
-  // capped_count is recountable from the findings themselves
+  assert.equal(res.findings.find((x) => x.finding_id === 'clean')!.capped, false);
   assert.equal(res.capped_finding_ids.size, res.findings.filter((x) => x.capped).length);
 });
 
-// the ordered mksap_chunks ids a checkpoint's retrieval returned; the prompt showed them as [1][2][3]
 const CHUNKS = [4021, 7788, 1503];
-
-test('checkpoint entry refs address every entry of an expected course, section by section', () => {
-  const course = parseExpectedCourse(JSON.stringify({
-    expected_diagnostics: [{ item: 'CBC', by_day: 0, rationale: 'r', citation_ids: [1] }, { item: 'CRP', by_day: 1, rationale: 'r', citation_ids: [] }],
-    expected_therapeutics: [{ item: 'IV fluids', by_day: 0, rationale: 'r', citation_ids: [] }],
-    expected_monitoring: [{ item: 'hourly urine output', frequency: 'hourly', rationale: 'r', citation_ids: [2] }],
-    escalation_triggers: [{ trigger: 'SBP < 90', action: 'escalate', citation_ids: [] }],
-    expected_los_days: 3, expected_disposition: 'home', uncertainty: ['no vitals in this substrate'],
-  }), CHUNKS);
-  assert.ok(course);
-  const r = checkpointEntryRefs('cp-d0', course);
-  assert.deepEqual(r.map((x) => x.ref), [
-    'cp-d0/diagnostics/1', 'cp-d0/diagnostics/2', 'cp-d0/therapeutics/1', 'cp-d0/monitoring/1', 'cp-d0/escalation/1',
-  ]);
-  assert.deepEqual(r.find((x) => x.ref === 'cp-d0/diagnostics/1')!.citation_ids, [4021]);
-  assert.deepEqual(r.find((x) => x.ref === 'cp-d0/diagnostics/2')!.citation_ids, []);
-});
-
-test('an entry’s citation ordinal is resolved to the REAL chunk id it stood for', () => {
-  const course = parseExpectedCourse(JSON.stringify({
-    expected_diagnostics: [{ item: 'CBC', by_day: 0, rationale: 'r', citation_ids: [1, 3] }],
-    expected_monitoring: [{ item: 'urine output', frequency: 'hourly', rationale: 'r', citation_ids: [2] }],
-  }), CHUNKS);
-  assert.deepEqual(course!.expected_diagnostics[0].citation_ids, [4021, 1503]);
-  assert.deepEqual(course!.expected_monitoring[0].citation_ids, [7788]);
-});
-
-test('the entry and the checkpoint row now speak ONE vocabulary — both are chunk ids', () => {
-  const course = parseExpectedCourse(JSON.stringify({
-    expected_diagnostics: [{ item: 'CBC', by_day: 0, rationale: 'r', citation_ids: [2] }],
-  }), CHUNKS);
-  const entryIds = course!.expected_diagnostics[0].citation_ids;
-  // before the mapping this was [2], which the row's citation_ids would have read as chunk 2 —
-  // a real passage nobody was shown
-  assert.deepEqual(entryIds, [7788]);
-  for (const id of entryIds) assert.ok(CHUNKS.includes(id), 'every entry citation is one of the row’s own chunk ids');
-});
-
-test('an ordinal outside [1..k] is dropped, never renumbered and never passed through as an id', () => {
-  const course = parseExpectedCourse(JSON.stringify({
-    expected_diagnostics: [{ item: 'CBC', by_day: 0, rationale: 'r', citation_ids: [1, 9, 0, -2, 3] }],
-  }), CHUNKS);
-  assert.deepEqual(course!.expected_diagnostics[0].citation_ids, [4021, 1503]);
-  // 9 must not survive as the literal 9 — that would be a citation to chunk 9
-  assert.ok(!course!.expected_diagnostics[0].citation_ids.includes(9));
-});
-
-test('with no excerpts retrieved, every entry citation resolves to nothing', () => {
-  const course = parseExpectedCourse(JSON.stringify({
-    expected_diagnostics: [{ item: 'CBC', by_day: 0, rationale: 'r', citation_ids: [1, 2] }],
-  }), []);
-  assert.deepEqual(course!.expected_diagnostics[0].citation_ids, []);
-});
-
-test('the diff prompt is rendered back in ORDINALS, from the stored chunk ids', () => {
-  const course = parseExpectedCourse(JSON.stringify({
-    expected_diagnostics: [{ item: 'CBC', by_day: 0, rationale: 'r', citation_ids: [1, 3] }],
-    expected_therapeutics: [{ item: 'IV fluids', by_day: 0, rationale: 'r', citation_ids: [] }],
-  }), CHUNKS);
-  const rendered = renderExpectedCourse('cp-d0', 0, 'daily', course, CHUNKS);
-  assert.match(rendered, /\[citations 1, 3\]/, 'the model is shown the numbering it is asked to cite by');
-  assert.match(rendered, /\[no citation\]/);
-  assert.ok(!rendered.includes('4021'), 'raw chunk ids are never put in front of a model to transcribe');
-  assert.equal(ordinalForChunkId(7788, CHUNKS), 2);
-  assert.equal(ordinalForChunkId(999, CHUNKS), 0, 'a chunk this checkpoint never carried has no ordinal');
-});
 
 // ── items 1 and 2: the citation grounding failure measured on IP-1286 ────────────────────────
 
@@ -843,13 +769,33 @@ test('a genuinely relevant chunk still reads as on topic', () => {
   assert.equal(r.offTopic, false);
 });
 
-test('a mixed slate counts precisely, and the boolean follows the majority', () => {
+test('ROUND 14 ITEM 7: a mixed slate counts precisely, and a QUARTER fires the boolean', () => {
   const query = 'inguinal hernia repair groin mesh';
   const on = { label: 'Inguinal hernia', text: 'mesh repair of the groin' };
   const off = { label: 'ICMR AMR pneumonia', text: 'nosocomial pneumonia antimicrobial therapy' };
-  assert.equal(assessTopicality(query, [on, on, on, on, off, off, off, off]).offTopicCount, 4);
-  assert.equal(assessTopicality(query, [on, on, on, on, off, off, off, off]).offTopic, false, 'half is not a majority');
-  assert.equal(assessTopicality(query, [on, on, on, off, off, off, off, off]).offTopic, true);
+  const slate = (nOff: number) => [...Array(8 - nOff).fill(on), ...Array(nOff).fill(off)];
+  assert.equal(assessTopicality(query, slate(4)).offTopicCount, 4);
+  // THE IPNO-416 SHAPE: four of eight off topic reported `false` under the majority rule, on every
+  // checkpoint of the episode. It was raised three times before the test itself was changed.
+  assert.equal(assessTopicality(query, slate(4)).offTopic, true, 'four of eight is not a near miss');
+  assert.equal(assessTopicality(query, slate(2)).offTopic, true, 'a quarter is the threshold');
+  assert.equal(assessTopicality(query, slate(1)).offTopic, false, 'one unlucky excerpt is not a signal');
+  assert.equal(offTopicThreshold(8), 2);
+  assert.equal(offTopicThreshold(4), 2, 'the minimum of two holds on a short slate');
+  assert.equal(offTopicThreshold(20), 5);
+});
+
+test('ROUND 14 ITEM 7: topicality is judged on the TITLE — a long body shares words with anything', () => {
+  // The real IPNO-416 day-2 slate: adult nephrology query, paediatric oncology and paediatric
+  // hyperkalaemia among the excerpts. Their BODIES share generic clinical vocabulary with the
+  // query; their titles share nothing, which is the honest reading.
+  const query = 'bilateral acute pyelonephritis hydroureteronephrosis stenting urosepsis pancreatitis';
+  const paedOnc = {
+    label: 'Tintinallis-Emergency-Medicine-9e · 145 Oncologic Emergencies in Infants and Children',
+    text: 'acute renal failure tumour lysis syndrome hyperkalaemia urgent management pyelonephritis urosepsis',
+  };
+  assert.equal(assessTopicality(query, [paedOnc]).offTopicCount, 1,
+    'the body borrows the query’s own words; the title says what the passage is about');
 });
 
 // ── round 6 item 7: names and inventory residue never reach retrieval ────────────────────────
@@ -1067,21 +1013,21 @@ test('the cap does not touch a normative or mixed finding, nor a finding already
   assert.equal(applyLiteratureCap(f({ finding_id: 'x', severity: 'major', citation_provenance: null })).capped, false);
 });
 
-test('the cap runs inside finalizeFindings, and shows up in the score', () => {
+test('item 10: provenance is still MEASURED, and no longer capped — literature keeps its weight', () => {
   const map = refs([['cp-d0/diagnostics/1', [7788]], ['cp-d0/therapeutics/1', [4021]]]);
   const res = finalizeFindings([
-    // grounded on a cited entry, but the citation is a StatPearls chunk → major becomes moderate
+    // a StatPearls chunk. Was capped to moderate; now keeps major, because a passage saying what is
+    // known is support for an expectation even though it is not a standard.
     f({ finding_id: 'lit', severity: 'major', verdict: 'divergent', checkpoint_ref: 'cp-d0/diagnostics/1', citation_ids: [7788] }),
-    // grounded on a guideline → keeps its 8 points
     f({ finding_id: 'norm', severity: 'major', verdict: 'divergent', checkpoint_ref: 'cp-d0/therapeutics/1', citation_ids: [4021] }),
   ], map, [], 0, SOURCES, NORMATIVE);
-  assert.equal(res.n_literature_capped, 1);
-  assert.equal(res.findings.find((x) => x.finding_id === 'lit')!.severity, 'moderate');
-  assert.equal(res.findings.find((x) => x.finding_id === 'lit')!.citation_provenance, 'literature');
+  assert.equal(res.n_literature_capped, 1, 'still counted, so "how much rests on literature" stays answerable');
+  const lit = res.findings.find((x) => x.finding_id === 'lit')!;
+  assert.equal(lit.citation_provenance, 'literature', 'and still classified on the row');
+  assert.equal(lit.severity, 'major', 'but the grade survives');
+  assert.equal(lit.capped, false);
   assert.equal(res.findings.find((x) => x.finding_id === 'norm')!.severity, 'major');
-  assert.equal(res.findings.find((x) => x.finding_id === 'norm')!.citation_provenance, 'normative');
-  // 8 for the guideline-backed major + 4 for the capped one
-  assert.equal(res.divergence_index, 100 - 12);
+  assert.equal(res.divergence_index, 100 - 16, 'two majors, both at full weight');
 });
 
 test('provenance_counts is the measurement V asked for: how much of the score rests on guidelines', () => {
@@ -1255,8 +1201,9 @@ test('finalizeFindings applies the whole chain in one place, so its order cannot
   // cp-d1/… carried no citation; cp-d0/… did — so only findings against cp-d0 escape the cap
   const map = refs([['cp-d1/diagnostics/1', []], ['cp-d0/diagnostics/1', [4021]]]);
   const res = finalizeFindings([
-    // capped by the uncited rule (major → minor / context_dependent), so it scores 0
-    f({ finding_id: 'capped', severity: 'major', checkpoint_ref: 'cp-d1/diagnostics/1' }),
+    // measured against an UNCITED entry, but standing on a Tier A progress note — since item 10
+    // that is support enough, so it keeps major and the uncited entry is merely counted
+    f({ finding_id: 'uncited_entry', severity: 'major', checkpoint_ref: 'cp-d1/diagnostics/1' }),
     // grounded, so the cap does not fire — but its basis is empty, so the Tier C rule rewrites it
     f({ finding_id: 'tierc', severity: 'major', checkpoint_ref: 'cp-d0/diagnostics/1', citation_ids: [4021], evidence_basis: [] }),
     // dropped: a fidelity finding outside documentation
@@ -1267,21 +1214,23 @@ test('finalizeFindings applies the whole chain in one place, so its order cannot
     // the only finding that actually scores
     f({ finding_id: 'real', severity: 'moderate', checkpoint_ref: 'cp-d0/diagnostics/1', citation_ids: [4021] }),
   ], map, [NOTE_EVENT], 0, SOURCES, NORMATIVE);
-  assert.equal(res.n_uncited_capped, 1);
+  assert.equal(res.n_uncited_capped, 0, 'item 10: Tier A evidence lifts the cap');
+  assert.equal(res.n_uncited_entries, 1, 'and the uncited expectation is still recorded');
   assert.equal(res.n_tier_c_rewritten, 1);
   assert.equal(res.n_fidelity_normalized, 1);
   assert.equal(res.counters.n_dropped_invalid, 1, 'the domain violation, and only it');
   assert.equal(res.counters.n_findings, 4);
-  // 'capped' is now moderate + divergent (4), 'real' is moderate + divergent (4), 'tierc' is
-  // unassessable (0) — the cap no longer zeroes a finding by rewriting its verdict
-  assert.equal(res.divergence_index, 100 - 8);
+  // 'uncited_entry' is MAJOR + divergent (8) since item 10 — Tier A evidence lifts the cap;
+  // 'real' is moderate + divergent (4); 'tierc' is unassessable (0). The cap still never zeroes a
+  // finding by rewriting its verdict.
+  assert.equal(res.divergence_index, 100 - 12);
 });
 
 test('the cap and the Tier C rule now do different jobs, so both apply', () => {
   // ungrounded AND unsupported. The cap lowers severity and leaves the verdict; the Tier C rule
   // then rewrites the verdict, because a divergent claim resting on no evidence is still
   // unassessable. They no longer collide over one field.
-  const res = finalizeFindings([f({ finding_id: 'both', severity: 'major', verdict: 'divergent', checkpoint_ref: null, evidence_basis: [] })], new Map(), []);
+  const res = finalizeFindings([f({ finding_id: 'both', severity: 'major', verdict: 'divergent', checkpoint_ref: null, citation_ids: [], evidence_basis: [] })], new Map(), []);
   assert.equal(res.n_uncited_capped, 1, 'severity capped');
   assert.equal(res.n_tier_c_rewritten, 1, 'and the verdict rewritten, by the rule that owns verdicts');
   assert.equal(res.findings[0].severity, 'moderate');
@@ -1315,7 +1264,12 @@ test('the query is built from clinical content in the stated priority', () => {
   // 1 surgery, 2 initial assessment, 3 latest note, 4 latest day's drugs, 5 labs
   assert.match(q, /^Open inguinal hernia repair/);
   assert.ok(q.includes('right groin swelling'), 'the latest progress note before the cut-off');
-  assert.ok(!q.includes('older note'));
+  // ⚠️ ROUND 14 ITEM 8 REVERSED THIS ASSERTION, deliberately. The older note used to be excluded,
+  // and that is what emptied IPNO-416's day-3 query when the latest note happened to be a terse
+  // "clinically better, euvolemic" — leaving the surgery name alone to steer retrieval, which
+  // returned eight stent documents and produced six stent findings. A patient's problems do not
+  // disappear because today's note is short.
+  assert.ok(q.includes('older note'), 'the accumulated problem list, not the most recent note alone');
   // ⚠️ PHARMACY ITEM NAMES ARE NO LONGER IN THE QUERY (round 7 item 7): a SKU cannot be told from
   // a drug brand without the category join decision 17 dropped, and ABSTACK/SODIUM proved it twice
   assert.ok(!q.includes('CEFAZOLIN') && !q.includes('PARACETAMOL'), 'drug names are the resolver’s job, not retrieval’s');
@@ -1440,26 +1394,29 @@ test('the SKU and identifier stripping actually reaches the built query', () => 
 
 // ── round 5 item 6: topicality that can actually fire ────────────────────────────────────────
 
-test('off-topic is judged per excerpt and fires on a MAJORITY', () => {
+test('off-topic is judged per excerpt, and a quarter of the slate fires it (item 7)', () => {
   const query = 'inguinal hernia repair mesh';
-  const on = { label: 'Inguinal hernia', text: 'mesh repair technique' };
+  const on = { label: 'Inguinal hernia mesh', text: 'mesh repair technique' };
   const off = (n: number) => ({ label: `Pneumonia guidance ${n}`, text: 'ventilator associated pneumonia therapy' });
 
-  // the IP-1286 shape: half the slate unrelated. The all-or-nothing rule scored this false.
+  // the IP-1286 shape: half the slate unrelated. All-or-nothing scored it false, then majority did.
   const half = assessTopicality(query, [on, on, off(1), off(2)]);
   assert.equal(half.offTopicCount, 2);
-  assert.equal(half.offTopic, false, 'exactly half is not a majority');
+  assert.equal(half.offTopic, true, 'half a slate off topic is a signal, not a near miss');
 
   const most = assessTopicality(query, [on, off(1), off(2), off(3)]);
   assert.equal(most.offTopicCount, 3);
-  assert.equal(most.offTopic, true, 'a majority fires the boolean');
+  assert.equal(most.offTopic, true);
   assert.equal(most.total, 4);
 });
 
 test('the count is reported even when the boolean does not fire — that is what makes it checkable', () => {
-  const r = assessTopicality('hernia repair', [
-    { label: 'Hernia', text: 'repair' },
-    { label: 'Staffing', text: 'rotational scheduling models' },
+  // one off topic out of four: counted, but below the two-excerpt minimum, so the flag stays down
+  const r = assessTopicality('hernia repair groin mesh', [
+    { label: 'Inguinal hernia repair', text: 'x' },
+    { label: 'Hernia mesh repair', text: 'x' },
+    { label: 'Groin hernia repair', text: 'x' },
+    { label: 'Staffing rotas', text: 'rotational scheduling models' },
   ]);
   assert.equal(r.offTopic, false);
   assert.equal(r.offTopicCount, 1, 'the unrelated excerpt is still counted');
@@ -1544,7 +1501,9 @@ test('one uncapped finding is enough to make the episode scorable', () => {
 test('finalizeFindings reports which findings were capped, so the status can be computed', () => {
   const map = refs([['cp-d0/diagnostics/1', []]]);
   const res = finalizeFindings([
-    f({ finding_id: 'capped', severity: 'major', checkpoint_ref: 'cp-d0/diagnostics/1' }),
+    // no citation AND no Tier A evidence — the one shape item 10 still caps
+    f({ finding_id: 'capped', severity: 'major', checkpoint_ref: 'cp-d0/diagnostics/1', citation_ids: [],
+        evidence_basis: [{ source_table: 'kx_clinical_template_shift_handovers', source_record_id: 'h1', source_timestamp: null }] }),
   ], map, [], 0, SOURCES, NORMATIVE);
   assert.ok(res.capped_finding_ids.has('capped'));
   assert.equal(scoringStatusFor({
@@ -1757,4 +1716,132 @@ test('digest: it is materially smaller than the full render it replaces', () => 
   assert.equal(digest.ungroupedCount, 21);
   assert.ok(digest.text.length * 4 < full.length,
     `the digest (${digest.text.length}) is a small fraction of the full render (${full.length})`);
+});
+
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+// ROUND 14 ITEMS 1, 2b AND 4 — BILLING, THE MISSING NOTE, AND SUBJECT GROUPING
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+
+const billingBasis = [{ source_table: 'kx_billing_records', source_record_id: 'b1', source_timestamp: null }];
+const noteBasis = [{ source_table: 'kx_clinical_template_progress_reports', source_record_id: 'n1', source_timestamp: null }];
+const evt = (o: Partial<EpisodeEvent> & { event_id: string }): EpisodeEvent => ({
+  occurred_at: '2026-08-02T04:00:00.000Z', day_index: 0, event_type: 'note', summary: '', detail: {},
+  author_name: null, author_role: null, responsible_clinician_id: null,
+  provenance: { source_table: 'kx_clinical_template_progress_reports', source_record_id: o.event_id, source_timestamp: null },
+  evidence_tier: 'A', ...o,
+});
+
+test('ITEM 1: a billing-only commission on an uncorroborated day is held to minor, with the caveat', () => {
+  // a1-F15 on IPNO-416: a 15-line discharge-morning pharmacy batch — syringes, an enema,
+  // nebulisers, thiamine — read as "possible septic shock with arrhythmia", four hours before a
+  // normal discharge.
+  const f15 = f({
+    finding_id: 'a1-F15', finding_type: 'commission', severity: 'major', verdict: 'divergent',
+    day_index: 3, evidence_basis: billingBasis, citation_ids: [4021],
+  });
+  const r = applyBillingOnlyCap(f15, [evt({ event_id: 'n0', day_index: 0 })]);
+  assert.equal(r.capped, true);
+  assert.equal(r.finding.severity, 'minor', 'below the ordinary moderate ceiling');
+  assert.match(r.finding.statement, /Billing records dispensing, not administration/,
+    'the caveat is in the statement a reader sees, not only in the arithmetic');
+});
+
+test('ITEM 1: a note on that day — any note — lifts the billing ceiling', () => {
+  const f15 = f({ finding_id: 'x', finding_type: 'commission', severity: 'major', day_index: 3, evidence_basis: billingBasis });
+  assert.equal(applyBillingOnlyCap(f15, [evt({ event_id: 'n3', day_index: 3 })]).capped, false,
+    'code asks only whether a clinician wrote anything to check the claim against — never whether it supports it');
+  assert.equal(notesOnDay([evt({ event_id: 'n3', day_index: 3 })], 3), true);
+  assert.equal(notesOnDay([evt({ event_id: 'n0', day_index: 0 })], 3), false);
+});
+
+test('ITEM 1: mixed evidence is not billing-only, and an omission is not a commission', () => {
+  const mixed = f({ finding_id: 'm', finding_type: 'commission', severity: 'major', day_index: 3,
+    evidence_basis: [...billingBasis, ...noteBasis] });
+  assert.equal(applyBillingOnlyCap(mixed, []).capped, false, 'the note is real evidence');
+  const omission = f({ finding_id: 'o', finding_type: 'omission', severity: 'major', day_index: 3, evidence_basis: billingBasis });
+  assert.equal(applyBillingOnlyCap(omission, []).capped, false,
+    'an ABSENCE of billing is a different claim from a narrative built on billing');
+});
+
+test('ITEM 1: the billing ceiling is not lifted by a citation — order of the two caps', () => {
+  const cited = f({ finding_id: 'c', finding_type: 'commission', severity: 'major', verdict: 'divergent',
+    day_index: 3, evidence_basis: billingBasis, citation_ids: [4021] });
+  const res = finalizeFindings([cited], new Map(), [evt({ event_id: 'n0', day_index: 0 })], 0, SOURCES, NORMATIVE);
+  assert.equal(res.findings[0].severity, 'minor',
+    'a guideline saying the drug should be given does not turn a dispensing line into an administration record');
+  assert.equal(res.n_billing_only_capped, 1);
+});
+
+test('ITEM 2b: no progress note on the discharge day is raised by CODE, as a major finding', () => {
+  const events = [
+    evt({ event_id: 'n0', day_index: 0 }), evt({ event_id: 'n1', day_index: 1 }),
+    evt({ event_id: 'disch', day_index: 3, event_type: 'discharge' }),
+  ];
+  const finding = missingDischargeDayNote(events, 3);
+  assert.ok(finding, 'nothing expected it, so nothing else could have found it');
+  assert.equal(finding!.severity, 'major');
+  assert.equal(finding!.domain, 'documentation');
+  assert.equal(finding!.verdict, 'divergent');
+  assert.equal(finding!.day_index, 3);
+  assert.equal(finding!.evidence_tier, 'A');
+  assert.ok(finding!.evidence_basis.length, 'it cites a real note from another day — the table was in use');
+  // and item 10 lets it keep major: Tier A evidence, no citation needed
+  assert.equal(applySeverityCap(finding!).capped, false);
+});
+
+test('ITEM 2b: a note ON the discharge day means no finding; a handover is not a progress note', () => {
+  const base = [evt({ event_id: 'n0', day_index: 0 }), evt({ event_id: 'disch', day_index: 2, event_type: 'discharge' })];
+  assert.equal(missingDischargeDayNote([...base, evt({ event_id: 'n2', day_index: 2 })], 2), null);
+  const handoverOnly = [...base, evt({ event_id: 'h2', day_index: 2, event_type: 'handover' })];
+  assert.ok(missingDischargeDayNote(handoverOnly, 2), 'a nursing handover is not the entry a discharge decision rests on');
+});
+
+test('ITEM 2b: a same-day admission and discharge raises nothing', () => {
+  const events = [evt({ event_id: 'disch', day_index: 0, event_type: 'discharge' })];
+  assert.equal(missingDischargeDayNote(events, 0), null, 'a LOS-0 stay is a different kind of episode');
+});
+
+test('ITEM 4: the six stent findings become one class — subject, not term list', () => {
+  // The real IPNO-416 wordings, verbatim from the stored checkpoints.
+  const wordings = [
+    'Stent patency and complications (flank pain, fever, sepsis signs)',
+    'Stent-related symptoms (dysuria, urgency, frequency, gross hematuria) and signs of stent migration',
+    'Stent function and complications (flank pain, hematuria, fever, signs of obstruction or migration)',
+  ];
+  const subjects = new Set(wordings.map((item) => subjectWords(item).join('+')));
+  assert.equal(subjects.size, 1, 'three phrasings, one subject');
+  assert.equal([...subjects][0], 'stent');
+});
+
+test('ITEM 4: a purpose clause is not part of the subject', () => {
+  const a = subjectWords('Serum creatinine and electrolytes (K, Na) to assess acute-on-chronic kidney function');
+  const b = subjectWords('Renal function test (creatinine, urea, electrolytes including potassium) to assess trend');
+  assert.deepEqual(a, b, 'the two wordings the digest could not merge in round 13');
+});
+
+test('ITEM 4: qualifiers do not split a class, but a different subject still does', () => {
+  assert.deepEqual(subjectWords('Repeat complete blood count'), subjectWords('Complete blood count'),
+    'whether it is a repeat is the day window’s business, not the subject’s');
+  assert.notDeepEqual(subjectWords('serum creatinine'), subjectWords('blood culture'));
+});
+
+test('ITEM 4: an escalation trigger groups on the trigger, not on the action it names', () => {
+  const a = subjectWords('Severe flank pain or gross hematuria → Urgent urology review');
+  const b = subjectWords('Severe flank pain or gross hematuria → CT imaging and nephrology referral');
+  assert.deepEqual(a, b, 'the same trigger is the same expectation whoever it routes to');
+});
+
+test('ITEM 4: text with no recognised concept falls back to its own words and groups only with itself', () => {
+  const odd = subjectWords('bespoke unclassifiable instruction');
+  assert.ok(odd.length > 0);
+  assert.notDeepEqual(odd, subjectWords('another bespoke instruction'));
+});
+
+test('ITEM 4: every canonical concept is reachable as a word in its own right', () => {
+  // The defect that made the first version of this key useless: `stent` was a VALUE of the synonym
+  // map and not a KEY, so the word "stent" itself was not recognised as a concept.
+  for (const concept of SUBJECT_CONCEPTS) {
+    assert.deepEqual(subjectWords(concept), [concept], `"${concept}" canonicalises to itself`);
+  }
 });

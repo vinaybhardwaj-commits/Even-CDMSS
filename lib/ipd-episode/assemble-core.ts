@@ -278,6 +278,30 @@ export const NOTE_SUMMARY_EXCLUDED_NAMES = [
 ] as const;
 
 /**
+ * ROUND 14 ITEM 9 — A FIELD WHOSE NAME SAYS IT HOLDS A PERSON.
+ *
+ * `kx_clinical_template_ot_notes` carries a component named `ot_asst`, and IPNO-416's OT note put
+ * A THEATRE ASSISTANT'S FULL NAME in it. That reached `real_course`, which is stored in a table whose own column says
+ * `de_identified = TRUE`. Theatre staff, not the patient — but a name is a name, the claim on the
+ * row was false while it was there, and this repository has had PHI history rewritten once already.
+ *
+ * ⚠️ MATCHED ON THE FIELD NAME, NOT ON THE VALUE, and that is the lesson from the retrieval
+ * whitelist directly above: a rule that inspects VALUES can only remove the names someone has
+ * already seen. `ot_asst` was not on any list — nothing had noticed it — but its NAME says plainly
+ * what it holds, and so will the next one.
+ *
+ * The surgeon and the note's author are NOT lost by this: both are read from real columns
+ * (`surgeon`, `finalized_by_username`) into the event's attribution fields, where §5 needs them
+ * and where the UI joins names at render time. This removes a person from the free-text blob that
+ * gets stored and sent to a model, not from the attribution path.
+ */
+const PERSON_FIELD_NAME = /(^|[_\s-])(asst|assistant|assisted|surgeon|anaesthetist|anesthetist|anaesthesiologist|anesthesiologist|nurse|nursing_staff|doctor|dr|consultant|physician|technician|scrub|staff|attendant|performed|signed|witness|informant|relative|attendee|by|name)([_\s-]|$)/i;
+
+export function isPersonFieldName(name: string): boolean {
+  return PERSON_FIELD_NAME.test(String(name ?? ''));
+}
+
+/**
  * ⚠️ THE CLINICAL-NARRATIVE WHITELIST (item 7, third attempt). The first two attempts STRIPPED a
  * blob: take the whole concatenated note and remove identifiers, then names, then non-words. Each
  * pass removed what it had been told about and let the next thing through — `ABSTACK`, `SODIUM`,
@@ -326,6 +350,8 @@ export function noteSummaryFrom(entries: ComponentEntry[], deid: (t: string) => 
   const parts: string[] = [];
   for (const e of entries) {
     if (skip.has(e.name)) continue;
+    // ITEM 9: a field whose NAME says it holds a person does not enter a de-identified table.
+    if (isPersonFieldName(e.name)) continue;
     const v = e.valueString.trim();
     if (!v) continue;
     parts.push(`${e.name}: ${v}`);
@@ -509,6 +535,10 @@ export function buildOrderEvents(rows: BillingOrderRow[], admissionIso: string):
  */
 const PROMPT_ROLLUP_SERVICE = /pharmacy|consumable|surgical|implant|consignment|fmcg|general|room|bed|nursing|laundry|kit|linen|attendant/i;
 
+/** How many of a day's distinct postings are enumerated before the rest are counted in one phrase.
+ *  Bounded so the batch structure is visible without the roll-up growing back into a per-line list. */
+export const MAX_POSTINGS_RENDERED = 6;
+
 function rollupServiceType(e: EpisodeEvent): boolean {
   if (e.event_type !== 'order') return false;
   const st = String((e.detail as Record<string, unknown>)?.service_type ?? '');
@@ -529,19 +559,49 @@ export function summariseEventsForPrompt(events: EpisodeEvent[]): EpisodeEvent[]
     else kept.push(e);
   }
   for (const [day, group] of byDay) {
-    const names = Array.from(new Set(group
-      .map((e) => String((e.detail as Record<string, unknown>)?.ordered_item_name
-        ?? (e.detail as Record<string, unknown>)?.service_item_name ?? '').trim())
-      .filter(Boolean)));
+    // ROUND 14 ITEM 1 — A SAME-TIMESTAMP BATCH IS ONE POSTING, AND MUST LOOK LIKE ONE.
+    //
+    // On IPNO-416 the diff pass read a 15-line pharmacy batch posted on the discharge morning —
+    // which also held syringes, an enema, nebulisers and thiamine — as "possible septic shock with
+    // arrhythmia", in a patient who went home normally four hours later. The lines were already
+    // collapsed to one event, but their names were rendered as a flat comma list, and a flat list
+    // of drugs reads like a sequence of decisions. It was neither: it was one clerk posting one
+    // batch at one instant.
+    //
+    // The postings are therefore kept as postings — grouped by exact timestamp, counted, and
+    // labelled — inside the SAME single event, so the prompt learns the batch structure without
+    // the event count growing back into the volume the day roll-up exists to bound.
+    const byPosting = new Map<string, EpisodeEvent[]>();
+    for (const e of group) {
+      const key = e.occurred_at ?? '(no timestamp)';
+      byPosting.set(key, [...(byPosting.get(key) ?? []), e]);
+    }
+    const nameOf = (e: EpisodeEvent) => String((e.detail as Record<string, unknown>)?.ordered_item_name
+      ?? (e.detail as Record<string, unknown>)?.service_item_name ?? '').trim();
+    const names = Array.from(new Set(group.map(nameOf).filter(Boolean)));
     const first = group.map((e) => e.occurred_at).filter(Boolean).sort()[0] ?? null;
+    const postings = [...byPosting.entries()].sort(([a], [b]) => a.localeCompare(b));
+    const rendered = postings.slice(0, MAX_POSTINGS_RENDERED).map(([ts, lines]) => {
+      const items = Array.from(new Set(lines.map(nameOf).filter(Boolean)));
+      return `posted together at ${ts} — ${lines.length} line${lines.length === 1 ? '' : 's'}`
+        + (items.length ? `: ${items.slice(0, 40).join(', ')}` : '');
+    });
+    const spill = postings.length - rendered.length;
     kept.push({
       event_id: `orders-day-${day}`,
       occurred_at: first,
       day_index: day,
       event_type: 'order',
-      summary: `${group.length} pharmacy/consumable billing line${group.length === 1 ? '' : 's'} on day ${day}`
-        + (names.length ? `: ${names.slice(0, 60).join(', ')}` : ''),
-      detail: { rolled_up_for_prompt: true, line_count: group.length, distinct_items: names.length },
+      summary: `${group.length} pharmacy/consumable BILLING line${group.length === 1 ? '' : 's'} on day ${day}, `
+        + `in ${postings.length} posting${postings.length === 1 ? '' : 's'}. `
+        + 'Each posting is ONE billing entry made at one moment — a batch, not a sequence of clinical decisions, '
+        + 'and a dispensing record rather than evidence that anything was administered.'
+        + (rendered.length ? ` ${rendered.join(' | ')}` : '')
+        + (spill > 0 ? ` | and ${spill} further posting${spill === 1 ? '' : 's'} on this day` : ''),
+      detail: {
+        rolled_up_for_prompt: true, line_count: group.length, distinct_items: names.length,
+        posting_count: postings.length,
+      },
       author_name: null, author_role: null, responsible_clinician_id: null,
       provenance: { source_table: 'kx_billing_records', source_record_id: `day-${day}-rollup`, source_timestamp: first },
       evidence_tier: 'A',

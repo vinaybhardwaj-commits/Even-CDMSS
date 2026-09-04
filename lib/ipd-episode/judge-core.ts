@@ -499,16 +499,58 @@ export function capSeverityAt(severity: Severity, ceiling: Severity): Severity {
   return order.indexOf(severity) > order.indexOf(ceiling) ? ceiling : severity;
 }
 
-export function applyUncitedCap(f: EpisodeFinding, entryRefs: Map<string, CheckpointEntryRef>): { finding: EpisodeFinding; capped: boolean } {
-  if (f.pass !== 'divergence') return { finding: f, capped: false };
-  const entry = f.checkpoint_ref ? entryRefs.get(f.checkpoint_ref) : undefined;
-  const entryGrounded = !!entry && entry.citation_ids.length > 0;
-  const findingGrounded = f.citation_ids.length > 0;
-  if (entryGrounded && findingGrounded) return { finding: f, capped: false };
+/**
+ * ROUND 14 ITEM 10 — ONE CAP, NARROWED, AND WHY THE OLD PAIR HAD TO GO (V, 2026-09-03; amends the
+ * round 6 item 1 and round 4 item 8 rules).
+ *
+ * ⚠️ ON IPNO-416 ALL 58 MAJOR FINDINGS WERE CAPPED. Two caps stacked on the same ceiling — the
+ * uncited-expectation cap took 19, the literature-only cap took 39 — and between them the `major`
+ * grade became unreachable. That is not a strict scale, it is a broken one: with the 8-point term
+ * dead, `divergence_index` degenerates to 100 − 4 × (divergent count), severity stops carrying any
+ * information, and any duplication defect maps one-for-one onto the headline number. The engine
+ * had, in effect, stopped measuring severity while continuing to report it.
+ *
+ * And it was capping the RIGHT findings hardest. The two strongest things this audit found on that
+ * episode — no stent assessment in any of seven progress notes, and no note at all on the
+ * discharge day — rest on the record itself and cite no guideline, because no guideline is needed
+ * to say a note is missing. Both were capped to moderate for want of a citation.
+ *
+ * THE RULE NOW: a finding keeps the severity proposed while the checkpoint was still blinded —
+ * `major` included — if it has EITHER of two kinds of support:
+ *
+ *   · AT LEAST ONE CITATION. Literature counts. A passage that says what is known is support for
+ *     an expectation; the provenance is still classified and stored (`citation_provenance`), so a
+ *     reader can tell normative from literature, but it no longer silences the finding.
+ *   · CORROBORATING TIER A EVIDENCE. An `evidence_basis` entry naming a Tier A source — the
+ *     admission record, progress notes, orders, labs, the discharge summary — is the record
+ *     speaking for itself, which is the strongest thing this pipeline has.
+ *
+ * Only a finding with NEITHER is capped to moderate: it asserts serious harm on no citation and no
+ * record. `severity_before_cap`, `capped` and `capped_count` are unchanged and still carry the
+ * audit trail.
+ */
+export function findingHasTierAEvidence(f: EpisodeFinding): boolean {
+  return f.evidence_basis.some((b) => tierForTable(b.source_table) === 'A');
+}
+
+export function applySeverityCap(f: EpisodeFinding): { finding: EpisodeFinding; capped: boolean } {
+  if (f.citation_ids.length > 0 || findingHasTierAEvidence(f)) return { finding: f, capped: false };
   const severity = capSeverityAt(f.severity, CAP_SEVERITY_CEILING);
   if (severity === f.severity) return { finding: f, capped: false };
   // VERDICT UNTOUCHED, deliberately. See the note above.
   return { finding: { ...f, severity }, capped: true };
+}
+
+/**
+ * @deprecated Round 14 item 10 folded both caps into `applySeverityCap`. Kept only so the
+ * uncited-ENTRY question stays answerable for the report: it says whether the expectation a
+ * finding was measured against was itself cited, which is still worth counting even though it no
+ * longer caps anything on its own.
+ */
+export function entryWasUncited(f: EpisodeFinding, entryRefs: Map<string, CheckpointEntryRef>): boolean {
+  if (f.pass !== 'divergence') return false;
+  const entry = f.checkpoint_ref ? entryRefs.get(f.checkpoint_ref) : undefined;
+  return !entry || entry.citation_ids.length === 0;
 }
 
 /**
@@ -643,6 +685,122 @@ export function applyLiteratureCap(f: EpisodeFinding): { finding: EpisodeFinding
   const severity = capSeverityAt(f.severity, CAP_SEVERITY_CEILING);
   if (severity === f.severity) return { finding: f, capped: false };
   return { finding: { ...f, severity }, capped: true };
+}
+
+/**
+ * ROUND 14 ITEM 1 — BILLING RECORDS DISPENSING, NOT ADMINISTRATION, AND CODE MUST HOLD THE LINE.
+ *
+ * IPNO-416's finding a1-F15 read a 15-line pharmacy batch posted on the discharge morning — a
+ * batch that also contained syringes, an enema, nebulisers and thiamine — as "possible septic
+ * shock with arrhythmia". The patient went home normally four hours later. Nothing in the notes of
+ * that day suggested deterioration; the entire claim was built on billing lines.
+ *
+ * A billing row says a pharmacy issued an item against this admission. It does not say the item
+ * reached the patient, when, at what dose, or whether it was returned. Building a clinical
+ * narrative out of dispensing lines is the single richest source of invented findings this
+ * substrate offers, because the lines are numerous, precise-looking and completely silent about
+ * the thing the narrative asserts.
+ *
+ * THE RULE: a `commission` finding whose evidence is BILLING ONLY, on a day whose progress notes
+ * say nothing that corroborates it, cannot exceed `minor`, and it must carry the caveat in its own
+ * statement — so the ceiling is visible to a reader, not just to the arithmetic.
+ *
+ * CORROBORATION IS DELIBERATELY WEAK: any note-class record on that day is enough. Code is not
+ * being asked whether the note supports the claim — that is a judgement, and this is the layer that
+ * refuses to make judgements. It asks only whether a clinician wrote anything that day against
+ * which the claim could have been checked. If nobody did, the claim stands on dispensing alone.
+ */
+export const BILLING_TABLE = 'kx_billing_records';
+export const BILLING_ONLY_CEILING: Severity = 'minor';
+
+export const BILLING_ONLY_CAVEAT =
+  'Billing records dispensing, not administration: this rests only on pharmacy billing lines, '
+  + 'with nothing in that day’s notes to corroborate it.';
+
+/** Does any note-class event exist on this day? The weak corroboration test described above. */
+export function notesOnDay(events: readonly EpisodeEvent[], dayIndex: number): boolean {
+  return events.some((e) => e.day_index === dayIndex
+    && (e.event_type === 'note' || e.event_type === 'initial_assessment'
+      || e.event_type === 'handover' || e.event_type === 'ot_note'));
+}
+
+export function applyBillingOnlyCap(
+  f: EpisodeFinding, events: readonly EpisodeEvent[],
+): { finding: EpisodeFinding; capped: boolean } {
+  if (f.finding_type !== 'commission') return { finding: f, capped: false };
+  if (!f.evidence_basis.length) return { finding: f, capped: false };
+  const billingOnly = f.evidence_basis.every((b) => b.source_table === BILLING_TABLE);
+  if (!billingOnly) return { finding: f, capped: false };
+  if (notesOnDay(events, f.day_index)) return { finding: f, capped: false };
+  const severity = capSeverityAt(f.severity, BILLING_ONLY_CEILING);
+  const statement = f.statement.includes(BILLING_ONLY_CAVEAT)
+    ? f.statement
+    : `${f.statement} ${BILLING_ONLY_CAVEAT}`;
+  return { finding: { ...f, severity, statement }, capped: severity !== f.severity };
+}
+
+/**
+ * ROUND 14 ITEM 2, SECOND HALF — THE FINDING THE ENGINE MISSED.
+ *
+ * Day-scoping class presence (resolve-core) is right, but on its own it LOSES something: the day a
+ * class went silent stops producing a divergence and starts producing an `unassessable`. On
+ * IPNO-416 the most consequential documentation gap in the episode — no progress note at all on
+ * the discharge day — was never reported by anything, because no expectation happened to name it
+ * and the resolver had no way to raise a finding nobody expected.
+ *
+ * So code raises it directly. This is not a judgement and needs no model: either a progress note
+ * exists on the discharge day or it does not, and a discharge day with none means the decision to
+ * send the patient home was taken without a same-day clinical entry.
+ *
+ * It is a `documentation` finding, so §5 attributes it to the AUTHOR — and there being no author
+ * is precisely the point, so it stays unattributed. Tier A, because the absence is established
+ * against the progress-note table itself, which is what lets it reach `major` under item 10.
+ */
+export const MISSING_DISCHARGE_NOTE_ID = 'd-1';
+
+export function missingDischargeDayNote(
+  events: readonly EpisodeEvent[], losDays: number | null,
+): EpisodeFinding | null {
+  const dischargeDay = events.find(isDischargeEvent)?.day_index
+    ?? (typeof losDays === 'number' ? losDays : null);
+  if (dischargeDay == null) return null;
+  // Only PROGRESS NOTES count here. A handover is a nursing record and an OT note is a procedure
+  // record; neither is the clinical entry a discharge decision should rest on.
+  const hasNote = events.some((e) => e.event_type === 'note' && e.day_index === dischargeDay);
+  if (hasNote) return null;
+  // A same-day admission and discharge has no "discharge day" gap worth reporting: day 0 carries
+  // the admission record itself, and a LOS-0 stay is a different kind of episode.
+  if (dischargeDay === 0) return null;
+  const anyNote = events.find((e) => e.event_type === 'note');
+  return {
+    finding_id: MISSING_DISCHARGE_NOTE_ID,
+    pass: 'divergence',
+    finding_type: 'omission',
+    verdict: 'divergent',
+    domain: 'documentation',
+    day_index: dischargeDay,
+    checkpoint_ref: null,
+    statement: `No progress note was written on the discharge day (day ${dischargeDay}). `
+      + 'The decision to discharge was recorded without a same-day clinical entry to support it.',
+    severity: 'major',
+    evidence_tier: 'A',
+    // The absence is established AGAINST the progress-note table. Citing a real note from another
+    // day is what makes the claim checkable: this table was in use, and it has nothing that day.
+    evidence_basis: anyNote
+      ? [{
+          source_table: anyNote.provenance.source_table,
+          source_record_id: anyNote.provenance.source_record_id,
+          source_timestamp: anyNote.provenance.source_timestamp,
+        }]
+      : [],
+    author_name: null, author_role: null, responsible_clinician_id: null,
+    lvc_category: null,
+    citation_ids: [], citation_provenance: null,
+    verdict_before_cap: 'divergent', severity_before_cap: 'major', capped: false,
+    resolution: null, matcher_kind: null, matcher_terms: null, matched_term: null,
+    confound: null,
+    group_size: 1, grouped_refs: [], grouped_days: [],
+  };
 }
 
 // ── attribution (PRD §5) ─────────────────────────────────────────────────────────────────────
@@ -806,6 +964,10 @@ export interface FinalizeResult {
   divergence_index: number;
   n_tier_c_rewritten: number;
   n_uncited_capped: number;
+  /** Findings measured against an expectation that carried no citation (report-only since item 10). */
+  n_uncited_entries: number;
+  /** Commission findings held to `minor` because they stand on billing alone (item 1). */
+  n_billing_only_capped: number;
   n_fidelity_normalized: number;
   /** Findings whose severity was cut from major because only literature backed them. */
   n_literature_capped: number;
@@ -832,23 +994,32 @@ export function finalizeFindings(
   let unassessableRejected = 0;
   let capped = 0;
   let litCapped = 0;
+  let uncitedEntries = 0;
+  let billingCapped = 0;
   const capped_finding_ids = new Set<string>();
   const provenance_counts: Record<string, number> = { normative: 0, literature: 0, mixed: 0, none: 0 };
   const findings = kept.map((f0) => {
     // Cap BEFORE the Tier C rewrite: the cap can move a divergent finding to context_dependent,
     // at which point the Tier C rule no longer applies to it — which is correct, since the rule
     // exists to stop an unsupported DIVERGENT claim, and a capped finding no longer makes one.
-    const capRes = applyUncitedCap(f0, entryRefs);
+    // ITEM 10: ONE cap, and it asks for citation OR Tier A record evidence — not both, and not a
+    // guideline specifically. The uncited-ENTRY count is still taken, for the report, but it no
+    // longer caps on its own.
+    if (entryWasUncited(f0, entryRefs)) uncitedEntries++;
+    // ITEM 1 FIRST, and the order matters: the billing ceiling is `minor`, below the severity
+    // cap's `moderate`, so applying it first means a billing-only claim cannot be lifted back up
+    // by having a citation. A dispensing line is not made into an administration record by a
+    // guideline that says the drug should have been given.
+    const billRes = applyBillingOnlyCap(f0, events);
+    if (billRes.capped) { billingCapped++; capped_finding_ids.add(f0.finding_id); }
+    const capRes = applySeverityCap(billRes.finding);
     if (capRes.capped) { capped++; capped_finding_ids.add(f0.finding_id); }
-    // Provenance is classified BEFORE the literature cap, because the cap reads it.
     const provenance = classifyCitationProvenance(capRes.finding.citation_ids, sourceById, normativeSources);
     const withProv: EpisodeFinding = { ...capRes.finding, citation_provenance: provenance };
     provenance_counts[provenance ?? 'none']++;
+    if (provenance === 'literature') litCapped++;
 
-    const litRes = applyLiteratureCap(withProv);
-    if (litRes.capped) { litCapped++; capped_finding_ids.add(withProv.finding_id); }
-
-    const tierRes = applyTierCRule(litRes.finding);
+    const tierRes = applyTierCRule(withProv);
     if (tierRes.rewritten) rewritten++;
 
     // §4.2 in the other direction: `unassessable` must be earned, not asserted (item 4).
@@ -861,7 +1032,7 @@ export function finalizeFindings(
       ...unRes.finding,
       verdict_before_cap: f0.verdict,
       severity_before_cap: f0.severity,
-      capped: capRes.capped || litRes.capped,
+      capped: capRes.capped || billRes.capped,
     };
     return attachAttribution(stamped, events);
   });
@@ -876,7 +1047,12 @@ export function finalizeFindings(
     n_tier_c_rewritten: rewritten,
     n_uncited_capped: capped,
     n_fidelity_normalized: normalized,
+    // No longer a CAP count: how many findings stand only on literature, and how many were
+    // measured against an expectation that carried no citation. Both are still worth reporting;
+    // neither silences a finding any more (item 10).
     n_literature_capped: litCapped,
+    n_uncited_entries: uncitedEntries,
+    n_billing_only_capped: billingCapped,
     n_unassessable_rejected: unassessableRejected,
     n_judged_omissions_dropped: omissionDrop.dropped,
     capped_finding_ids,
@@ -1037,11 +1213,153 @@ const TIER_RANK: Record<EvidenceTier, number> = { A: 0, B: 1, C: 2 };
  *
  * Grouping never drops a member. Every ref, every day and every citation survives on the group.
  */
+/**
+ * ROUND 14 ITEM 4 — THE SUBJECT OF AN EXPECTATION, NOT ITS SEARCH TERMS.
+ *
+ * ⚠️ THE TERM LIST WAS THE WRONG KEY, and IPNO-416 showed it twice over. Six stent-monitoring
+ * expectations across four days stayed six separate findings because each day's checkpoint wrote a
+ * slightly different term list for the same thing. The round-13 digest hit the same wall from the
+ * other side: 111 entries deduplicated to 110, because the model rewords an expectation every time
+ * it restates it ("Serum creatinine and electrolytes (K, Na) to assess acute-on-chronic kidney
+ * function" one day, "Renal function test (creatinine, urea, electrolytes including potassium) to
+ * assess trend" the next). Two keys, one defect: both asked whether the WORDS matched.
+ *
+ * The subject is what survives when the purpose clause and the qualifiers are removed. Three
+ * deterministic steps, in this order:
+ *
+ *   1. CUT THE PURPOSE CLAUSE. Everything from "to assess / to evaluate / to guide / to monitor /
+ *      to detect / to rule out / for …" onward states WHY, not WHAT. Two expectations that differ
+ *      only in their reason are one expectation.
+ *   2. DROP QUALIFIERS AND FILLER — "repeat", "serial", "daily", "consider", "if indicated",
+ *      parentheticals, and a stopword list. A repeat CBC and a CBC are the same subject; whether
+ *      it is a repeat is a matter for the day window, which item 3 now handles.
+ *   3. CANONICALISE what remains through a small synonym map, then take the SET of surviving
+ *      words. A set, so word order cannot split a class; canonicalised, so "kft" and "renal
+ *      function test" land together.
+ *
+ * The matcher's terms are folded in as canonical words too, which is what pulls the six stent
+ * findings together: whatever each day's phrasing, they all reduce to {stent}.
+ *
+ * `resolution` and `verdict` STAY IN THE KEY, unchanged from round 12 and for the same reason: a
+ * day the thing happened must never merge into a group saying it did not.
+ */
+const PURPOSE_CLAUSE = /\b(to (assess|evaluate|guide|monitor|detect|exclude|rule out|confirm|check|determine|track|follow)|for (assessment|evaluation|monitoring|surveillance)|in order to)\b.*$/i;
+
+const SUBJECT_STOPWORDS = new Set([
+  'a', 'an', 'and', 'the', 'of', 'or', 'with', 'without', 'per', 'as', 'at', 'by', 'on', 'in',
+  'is', 'be', 'should', 'must', 'may', 'if', 'any', 'all', 'both', 'each', 'this', 'that',
+  'repeat', 'repeated', 'serial', 'daily', 'hourly', 'routine', 'regular', 'ongoing', 'continue',
+  'continued', 'consider', 'indicated', 'required', 'needed', 'appropriate', 'adequate', 'new',
+  'further', 'additional', 'follow', 'up', 'documented', 'documentation', 'document', 'record',
+  'recorded', 'obtain', 'obtained', 'perform', 'performed', 'check', 'checked', 'ensure', 'review',
+  'reviewed', 'assessment', 'assessed', 'level', 'levels', 'status', 'test', 'tests', 'study',
+  'studies', 'value', 'values', 'result', 'results', 'patient', 'patients', 'within', 'hours',
+  'hour', 'day', 'days', 'post', 'pre', 'including', 'include', 'includes', 'such',
+]);
+
+/**
+ * Words that mean the same subject. Small and deliberate — not a medical ontology.
+ *
+ * ⚠️ EVERY CANONICAL VALUE IS ALSO A KEY, and that is enforced below rather than typed out. The
+ * first version of this map omitted `stent: 'stent'`, so the word "stent" itself was not
+ * recognised as a concept and the three stent-monitoring expectations fell back to their full word
+ * sets — the exact failure the map exists to fix, reintroduced by a gap a reader cannot see.
+ */
+const SUBJECT_SYNONYM_SEED: Record<string, string> = {
+  kft: 'renalfunction', rft: 'renalfunction', renal: 'renalfunction', kidney: 'renalfunction',
+  creatinine: 'renalfunction', urea: 'renalfunction', bun: 'renalfunction',
+  lft: 'liverfunction', liver: 'liverfunction', hepatic: 'liverfunction',
+  cbc: 'bloodcount', haemogram: 'bloodcount', hemogram: 'bloodcount', haemoglobin: 'bloodcount',
+  hemoglobin: 'bloodcount', hb: 'bloodcount', platelet: 'bloodcount', platelets: 'bloodcount',
+  // Electrolytes fold into renal function DELIBERATELY: they are reported in the same panel
+  // (see PANEL_CONTENTS' renal function test), ordered together, and monitored for the same
+  // reason. Keeping them apart split "serum creatinine and electrolytes" from "renal function
+  // test (creatinine, urea, electrolytes)" — the two round-13 wordings the digest could not merge.
+  electrolyte: 'renalfunction', electrolytes: 'renalfunction', sodium: 'renalfunction',
+  potassium: 'renalfunction', na: 'renalfunction', chloride: 'renalfunction',
+  hyperkalemia: 'renalfunction', hyperkalaemia: 'renalfunction',
+  dj: 'stent', stents: 'stent', stenting: 'stent', ureteric: 'stent', ureteral: 'stent',
+  abg: 'bloodgas', gas: 'bloodgas', gases: 'bloodgas',
+  antibiotic: 'antibiotics', antimicrobial: 'antibiotics', abx: 'antibiotics',
+  dialysis: 'dialysis', haemodialysis: 'dialysis', hemodialysis: 'dialysis', hd: 'dialysis',
+  culture: 'culture', cultures: 'culture', sensitivity: 'culture',
+  urine: 'urine', urinary: 'urine', urinalysis: 'urine',
+  vte: 'vte', thromboprophylaxis: 'vte', prophylaxis: 'vte', enoxaparin: 'vte', heparin: 'vte',
+  glucose: 'glycaemia', sugar: 'glycaemia', glycaemic: 'glycaemia', glycemic: 'glycaemia',
+  bp: 'bloodpressure', pressure: 'bloodpressure',
+  output: 'urineoutput', fluid: 'fluidbalance', balance: 'fluidbalance', euvolemia: 'fluidbalance',
+  pain: 'pain', analgesia: 'pain', analgesic: 'pain',
+  nutrition: 'nutrition', diet: 'nutrition', feeding: 'nutrition',
+};
+
+/** The seed plus an identity entry for every canonical value it names. */
+const SUBJECT_SYNONYMS: Record<string, string> = (() => {
+  const m: Record<string, string> = { ...SUBJECT_SYNONYM_SEED };
+  for (const v of Object.values(SUBJECT_SYNONYM_SEED)) m[v] = v;
+  return m;
+})();
+
+/** The canonical concepts themselves — what `subjectWords` may return as a concept. */
+export const SUBJECT_CONCEPTS: ReadonlySet<string> = new Set(Object.values(SUBJECT_SYNONYM_SEED));
+
+/**
+ * The canonical subject of a piece of expectation text: the CONCEPTS it is about, and nothing else.
+ *
+ * ⚠️ THE SET OF ALL SURVIVING WORDS IS THE WRONG KEY, and measuring it on IPNO-416 proved it —
+ * grouping by full word-set produced 70 classes from 79 entries, WORSE than the 68 the term list
+ * gave. Exact set equality is as brittle as an exact term list; it just fails on different words.
+ * The three stent-monitoring expectations differed only in which symptoms each day happened to
+ * list, and that was enough to keep them apart:
+ *
+ *   "Stent patency and complications (flank pain, fever, sepsis signs)"
+ *   "Stent-related symptoms (dysuria, urgency, frequency, gross hematuria) and signs of migration"
+ *   "Stent function and complications (flank pain, hematuria, fever, signs of obstruction)"
+ *
+ * All three are about ONE thing: the stent. So only words that canonicalise to a known concept
+ * count toward the key; the incidental vocabulary around them is dropped. Text with no recognised
+ * concept falls back to its own normalised words and can then only group with text like itself —
+ * conservative, and the same fallback round 12 chose for a matcher-less entry.
+ *
+ * AND FOR AN ESCALATION TRIGGER, THE SUBJECT IS THE TRIGGER. Entries reach here as
+ * "trigger → action"; the action is the response, not the thing being expected, and including it
+ * splits two identical triggers that name different escalation routes.
+ */
+export function subjectWords(text: string): string[] {
+  const trigger = String(text || '').split('→')[0];
+  const cut = trigger.replace(/\([^)]*\)/g, ' ').replace(PURPOSE_CLAUSE, ' ');
+  const concepts = new Set<string>();
+  const plain = new Set<string>();
+  for (const raw of cut.toLowerCase().split(/[^a-z0-9]+/)) {
+    if (!raw || raw.length < 2) continue;
+    if (SUBJECT_STOPWORDS.has(raw)) continue;
+    if (/^\d+$/.test(raw)) continue;
+    const singular = raw.endsWith('s') && raw.length > 3 ? raw.slice(0, -1) : raw;
+    const canonical = SUBJECT_SYNONYMS[raw] ?? SUBJECT_SYNONYMS[singular];
+    if (canonical) concepts.add(canonical); else plain.add(singular);
+  }
+  return concepts.size ? [...concepts].sort() : [...plain].sort();
+}
+
+/** The subject key an expectation groups on: its item text and its matcher terms, canonicalised. */
+export function expectationSubject(entry: ResolvableEntry): string {
+  // The matcher terms are folded in ONLY when the item text yielded no concept of its own —
+  // otherwise a four-term matcher would re-introduce exactly the term-list brittleness this
+  // replaces, by adding a word one day's phrasing happened to include.
+  const fromItem = subjectWords(entry.item);
+  const hasConcept = fromItem.some((w) => SUBJECT_CONCEPTS.has(w));
+  const words = new Set(fromItem);
+  if (!hasConcept) {
+    for (const t of entry.matcher?.terms ?? []) for (const w of subjectWords(t)) words.add(w);
+  }
+  const sorted = [...words].sort();
+  // A subject that canonicalises to nothing falls back to the raw text, which can only ever group
+  // with text identical to itself — the same conservative fallback round 12 used for a missing
+  // matcher. Never group on emptiness.
+  return sorted.length ? sorted.join('+') : `text:${entry.item.trim().toLowerCase()}`;
+}
+
 export function resolverGroupKey(entry: ResolvableEntry, outcome: ResolvedOutcome): string {
-  const matcher = entry.matcher
-    ? `${entry.matcher.kind}:${[...new Set(entry.matcher.terms.map((t) => t.trim().toLowerCase()).filter(Boolean))].sort().join('+')}`
-    : `text:${entry.item.trim().toLowerCase().split(/\s+/).join(' ')}`;
-  return `${entry.section}|${matcher}|${outcome.resolution}|${outcome.verdict}`;
+  return `${entry.section}|${expectationSubject(entry)}|${outcome.resolution}|${outcome.verdict}`;
 }
 
 /**
@@ -1283,8 +1601,16 @@ export interface ExpectationDigest {
   text: string;
 }
 
-const digestKey = (section: string, item: string): string =>
-  `${section}|${item.trim().toLowerCase().split(/\s+/).join(' ')}`;
+/**
+ * ROUND 14 ITEM 4 REACHES THE DIGEST TOO. Round 13 keyed on normalised item text and collapsed
+ * 111 entries to 110 on IP-1483 — no merging at all, because the checkpoint model rewords an
+ * expectation each time it restates it. The digest now uses the SAME canonical subject the
+ * resolver groups on, so the two cannot drift apart and one fix serves both.
+ */
+const digestKey = (section: string, item: string): string => {
+  const words = subjectWords(item);
+  return `${section}|${words.length ? words.join('+') : item.trim().toLowerCase()}`;
+};
 
 const SECTION_HEADINGS: Record<(typeof CHECKPOINT_ENTRY_SECTIONS)[number], string> = {
   diagnostics: 'DIAGNOSTICS', therapeutics: 'THERAPEUTICS',
