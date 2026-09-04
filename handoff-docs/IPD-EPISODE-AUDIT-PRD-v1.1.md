@@ -501,11 +501,18 @@ is arguably worth more on a death than on a discharge; only the sentence changes
 excerpts; IPNO-573 formed 40 expectations on no evidence at all. Fields were added by SAMPLING
 db13, not by guessing at names:
 
-- **3a, initial assessment** (188 rows): `histoyerjfj` (1,070 chars), `risky` (1,156), `vulnerass`
-  (1,929) — narrative wrapped in **HTML tables**, hence a markup stripper; `pamgjdk` (2,042) pain
-  assessment; `loc` a JSON array `["Alert"]`. **`signnur` (14,970 chars) is a base64 PNG signature
-  image** — never whitelisted, and now excluded from note summaries too, where only the 4,000-char
-  cap had been keeping it out of the prompts, by luck rather than design.
+- **3a, initial assessment** (188 rows). Sampling found `histoyerjfj` (1,070 chars), `risky`
+  (1,156), `vulnerass` (1,929) and `pamgjdk` (2,042) — narrative wrapped in **HTML tables** — and
+  `loc`, a JSON array `["Alert"]`. **The four table fields were whitelisted for exactly one run and
+  then removed.** Stripping the tags showed the tables hold FORM SCAFFOLDING, not narrative: *"Sr.
+  No. Categories Yes No 1 Age more than 65 years NO 2 Physically Challanged NO"*. On IPNO-573 that
+  filled 641–1,200 characters of every query from day 1 onward and took off-topic excerpts from 11
+  to **37**. An empty query had been replaced by a worse one. Only `loc` remains — small, clean,
+  and enough to keep the whitelist non-empty for that template so the fallback does not fire on it.
+  The early-day clinical signal comes from the handovers instead, which is what 3b was for.
+  **`signnur` (14,970 chars) is a base64 PNG signature image** — never whitelisted, and now excluded
+  from note summaries too, where only the 4,000-char cap had been keeping it out of the prompts, by
+  luck rather than design.
 - **3b, shift handovers** are a query source at last — the one clinical record present on every day
   of every admission. `nhc16` carries the standing problem list, `nhc13` the consciousness line.
   `nhc05` (an 8,800-char care-checklist table) and `nursing_handover` / `nursing_receiving` (**staff

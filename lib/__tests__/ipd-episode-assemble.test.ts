@@ -15,7 +15,7 @@ import {
   buildOrderEvents, checkpointPlan, collapseSpaces, dayIndexFor, dayStartIso, diffPassEvents,
   episodeLevelEvents, eventsBeforeDayStart, fidelityPassEvents, isoFromEpochMs, losDaysFor,
   noteSummaryFrom, normalizeAuthorName, parseComponentJson, componentValue, tierForTable,
-  queryNarrativeFrom, QUERY_FALLBACK_CAP,
+  queryNarrativeFrom, QUERY_FALLBACK_CAP, stripMarkup,
   type EpisodeEvent,
 } from '../ipd-episode/assemble-core';
 import { templateClinicalTime } from '../ipd-episode/assemble';
@@ -350,18 +350,26 @@ test('source-read: every db13 read is fail-safe — no reader lets a query error
 
 const comp = (name: string, valueString: string) => ({ name, valueString });
 
-test('ITEM 3a: the initial assessment now contributes, with its HTML tables stripped', () => {
-  // Sampled from db13: histoyerjfj / risky / vulnerass are narrative wrapped in HTML tables.
+test('ITEM 3a: the assessment contributes `loc`, and its FORM TABLES stay out', () => {
+  // ⚠️ MEASURED, THEN CUT BACK. histoyerjfj / risky / vulnerass were whitelisted for exactly one
+  // run. Stripping their HTML showed the tables hold form scaffolding, not narrative, and on
+  // IPNO-573 that filled 641-1,200 chars of every query from day 1 and took off-topic excerpts
+  // from 11 to 37. An empty query had been replaced by a worse one.
   const out = queryNarrativeFrom([
-    comp('histoyerjfj', '<table align="center" border="1"><thead><tr><th scope="col">History</th></tr></thead>'
-      + '<tbody><tr><td>Breathlessness since three days, known diabetic</td></tr></tbody></table>'),
+    comp('vulnerass', '<table><thead><tr><th>Sr. No.</th><th>Categories</th><th>Yes</th><th>No</th></tr></thead>'
+      + '<tbody><tr><td>1</td><td>Age more than 65 years</td><td>NO</td></tr></tbody></table>'),
     comp('loc', '["Alert"]'),
   ]);
-  assert.match(out, /Breathlessness since three days/, 'the narrative survives');
-  assert.match(out, /Alert/, 'and the JSON array is unwrapped to its word');
-  for (const junk of ['<table', 'thead', 'scope=', 'border', '["']) {
-    assert.ok(!out.includes(junk), `markup token ${junk} must not reach retrieval`);
+  assert.equal(out, 'Alert', 'only the clean clinical word reaches retrieval');
+  for (const junk of ['Sr. No.', 'Categories', 'Age more than 65', '<table', 'thead']) {
+    assert.ok(!out.includes(junk), `form scaffolding ${junk} must not reach retrieval`);
   }
+});
+
+test('ITEM 3a: stripMarkup still unwraps markup where a whitelisted field carries it', () => {
+  assert.equal(stripMarkup('<p>Breathlessness since three days</p>'), 'Breathlessness since three days');
+  assert.equal(stripMarkup('{"a":"Alert"}'), 'a Alert');
+  assert.equal(stripMarkup('K/C/O DM,HTN'), 'K/C/O DM,HTN', 'prose commas survive');
 });
 
 test('ITEM 3a: the base64 signature blob never reaches the query OR the summary', () => {

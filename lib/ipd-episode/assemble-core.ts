@@ -380,8 +380,20 @@ export const QUERY_NARRATIVE_FIELDS: readonly string[] = [
   'history_of_present_illness', 'hopi', 'diagnosis', 'provisional_diagnosis',
   'final_diagnosis', 'impression', 'indication', 'examination', 'findings',
   'procedure', 'procedure_details', 'plan_of_management', 'treatment_plan',
-  // initial assessment (round 20 item 3a) — sampled, not guessed
-  'histoyerjfj', 'risky', 'vulnerass', 'pamgjdk', 'loc',
+  // initial assessment (round 20 item 3a) — sampled, then MEASURED and cut back.
+  //
+  // ⚠️ `histoyerjfj`, `risky`, `vulnerass` and `pamgjdk` were on this list for one run and are off
+  // it again. Sampling showed they hold narrative wrapped in HTML tables; stripping the tags showed
+  // what the tables actually contain, which is FORM SCAFFOLDING — "Sr. No. Categories Yes No 1 Age
+  // more than 65 years NO 2 Physically Challanged NO". On IPNO-573 that filled 641-1,200 characters
+  // of every query from day 1 on, and off-topic excerpts went from 11 to 37 across the episode.
+  // An empty query was replaced by a worse one: retrieval matching on checklist labels.
+  //
+  // `loc` stays. It is a JSON array of one clinical word (["Alert"]) — small, clean, and enough to
+  // keep the whitelist non-empty for this template so the fallback does not fire on it either.
+  // The clinical signal for the early days comes from the handover fields below instead, which is
+  // what item 3b was for.
+  'loc',
   // shift handover (round 20 item 3b) — the problem list and the consciousness line only
   'nhc16', 'nhc13',
 ];
