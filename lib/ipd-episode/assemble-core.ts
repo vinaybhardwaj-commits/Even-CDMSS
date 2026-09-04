@@ -281,7 +281,9 @@ export const NOTE_SUMMARY_EXCLUDED_NAMES = [
  * ROUND 14 ITEM 9 — A FIELD WHOSE NAME SAYS IT HOLDS A PERSON.
  *
  * `kx_clinical_template_ot_notes` carries a component named `ot_asst`, and IPNO-416's OT note put
- * A THEATRE ASSISTANT'S FULL NAME in it. That reached `real_course`, which is stored in a table whose own column says
+ * A THEATRE ASSISTANT'S FULL NAME in it — deliberately not quoted here, because this is a public
+ * repository and a comment explaining why staff names must not be stored is the last place to
+ * reproduce one. That reached `real_course`, which is stored in a table whose own column says
  * `de_identified = TRUE`. Theatre staff, not the patient — but a name is a name, the claim on the
  * row was false while it was there, and this repository has had PHI history rewritten once already.
  *
