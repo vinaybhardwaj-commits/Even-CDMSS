@@ -37,7 +37,7 @@ import {
 } from './assemble-core';
 import { CHECKPOINT_ENTRY_SECTIONS, renderEvent, type CheckpointEntryRef, type ExpectedCourse } from './checkpoint-core';
 import {
-  SUBJECT_CONCEPTS, subjectWords,
+  ESCALATION_SECTION, SUBJECT_CONCEPTS, subjectWords,
   type Resolution, type ResolvableEntry, type ResolvedOutcome,
 } from './resolve-core';
 // Re-exported so the vocabulary has ONE definition and every existing caller keeps one import.
@@ -390,6 +390,50 @@ export function parseFindings(text: string, opts: ParseFindingsOptions): ParseFi
  * Fidelity findings are untouched: A2 is normalised to `commission` by its own rule and never
  * produces omissions in the first place.
  */
+/**
+ * ROUND 18 ITEM 2 — THE RESIDUAL ESCALATION GAP, and it is the same argument twice.
+ *
+ * Round 17 closed the RESOLVER path: an escalation trigger is a conditional, this mirror carries no
+ * vitals, so its antecedent cannot be evaluated and the resolver never calls one divergent.
+ * `dropJudgedOmissions` closes a second path: the judge may not author omissions at all.
+ *
+ * BUT A THIRD PATH WAS STILL OPEN. The judge can author a `commission`, `timing` or `sequencing`
+ * finding and point its `checkpoint_ref` at an escalation entry — "noradrenaline was started late"
+ * against `cp-d2/escalation/1`. Nothing dropped it, nothing rewrote it, and it scored: 8 points if
+ * major. The claim is unevaluable for exactly the reason the resolver's was. "Started late" against
+ * "if SBP < 90" needs to know when, or whether, SBP fell below 90 — and nothing in this pipeline
+ * knows that. A commission is no better: "this was given when no trigger warranted it" is a claim
+ * about the trigger.
+ *
+ * So a divergence-pass finding measured against an escalation entry cannot carry `divergent`,
+ * whatever its type. It is rewritten to `unassessable` — the verdict that means this pipeline
+ * cannot answer — and counted. Verdicts other than `divergent` are left alone: they carry no
+ * penalty, and `concordant` on an escalation entry is a note that something was handled, which is
+ * worth keeping in an audit that is supposed to record what went right.
+ *
+ * RESOLVER FINDINGS ARE EXEMPT because they have already been through the gate in resolve-core;
+ * `resolution != null` identifies them, the same marker `dropJudgedOmissions` uses.
+ */
+export function escalationSectionOf(ref: string | null): string | null {
+  if (!ref) return null;
+  const parts = ref.split('/');
+  return parts.length >= 2 ? parts[1] : null;
+}
+
+export function enforceEscalationConditional(f: EpisodeFinding): { finding: EpisodeFinding; rewritten: boolean } {
+  if (f.resolution != null) return { finding: f, rewritten: false };
+  if (f.pass !== 'divergence' || f.verdict !== 'divergent') return { finding: f, rewritten: false };
+  if (escalationSectionOf(f.checkpoint_ref) !== ESCALATION_SECTION) return { finding: f, rewritten: false };
+  return {
+    finding: {
+      ...f,
+      verdict: 'unassessable',
+      statement: `${f.statement} This is measured against an escalation trigger — a conditional whose antecedent (vitals, bedside observation) this pipeline does not carry — so whether the action was required cannot be established here.`,
+    },
+    rewritten: true,
+  };
+}
+
 export function dropJudgedOmissions(findings: EpisodeFinding[]): { kept: EpisodeFinding[]; dropped: number } {
   const kept: EpisodeFinding[] = [];
   let dropped = 0;
@@ -423,6 +467,15 @@ export function dropJudgedOmissions(findings: EpisodeFinding[]): { kept: Episode
 export function enforceUnassessable(f: EpisodeFinding): { finding: EpisodeFinding; rejected: boolean } {
   if (f.verdict !== 'unassessable') return { finding: f, rejected: false };
   if (f.resolution === 'absent_class_missing') return { finding: f, rejected: false };
+  // ⚠️ ROUND 18 ITEM 2: a finding CODE has just gated is exempt for the same reason a resolver
+  // `absent_class_missing` is. This rule exists to stop the MODEL using `unassessable` as "I would
+  // rather not say"; it must not then overturn a verdict code established on evidence the model
+  // never saw. Without this the escalation gate was silently undone one line later — the gated
+  // finding carries a Tier A basis, so `genuinelyUnanswerable` was false and it came back as
+  // `context_dependent`, still in the denominator.
+  if (escalationSectionOf(f.checkpoint_ref) === ESCALATION_SECTION && f.pass === 'divergence') {
+    return { finding: f, rejected: false };
+  }
   const tiers = f.evidence_basis.map((b) => tierForTable(b.source_table));
   const genuinelyUnanswerable = tiers.length === 0 || tiers.every((t) => t === 'C');
   if (genuinelyUnanswerable) return { finding: f, rejected: false };
@@ -1035,6 +1088,8 @@ export interface FinalizeResult {
   n_uncited_entries: number;
   /** Commission findings held to `minor` because they stand on billing alone (item 1). */
   n_billing_only_capped: number;
+  /** Judged findings rewritten to `unassessable` for naming an escalation entry (round 18 item 2). */
+  n_escalation_unassessable: number;
   n_fidelity_normalized: number;
   /** Findings whose severity was cut from major because only literature backed them. */
   n_literature_capped: number;
@@ -1063,6 +1118,7 @@ export function finalizeFindings(
   let litCapped = 0;
   let uncitedEntries = 0;
   let billingCapped = 0;
+  let escalationRewritten = 0;
   const capped_finding_ids = new Set<string>();
   const provenance_counts: Record<string, number> = { normative: 0, literature: 0, mixed: 0, none: 0 };
   const findings = kept.map((f0) => {
@@ -1086,7 +1142,13 @@ export function finalizeFindings(
     provenance_counts[provenance ?? 'none']++;
     if (provenance === 'literature') litCapped++;
 
-    const tierRes = applyTierCRule(withProv);
+    // ITEM 2: before the Tier C rule, because both rewrite a verdict and this one is about what
+    // the finding is MEASURED AGAINST rather than what it rests on. A finding gated here is
+    // already unassessable, so the Tier C rule then has nothing to do to it.
+    const escRes = enforceEscalationConditional(withProv);
+    if (escRes.rewritten) escalationRewritten++;
+
+    const tierRes = applyTierCRule(escRes.finding);
     if (tierRes.rewritten) rewritten++;
 
     // §4.2 in the other direction: `unassessable` must be earned, not asserted (item 4).
@@ -1122,6 +1184,7 @@ export function finalizeFindings(
     n_literature_capped: litCapped,
     n_uncited_entries: uncitedEntries,
     n_billing_only_capped: billingCapped,
+    n_escalation_unassessable: escalationRewritten,
     n_unassessable_rejected: unassessableRejected,
     n_judged_omissions_dropped: omissionDrop.dropped,
     capped_finding_ids,

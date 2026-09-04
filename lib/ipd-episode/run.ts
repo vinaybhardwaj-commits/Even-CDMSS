@@ -726,6 +726,7 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
         ...(final.n_uncited_capped ? [`${final.n_uncited_capped} finding(s) capped — neither a citation nor Tier A evidence (item 10)`] : []),
         ...(final.n_uncited_entries ? [`${final.n_uncited_entries} finding(s) measured against an uncited expectation (no longer a cap)`] : []),
         ...(final.n_billing_only_capped ? [`${final.n_billing_only_capped} commission finding(s) held to minor — billing-only evidence on an uncorroborated day (item 1)`] : []),
+        ...(final.n_escalation_unassessable ? [`${final.n_escalation_unassessable} judged finding(s) rewritten to unassessable — measured against an escalation trigger, whose antecedent this pipeline cannot evaluate`] : []),
         ...(final.n_fidelity_normalized ? [`${final.n_fidelity_normalized} fidelity finding(s) normalised to commission / no checkpoint`] : []),
         ...(final.n_literature_capped ? [`${final.n_literature_capped} finding(s) stand on literature only, no normative citation (counted, not capped)`] : []),
         ...(scoringStatus !== 'ok' ? [`scoring_status ${scoringStatus} — this episode is not presented as scored`] : []),

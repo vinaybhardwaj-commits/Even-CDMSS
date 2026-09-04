@@ -123,8 +123,23 @@ export async function POST(req: NextRequest) {
     await sql`ALTER TABLE ipd_episode_audits ADD COLUMN IF NOT EXISTS digest_entries INTEGER`;
     await sql`ALTER TABLE ipd_episode_audits ADD COLUMN IF NOT EXISTS penalty_total INTEGER DEFAULT 0`;
     await sql`ALTER TABLE ipd_episode_audits ADD COLUMN IF NOT EXISTS expectations_evaluated INTEGER DEFAULT 0`;
-    // ROUND 17 ITEM 5: drop the assertion column that asserted nothing. Idempotent, and safe —
-    // it was DEFAULT TRUE and never written, so no row loses a value anyone chose.
+    // ⚠️⚠️ THE ONLY DESTRUCTIVE STATEMENT IN THIS ROUTE, AND IT IS DELIBERATE (round 17 item 5,
+    // acknowledged explicitly in round 18 item 3).
+    //
+    // Everything else here is additive — CREATE TABLE IF NOT EXISTS, ADD COLUMN IF NOT EXISTS,
+    // SET DEFAULT — and can be run any number of times against any state without losing anything.
+    // This one DROPS A COLUMN, irreversibly, on EVERY invocation. A reader skimming the route is
+    // entitled to assume it cannot destroy data; from this line on, that assumption is wrong, so
+    // the justification is written here rather than left to be inferred:
+    //
+    //   · `de_identified` was BOOLEAN DEFAULT TRUE and the pipeline never wrote it, so every row
+    //     carried TRUE regardless of what ran — it asserted nothing that could be false.
+    //   · Nothing reads it. No view, no index, no query in this repo, no UI field.
+    //   · It read TRUE throughout the period when `real_course` carried a theatre assistant's name
+    //     in an OT note (round 14 item 9), so the one claim it made was the one that was untrue.
+    //
+    // No row therefore loses a value anyone chose or could have checked. If a future column needs
+    // dropping, it gets its own note like this one — a DROP must never appear here unexplained.
     await sql`ALTER TABLE ipd_episode_audits DROP COLUMN IF EXISTS de_identified`;
     await sql`ALTER TABLE ipd_episode_audits ADD COLUMN IF NOT EXISTS stage_timings JSONB`;
     await sql`ALTER TABLE ipd_episode_audits ALTER COLUMN app_source SET DEFAULT 'standalone'`;

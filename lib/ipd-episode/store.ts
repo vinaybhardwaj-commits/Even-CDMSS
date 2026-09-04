@@ -46,10 +46,10 @@ function warn(label: string, e: unknown): void {
   console.warn(`[ipd-episode/store] ${label} failed (degraded): ${String((e as Error)?.message ?? e).slice(0, 300)}`);
 }
 
-/** Engine version (decision 27). A bump audits an admission again BESIDE its old row, never over it. */
 /** Which deployment wrote a row. Preview and production share a database (decision 31). */
 const APP_SOURCE = process.env.APP_SOURCE || 'standalone';
 
+/** Engine version (decision 27). A bump audits an admission again BESIDE its old row, never over it. */
 export const IPD_EPISODE_ENGINE_VERSION = 'ipd-episode-audit/0.1';
 
 /** The sibling engine whose score the UI shows beside this one, labelled as its own (decision 14). */

@@ -19,6 +19,7 @@ import {
   dropJudgedOmissions, enforceUnassessable, findingsFromResolved, domainForSection,
   buildExpectationDigest, buildDiffUser, applyBillingOnlyCap, notesOnDay, missingDischargeDayNote,
   subjectWords, SUBJECT_CONCEPTS, MISSING_DISCHARGE_NOTE_ID,
+  enforceEscalationConditional, escalationSectionOf,
   type EpisodeFinding, type Severity, type Verdict, type Domain, type AuditPass,
   type DigestSource,
 } from '../ipd-episode/judge-core';
@@ -1992,4 +1993,64 @@ test('ITEM 2b: the discharge-note finding SURVIVES the whole finalise chain — 
   assert.equal(res.penalty_total, 8);
   assert.equal(res.expectations_evaluated, 1);
   assert.equal(res.divergence_index, 0, 'the only thing measured was missing');
+});
+
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+// ROUND 18 ITEM 2 — THE THIRD ESCALATION PATH
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+
+test('ITEM 2: a JUDGED divergent finding against an escalation entry cannot score', () => {
+  // Round 17 closed the resolver path; dropJudgedOmissions closes judge-authored omissions. This
+  // was the path still open: "noradrenaline was started late" against cp-d2/escalation/1 — a
+  // timing claim whose truth depends on when, or whether, SBP fell below 90. Nothing in this
+  // pipeline knows that, and until now the finding scored 8 points.
+  for (const finding_type of ['commission', 'timing', 'sequencing'] as const) {
+    const judged = f({
+      finding_id: finding_type, finding_type, verdict: 'divergent', severity: 'major',
+      checkpoint_ref: 'cp-d2/escalation/1', resolution: null,
+    });
+    const r = enforceEscalationConditional(judged);
+    assert.equal(r.rewritten, true, finding_type);
+    assert.equal(r.finding.verdict, 'unassessable', `${finding_type} cannot stay divergent`);
+    assert.match(r.finding.statement, /antecedent/, 'and the row says why');
+  }
+});
+
+test('ITEM 2: it scores nothing once gated, and the counter records it', () => {
+  const res = finalizeFindings([
+    f({ finding_id: 'esc', finding_type: 'timing', verdict: 'divergent', severity: 'major',
+        checkpoint_ref: 'cp-d2/escalation/1', citation_ids: [4021] }),
+  ], refs([['cp-d2/escalation/1', [4021]]]), [], 0, SOURCES, NORMATIVE);
+  assert.equal(res.n_escalation_unassessable, 1);
+  assert.equal(res.penalty_total, 0, 'an unevaluable conditional carries no penalty');
+  assert.equal(res.expectations_evaluated, 0, 'and is not counted as something measured');
+  assert.equal(res.divergence_index, null);
+});
+
+test('ITEM 2: OTHER sections, other verdicts and RESOLVER findings are untouched', () => {
+  // a plain expectation still scores
+  const diag = f({ finding_id: 'd', verdict: 'divergent', severity: 'major', checkpoint_ref: 'cp-d2/diagnostics/1' });
+  assert.equal(enforceEscalationConditional(diag).rewritten, false);
+  // concordant on an escalation entry survives — it carries no penalty and records what went right
+  const ok = f({ finding_id: 'c', verdict: 'concordant', checkpoint_ref: 'cp-d2/escalation/1' });
+  assert.equal(enforceEscalationConditional(ok).rewritten, false);
+  assert.equal(enforceEscalationConditional(ok).finding.verdict, 'concordant');
+  // the resolver's own escalation findings already went through the gate in resolve-core
+  const resolver = f({ finding_id: 'r', verdict: 'divergent', checkpoint_ref: 'cp-d2/escalation/1',
+                       resolution: 'absent_class_present' });
+  assert.equal(enforceEscalationConditional(resolver).rewritten, false, 'resolution marks it exempt');
+  // a fidelity finding has no checkpoint entry at all
+  const a2 = f({ finding_id: 'a2', pass: 'fidelity', domain: 'documentation', finding_type: 'commission',
+                 verdict: 'divergent', checkpoint_ref: null });
+  assert.equal(enforceEscalationConditional(a2).rewritten, false);
+});
+
+test('ITEM 2: the section is read from the ref, and a malformed ref does not gate anything', () => {
+  assert.equal(escalationSectionOf('cp-d2/escalation/1'), 'escalation');
+  assert.equal(escalationSectionOf('cp-episode/therapeutics/3'), 'therapeutics');
+  assert.equal(escalationSectionOf(null), null);
+  assert.equal(escalationSectionOf('nonsense'), null);
+  const weird = f({ finding_id: 'w', verdict: 'divergent', checkpoint_ref: 'nonsense' });
+  assert.equal(enforceEscalationConditional(weird).rewritten, false);
 });

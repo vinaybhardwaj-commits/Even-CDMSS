@@ -1755,9 +1755,28 @@ test('ROUND 17 ITEM 6: episodeAuditById names its columns, and names ALL of them
 
   // and the named list is exactly the table — the check episodeWorklist did not have for six rounds
   const tbl = ddl.slice(ddl.indexOf('CREATE TABLE IF NOT EXISTS ipd_episode_audits'));
-  const declared = new Set([...tbl.slice(0, tbl.indexOf('\n);')).matchAll(/^ {2}([a-z_]+)\s+[A-Z]/gm)].map((m) => m[1]));
+  // ⚠️ LOOSE ON PURPOSE (round 18 item 4). This was `/^ {2}([a-z_]+)\s+[A-Z]/`, coupled to exactly
+  // two-space indentation and an UPPERCASE type token. A column indented differently, or declared
+  // `jsonb` in lower case, would simply vanish from `declared` — and a bidirectional check that
+  // silently forgets a column is worse than no check, because it still reports green. Any
+  // indentation, any type case; comment lines and the constraint clauses at the end are excluded
+  // by requiring an identifier followed by a type word on the same line.
+  const body = tbl.slice(0, tbl.indexOf('\n);'));
+  const declared = new Set(
+    body.split('\n')
+      .map((l) => l.replace(/--.*$/, '').trim())
+      .filter((l) => l && !/^(PRIMARY|UNIQUE|FOREIGN|CONSTRAINT|CHECK)\b/i.test(l))
+      .map((l) => /^([a-z][a-z0-9_]*)\s+[A-Za-z]/.exec(l)?.[1])
+      .filter((c): c is string => !!c),
+  );
   const sql = fn.slice(fn.indexOf('`SELECT id,'), fn.indexOf('FROM ipd_episode_audits'));
   const named = new Set([...sql.matchAll(/\b([a-z][a-z0-9_]*)\b/g)].map((m) => m[1]).filter((w) => w !== 'select'));
+  // ⚠️ THE EXTRACTION ITSELF IS CHECKED FIRST. A bidirectional comparison between two sets is
+  // vacuously green if one of them came back empty or short, which is precisely how a
+  // presentation-coupled regex fails: silently, and in the reassuring direction.
+  assert.ok(declared.size >= 60, `the DDL extraction found only ${declared.size} columns`);
+  assert.ok(declared.has('id') && declared.has('real_course') && declared.has('penalty_total'),
+    'and it finds columns of every declaration shape in the file');
   for (const c of declared) assert.ok(named.has(c), `column ${c} is declared but not selected`);
   for (const c of named) assert.ok(declared.has(c), `${c} is selected but not a column`);
 });

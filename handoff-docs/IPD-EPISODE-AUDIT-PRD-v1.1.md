@@ -391,6 +391,30 @@ only ever agree with itself invites a confidence nobody has checked, which is th
 the Deidentifier in assembly, the column allow-lists in `db13.ts`, `isPersonFieldName`, and the
 source-read tests that hold all three — and it is checkable there.
 
+### 1.17 Decision 40 — the branch is SQUASH-merged (V, 2026-09-03; amends §14)
+
+§14 said *"V merges `ipd-episode-audit` into `main` with a merge commit, no squash, no rebase"*.
+That is amended: the branch is **squash-merged as one commit**.
+
+**The reason is the history, not the shape.** The fixture patient name `Ravi Kumar` is clean at the
+tip — round 17 renamed it to `Testpatient Gamma` — but it is still present in the blobs of 24 of
+the branch's 27 commits, because it was there from the build commit onward. A merge commit carries
+that history onto `main`; a squash does not. The alternative was a third force-push and rewrite,
+and a squash reaches the same place without one.
+
+What is lost is the round-by-round commit trail. That is a real loss and it is accepted knowingly:
+the reasoning it carried is in this document, section by section, and the branch itself survives
+unmerged for anyone who wants to read the sequence.
+
+### 1.18 Round 18 — the last round (V, 2026-09-03)
+
+| # | Change |
+|---|---|
+| 1 | `store.ts`: the decision-27 JSDoc had been orphaned by round 17's `APP_SOURCE` insertion — it sat above the wrong declaration and left the engine-version constant undocumented. Reunited. |
+| 2 | **The residual escalation gap.** Round 17 gated the resolver path and `dropJudgedOmissions` gates judge-authored omissions, but a judge-authored `commission`, `timing` or `sequencing` finding pointed at an escalation entry still scored — "noradrenaline was started late" against `cp-d2/escalation/1`, worth 8 points, resting on whether SBP ever fell below 90, which nothing here knows. Such findings are rewritten to `unassessable` and counted in `n_escalation_unassessable`. **`enforceUnassessable` needed an exemption for them**, or it overturned the gate one line later — the gated finding carries a Tier A basis, so the §4.2a rule read it as a model hedge and returned it to `context_dependent`, back in the denominator. Code-established verdicts are exempt for the same reason resolver `absent_class_missing` findings are. |
+| 3 | The migration route's `DROP COLUMN IF EXISTS de_identified` is the **only destructive statement** in a route that is otherwise additive-only, and it now says so at length: what it drops, why nothing depends on it, and that a future DROP must carry its own note. A reader skimming the route is entitled to assume it cannot destroy data; from that line on the assumption is wrong, so it is stated rather than inferred. |
+| 4 | The DDL column-extraction regex in the contract test was coupled to two-space indentation and an uppercase type token; a column declared differently would have vanished from `declared` and quietly weakened the bidirectional check. Loosened, and the extraction is now itself asserted — a set comparison is vacuously green if one side comes back short. |
+
 ### 4.2a `unassessable` must be earned (added 2026-09-02, decision 33)
 
 A finding may carry `unassessable` only if its `evidence_basis` is empty or every cited source is Tier C. Anything else is rewritten to `context_dependent` in code and counted in `n_unassessable_rejected`. Resolver findings with `resolution = 'absent_class_missing'` are exempt: that gap was established by code rather than claimed by a model.
