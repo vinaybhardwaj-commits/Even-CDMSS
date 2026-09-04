@@ -1684,3 +1684,25 @@ test('ROUND 15 ITEM 1: the index is a rate, and the denominator excludes what co
   assert.ok(core.includes('if (evaluated === 0) return null;'),
     'and nothing measured is null, never 0 and never 100');
 });
+
+
+test('ROUND 15: the response reports the SAME band values it stored, from the same variables', () => {
+  // ⚠️ THE DEFECT. The returned result recomputed index/band/uncertainty instead of reusing the
+  // ones written to the row. After round 15 gave `bandIsUncertain` a denominator, the row got it
+  // and the response did not — so all five re-runs reported band_uncertain TRUE in the API while
+  // the stored column said FALSE for four of them. A response that disagrees with the row it just
+  // wrote is the one a person reads first.
+  const run = code('lib/ipd-episode/run.ts');
+  const returned = run.slice(run.lastIndexOf('return {\n      encounterId,'));
+  assert.ok(returned.includes('divergenceIndex: storedIndex ?? undefined'), 'one index variable');
+  assert.ok(returned.includes('divergenceBand: divergenceBandFor(storedIndex)'), 'banded from it');
+  assert.ok(returned.includes('bandUncertain: bandIsUncertain(storedIndex, final.penalty_total, final.expectations_evaluated)'),
+    'and the uncertainty gets the denominator, exactly as the row does');
+  // the row and the response must not compute it two different ways
+  const rowCall = 'bandUncertain: bandIsUncertain(storedIndex, final.penalty_total, final.expectations_evaluated)';
+  assert.equal(run.split(rowCall).length - 1, 2, 'the row and the response use the identical call');
+  // and the absolutes ride along in the response too
+  for (const field of ['penaltyTotal: final.penalty_total', 'expectationsEvaluated: final.expectations_evaluated']) {
+    assert.ok(returned.includes(field), `the response carries ${field}`);
+  }
+});

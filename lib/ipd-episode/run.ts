@@ -85,6 +85,10 @@ export interface RunEpisodeResult {
   divergenceIndex?: number;
   divergenceBand?: string;
   bandUncertain?: boolean;
+  /** Round 15 item 1: the absolutes travel with the rate, in the response as well as the row. */
+  penaltyTotal?: number;
+  expectationsEvaluated?: number;
+  nDivergent?: number;
   scoringStatus?: string;
   completenessPct?: number;
   nFindings?: number;
@@ -696,9 +700,18 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
     return {
       encounterId,
       status: saved.status,
-      divergenceIndex: storedDivergenceIndex(final.divergence_index, scoringStatus) ?? undefined,
-      divergenceBand: divergenceBandFor(storedDivergenceIndex(final.divergence_index, scoringStatus)) ?? undefined,
-      bandUncertain: bandIsUncertain(storedDivergenceIndex(final.divergence_index, scoringStatus)),
+      // ⚠️ THE SAME THREE VALUES THE ROW GOT, FROM THE SAME VARIABLES. This block used to recompute
+      // them, and round 15 proved why that is not a harmless duplication: `bandUncertain` was
+      // recomputed WITHOUT the denominator, fell back to the fixed ±5 window, and reported `true`
+      // for all five episodes while the stored column — computed once, correctly — said `false` for
+      // four of them. A response that disagrees with the row it just wrote is worse than no
+      // response, because it is the one a person reads first.
+      divergenceIndex: storedIndex ?? undefined,
+      divergenceBand: divergenceBandFor(storedIndex) ?? undefined,
+      bandUncertain: bandIsUncertain(storedIndex, final.penalty_total, final.expectations_evaluated),
+      penaltyTotal: final.penalty_total,
+      expectationsEvaluated: final.expectations_evaluated,
+      nDivergent: final.counters.n_divergent,
       scoringStatus,
       completenessPct: completenessPct(sourcesPresent),
       nFindings: final.counters.n_findings,
