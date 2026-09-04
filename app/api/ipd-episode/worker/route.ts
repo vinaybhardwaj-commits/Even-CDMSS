@@ -82,6 +82,29 @@ const LOCK_KEY = 'ipd_episode_lock';
  *  the PHI and no-id-rewriting assertions). */
 const IPD_EPISODE_LOCK_TTL_MS = 780 * 1000;
 
+/**
+ * ROUND 13 ITEM 1 — THE BOX, AS A WALL-CLOCK DEADLINE THE MODEL CALLS CAN READ.
+ *
+ * `maxDuration` above is the only place that knows how long this invocation may live, and until
+ * now nothing downstream could see it. IP-1483 spent 763 s inside an 800 s box on three diff
+ * attempts that could not all fit, and the function was killed with no audit row and no skip row.
+ *
+ * The deadline is `maxDuration` minus a reserve, and the reserve is what the work AFTER the last
+ * model call still needs: persisting the audit row and its checkpoint rows, writing the response,
+ * and releasing the lock in `finally`. 40 s is generous for three Neon statements — deliberately
+ * so, because the cost of overshooting the reserve is the failure this exists to prevent, while
+ * the cost of overshooting it is one refused call.
+ *
+ * DERIVED FROM `maxDuration`, never restated: the two move together or the guard is a lie.
+ *
+ * Module-local, not exported — Next.js allows a route file to export only its handlers and route
+ * config, so the contract test reads this file as source, exactly as it does for `lockHeld`.
+ */
+const PERSIST_RESERVE_MS = 40 * 1000;
+function invocationDeadlineAt(startedAt: number, maxDurationSeconds: number = maxDuration): number {
+  return startedAt + maxDurationSeconds * 1000 - PERSIST_RESERVE_MS;
+}
+
 /** True when a lock fresher than the TTL exists — i.e. another tick is still running. Local, not
  *  the 210 s shared helper: see the note above. */
 function lockHeld(lockTs: string | null, now: Date = new Date(), ttlMs: number = IPD_EPISODE_LOCK_TTL_MS): boolean {
@@ -139,7 +162,9 @@ async function candidateQueue(): Promise<{ encounterId: string; dischargedAt: st
 }
 
 export async function GET(req: NextRequest) {
+  const startedAt = Date.now();
   if (!(await authed(req))) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+  const deadlineAt = invocationDeadlineAt(startedAt);
   const p = req.nextUrl.searchParams;
   const max = Math.max(1, Math.min(5, Number(p.get('max') || 2)));
   const one = p.get('encounter');
@@ -158,7 +183,7 @@ export async function GET(req: NextRequest) {
       if (!isEncounterId(one)) {
         return NextResponse.json({ ok: false, error: 'bad encounter id' }, { status: 400 });
       }
-      const r = await runEpisodeAudit({ encounterId: one });
+      const r = await runEpisodeAudit({ encounterId: one, deadlineAt });
       return NextResponse.json({ ok: true, mode: 'encounter', engine: IPD_EPISODE_ENGINE_VERSION, processed: 1, results: [r] });
     }
 
@@ -174,7 +199,12 @@ export async function GET(req: NextRequest) {
     // SEQUENTIAL, deliberately (see the box arithmetic above). No concurrency knob exists.
     // A selection skip costs one db13 read and does NOT consume a slot — `max` bounds model spend,
     // which is the only thing the box is short of.
-    const { results, tally } = await runEpisodeBatch(queue, max, runEpisodeAudit);
+    // The SAME deadline for every episode in the tick, not a per-episode share of it: an episode
+    // that finishes early leaves its unspent time to the next one, and an episode that cannot fit
+    // in what remains is refused at its first model call rather than half-run.
+    const { results, tally } = await runEpisodeBatch(
+      queue, max, (i) => runEpisodeAudit({ ...i, deadlineAt }),
+    );
 
     return NextResponse.json({
       ok: true,

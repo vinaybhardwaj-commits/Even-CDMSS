@@ -26,6 +26,8 @@ import {
   IPD_EPISODE_CHECKPOINT_SYSTEM, IPD_EPISODE_COMMENTARY_SYSTEM, IPD_EPISODE_DIFF_SYSTEM,
   IPD_EPISODE_FIDELITY_SYSTEM,
 } from '../ipd-episode/prompts';
+import { callModel, ONE_CALL_WORST_CASE_MS, TRANSPORT_ATTEMPTS } from '../ipd-episode/model-call';
+import { totalBudgetMs } from '../lab-provider-core';
 
 const read = (p: string) => readFileSync(join(process.cwd(), p), 'utf8');
 const code = (p: string) => read(p).replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
@@ -1418,4 +1420,132 @@ test('no route in this build can return a 500 on a failed audit (§8)', () => {
   const worker = code('app/api/ipd-episode/worker/route.ts');
   const statuses = [...worker.matchAll(/status:\s*(\d{3})/g)].map((m) => Number(m[1]));
   for (const s of statuses) assert.ok(s === 401 || s === 400, `the worker returns only 401/400, found ${s}`);
+});
+
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+// ROUND 13 ITEMS 1 & 2 · THE WALL-CLOCK BUDGET, AND THE LADDER THAT MULTIPLIED THE FAILURE
+//
+// IP-1483: the diff pass timed out at 332,735 ms, was retried, timed out at 331,818 ms, and a
+// third attempt began at +763.7 s inside an 800 s box. The function was killed. No audit row, no
+// skip row — the same "spent the whole budget and persisted nothing" failure round 11 produced by
+// a different route.
+//
+// The arithmetic behind it: governedChat already runs PROVIDER_BUDGETS.bedrock.utility, 110 s ×
+// 3 = 332,250 ms of worst case, and this engine wrapped THAT in three more attempts. Nine
+// provider attempts in a box that fits two.
+//
+// A refused call is testable without a provider precisely BECAUSE it is refused: nothing is sent.
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+
+test('round 13 item 2: the engine adds NO ladder of its own — governedChat already has one', () => {
+  assert.equal(TRANSPORT_ATTEMPTS, 1,
+    'three attempts here multiplied a 332 s provider ladder into 996 s inside an 800 s box');
+});
+
+test('round 13 item 1: the worst case is DERIVED from the budget table, never typed here', () => {
+  assert.equal(ONE_CALL_WORST_CASE_MS, totalBudgetMs('bedrock', 'utility'),
+    'a hand-copied number would have to be edited in step with a table it cannot see');
+  // and it is the number IP-1483 actually measured, twice
+  assert.equal(ONE_CALL_WORST_CASE_MS, 332_250);
+});
+
+test('round 13 item 1: a call with no room left is REFUSED, and never reaches the provider', async () => {
+  const r = await callModel({
+    traceId: undefined, label: 'ipd_episode_diff',
+    system: 'sys', user: 'usr', model: 'global.anthropic.claude-opus-4-6-v1',
+    maxTokens: 16000, temperature: 0, promptRef: 'prompts/IPD_EPISODE_DIFF_SYSTEM',
+    truncationRetryInstruction: 'shorter please',
+    // one second of budget against a call that can cost 332 s
+    deadlineAt: Date.now() + 1000,
+  });
+  assert.equal(r.attempts, 0, 'a call we declined to place is not an attempt that was made');
+  assert.equal(r.budget.refusedForBudget, true);
+  assert.equal(r.truncated, false, 'a budget refusal is never dressed up as a truncation');
+  assert.ok(r.error, 'and it fails the call, so the episode records a skip');
+  assert.match(r.error!, /not started/);
+  assert.match(r.error!, /ipd_episode_diff/, 'the reason names the call');
+  assert.match(r.error!, /332250/, 'and what one call can cost, so the next reader need not derive it');
+  assert.equal(r.text, '');
+});
+
+test('round 13 item 1: the deadline and the budget remaining are recorded at every attempt', async () => {
+  const deadlineAt = Date.now() + 5000;
+  const r = await callModel({
+    traceId: undefined, label: 'ipd_episode_fidelity',
+    system: 's', user: 'u', model: 'global.anthropic.claude-opus-4-6-v1',
+    maxTokens: 100, temperature: 0, promptRef: 'prompts/IPD_EPISODE_FIDELITY_SYSTEM',
+    truncationRetryInstruction: 'x', deadlineAt,
+  });
+  assert.equal(r.budget.deadlineAt, deadlineAt, 'the deadline is on the record either way');
+  assert.equal(r.budget.remainingMsAtAttempt.length, 1, 'the budget was consulted before the attempt');
+  assert.ok(r.budget.remainingMsAtAttempt[0] <= 5000);
+  assert.equal(r.budget.worstCaseMs, ONE_CALL_WORST_CASE_MS);
+});
+
+test('round 13 item 1: an UNBUDGETED call still runs — the deadline is opt-in for tests only', () => {
+  const mc = readFileSync('lib/ipd-episode/model-call.ts', 'utf8');
+  assert.match(mc, /deadlineAt\?: number \| null/, 'optional in the type');
+  assert.match(mc, /const deadlineAt = input\.deadlineAt \?\? null/);
+  assert.match(mc, /if \(deadlineAt != null\)/, 'and the guard is skipped when there is no deadline');
+});
+
+test('round 13 item 1: every production model call site passes a deadline', () => {
+  const judge = readFileSync('lib/ipd-episode/judge.ts', 'utf8');
+  const checkpoint = readFileSync('lib/ipd-episode/checkpoint.ts', 'utf8');
+  const run = readFileSync('lib/ipd-episode/run.ts', 'utf8');
+  assert.match(checkpoint, /deadlineAt: input\.deadlineAt \?\? null/, 'checkpoints');
+  assert.match(judge, /callModel\(\{[\s\S]*?deadlineAt/, 'the judge helper forwards it');
+  for (const pass of ['runDiffPass', 'runFidelityPass']) {
+    assert.match(run, new RegExp(`${pass}\\(\\{[\\s\\S]{0,200}?deadlineAt`), `${pass} is given the deadline`);
+  }
+  assert.match(run, /runCheckpoint\(\{[\s\S]{0,80}?deadlineAt/, 'and so is every checkpoint');
+});
+
+test('round 13 item 1: the worker derives the deadline FROM maxDuration, and reserves persist time', () => {
+  const src = readFileSync('app/api/ipd-episode/worker/route.ts', 'utf8');
+  // derived, not restated: the guard is a lie the moment the two can disagree
+  assert.match(src, /maxDurationSeconds: number = maxDuration/,
+    'the helper defaults to the route’s own maxDuration rather than a copy of the number');
+  assert.match(src, /startedAt \+ maxDurationSeconds \* 1000 - PERSIST_RESERVE_MS/);
+  assert.ok(!/const PERSIST_RESERVE_MS = 0\b/.test(src), 'the reserve is non-zero');
+  // both entry points, because ?encounter= is how every spot check runs
+  assert.match(src, /runEpisodeAudit\(\{ encounterId: one, deadlineAt \}\)/, 'the single-episode path');
+  assert.match(src, /runEpisodeAudit\(\{ \.\.\.i, deadlineAt \}\)/, 'and the sweep');
+});
+
+test('round 13: a refused or failed diff still writes a diff_failed SKIP — never a silent death', () => {
+  const run = readFileSync('lib/ipd-episode/run.ts', 'utf8');
+  const afterDiff = run.slice(run.indexOf('const a1 = await runDiffPass'));
+  const block = afterDiff.slice(0, afterDiff.indexOf('const a2 = await runFidelityPass'));
+  assert.match(block, /if \(!a1\.ok\)/);
+  assert.match(block, /recordSkip\(\{[\s\S]*?reason: 'diff_failed'/,
+    'PRD §8: every failure degrades to a RECORDED no-op');
+});
+
+test('round 13 item 3: the diff prompt describes the digest it is actually sent', () => {
+  // A prompt that promises excerpt numbers to a model that is shown none is an instruction to
+  // invent them — and invented ordinals resolve against a real chunk list.
+  assert.ok(!/normative excerpt numbers carried by the checkpoint entry/.test(IPD_EPISODE_DIFF_SYSTEM),
+    'the citation instruction went with the citations');
+  assert.match(IPD_EPISODE_DIFF_SYSTEM, /Leave citation_ids empty/);
+  assert.match(IPD_EPISODE_DIFF_SYSTEM, /WHAT WAS EXPECTED/);
+  assert.match(IPD_EPISODE_DIFF_SYSTEM, /Each expectation is stated once/,
+    'the model is told the list is deduplicated, so recurrence is not read as emphasis');
+  assert.match(IPD_EPISODE_DIFF_SYSTEM, /checkpoint-id\/section\/number/, 'the ref format still stands');
+});
+
+test('round 13 item 3: both halves of the measurement are stored, and nothing renumbered', () => {
+  const ddl = readFileSync('migrations/0052_ipd_episode_audits.sql', 'utf8');
+  const store = readFileSync('lib/ipd-episode/store.ts', 'utf8');
+  const route = readFileSync('app/api/admin/migrate-ipd-episode-audits/route.ts', 'utf8');
+  for (const col of ['diff_prompt_chars', 'digest_entries']) {
+    assert.match(ddl, new RegExp(`${col}\\s+INTEGER`), `${col} is in the DDL`);
+    assert.match(store, new RegExp(col), `${col} is written`);
+    assert.match(route, new RegExp(`ADD COLUMN IF NOT EXISTS ${col} INTEGER`), `${col} is backfilled`);
+  }
+  // APPENDED. Round 11 renumbered this statement and left two casts behind on their old
+  // placeholders; the placeholder-position gate below catches that, and appending avoids it.
+  assert.match(store, /\$54,\$55,\$56::jsonb,\n\s*\$57,\$58\)/,
+    'the new parameters are at the end, so no existing $n moved');
 });

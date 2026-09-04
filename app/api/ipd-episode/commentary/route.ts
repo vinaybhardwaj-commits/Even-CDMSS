@@ -15,6 +15,9 @@ export const runtime = 'nodejs';
 /** One model call on a prompt whose ceiling is 10 000 tokens. Measured: 49–58 s on IPNO-416. */
 export const maxDuration = 300;
 
+/** What is left to do after pass B returns: one UPDATE and the response. */
+const COMMENTARY_RESERVE_MS = 15 * 1000;
+
 /**
  * ON-DEMAND COMMENTARY — PRD decision 35 (V, 2026-09-03), amending decision 2.
  *
@@ -38,6 +41,7 @@ export const maxDuration = 300;
  * the finding ids, below.
  */
 export async function POST(req: NextRequest) {
+  const startedAt = Date.now();
   const denied = requireAdmin(req);
   if (denied && !(await isAdminUnlocked().catch(() => false))) return denied;
 
@@ -67,6 +71,10 @@ export async function POST(req: NextRequest) {
 
   const b = await runCommentaryPass({
     traceId: undefined,
+    // ROUND 13 ITEM 1. This route has its own, smaller box (300 s), and the same rule holds in it:
+    // pass B is never started without room to finish. A refusal here is already a normal outcome —
+    // the page shows the honest absence and the next open retries.
+    deadlineAt: startedAt + maxDuration * 1000 - COMMENTARY_RESERVE_MS,
     // Persisted at audit time precisely so this call cannot drift from the pipeline's view (§35).
     // A row audited BEFORE decision 35 has no stored context. Say so plainly rather than
     // reconstructing one from db13 here: this route reads the audit row, not the source.

@@ -3642,6 +3642,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "ipd-episode",
+    "to": "lab-provider-core",
+    "kind": "value"
+  },
+  {
+    "from": "ipd-episode",
     "to": "lvc-value-core",
     "kind": "value"
   },

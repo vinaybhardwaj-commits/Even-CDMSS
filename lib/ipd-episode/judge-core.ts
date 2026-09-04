@@ -35,7 +35,7 @@ import {
   COMPLETENESS_SOURCES, collapseSpaces, tierForTable, isDischargeEvent,
   type EpisodeEvent, type EvidenceTier,
 } from './assemble-core';
-import { renderEvent, type CheckpointEntryRef, type ExpectedCourse } from './checkpoint-core';
+import { CHECKPOINT_ENTRY_SECTIONS, renderEvent, type CheckpointEntryRef, type ExpectedCourse } from './checkpoint-core';
 import type { Resolution, ResolvableEntry, ResolvedOutcome } from './resolve-core';
 
 // ── enums (PRD §3.4.2) ───────────────────────────────────────────────────────────────────────
@@ -1219,23 +1219,156 @@ export function validateCommentary(text: string, knownFindingIds: readonly strin
 
 // ── user messages for the three Opus passes ──────────────────────────────────────────────────
 
+/**
+ * ROUND 13 ITEM 3 — THE EXPECTATION DIGEST, and why it can be cut this hard.
+ *
+ * The diff pass used to receive every expected course in full: each entry with its rationale, its
+ * matcher, its proposed severity and its citation ordinals, repeated for every checkpoint that
+ * stated it. On IP-1483 (LOS 7, 8 checkpoints) that was 50,978 characters of the prompt.
+ *
+ * SINCE DECISION 33 THE DIFF PASS EMITS NO OMISSIONS. Whether an expected thing happened is a
+ * lookup, answered deterministically by the resolver; A1 judges commission, timing and sequencing.
+ * So it does not need the apparatus of checking an expectation off — it needs to know WHAT WAS
+ * ANTICIPATED, closely enough to recognise something that was not.
+ *
+ *   · the RATIONALE argued for the expectation; A1 is not being asked to agree with it.
+ *   · the MATCHER is the resolver's machine-checkable definition; A1 does not run the resolver.
+ *   · the PROPOSED SEVERITY is a blinded pre-judgement about an omission A1 may not report.
+ *   · the CITATIONS need not be repeated, because a finding INHERITS its entry's citation ids in
+ *     `resolveFindingCitations` (round 11 item 8) whenever it names none of its own — which is
+ *     what actually carries them today, models having mostly declined to copy them across.
+ *
+ * WHAT SURVIVES, and each for a reason that is not taste:
+ *   · the ITEM TEXT — the expectation itself;
+ *   · the EARLIEST `by_day` across the entries that state it, because "by day 1" and "by day 4"
+ *     are different expectations of the same action and the earlier one is the one a timing
+ *     finding is measured against;
+ *   · ONE ENTRY REF. §3.4 requires `checkpoint_ref` non-null on every divergence finding, the
+ *     uncited cap resolves that ref against `entryRefs` to decide whether the expectation was
+ *     grounded, and citation inheritance uses the same lookup. A digest line with no ref would
+ *     break all three. This is the one field kept beyond "item text only".
+ *
+ * DEDUPLICATION IS ACROSS CHECKPOINTS, and the key is section + normalised item text — the same
+ * text-fallback normalisation round 12 uses for a matcher-less entry, so the two groupings cannot
+ * drift apart. A daily checkpoint restates its standing expectations every day; sending seven
+ * copies of "monitor urine output hourly" tells the judge nothing the first copy did not.
+ *
+ * THE REPRESENTATIVE REF IS THE EARLIEST MEMBER THAT CARRIES CITATIONS, and only when no member
+ * carries any is it simply the earliest. Picking the earliest unconditionally would hand the cap
+ * an uncited ref while a later checkpoint had cited the very same expectation — throwing away
+ * evidence that exists, which is the defect round 11 item 8 was written to end.
+ */
+export interface DigestSource {
+  checkpointId: string;
+  dayIndex: number;
+  course: ExpectedCourse | null;
+}
+
+export interface DigestEntry {
+  section: (typeof CHECKPOINT_ENTRY_SECTIONS)[number];
+  /** The representative entry ref, resolvable in `entryRefs`. */
+  ref: string;
+  item: string;
+  /** Earliest `by_day` any member stated; null where the section carries none. */
+  byDay: number | null;
+  /** Every entry ref this line stands for, the representative included. Nothing is discarded. */
+  memberRefs: string[];
+}
+
+export interface ExpectationDigest {
+  entries: DigestEntry[];
+  /** How many expected-course entries the digest stands for — the denominator of the reduction. */
+  ungroupedCount: number;
+  /** The rendered block, section by section. */
+  text: string;
+}
+
+const digestKey = (section: string, item: string): string =>
+  `${section}|${item.trim().toLowerCase().split(/\s+/).join(' ')}`;
+
+const SECTION_HEADINGS: Record<(typeof CHECKPOINT_ENTRY_SECTIONS)[number], string> = {
+  diagnostics: 'DIAGNOSTICS', therapeutics: 'THERAPEUTICS',
+  monitoring: 'MONITORING', escalation: 'ESCALATION TRIGGERS',
+};
+
+export function buildExpectationDigest(sources: readonly DigestSource[]): ExpectationDigest {
+  interface Member { ref: string; dayIndex: number; byDay: number | null; cited: boolean }
+  const groups = new Map<string, { section: DigestEntry['section']; item: string; members: Member[] }>();
+  let ungroupedCount = 0;
+
+  // Ordered by the checkpoint that stated it first: `sources` arrives in plan order, which is day
+  // order, and within a course the entries keep the order the ref numbering already assumes.
+  for (const src of sources) {
+    const course = src.course;
+    if (!course) continue;
+    const add = (
+      section: DigestEntry['section'], i: number, item: string, byDay: number | null, citationIds: number[],
+    ) => {
+      const text = collapseSpaces(item);
+      if (!text) return;
+      ungroupedCount++;
+      const key = digestKey(section, text);
+      const member: Member = {
+        ref: `${src.checkpointId}/${section}/${i + 1}`,
+        dayIndex: src.dayIndex, byDay, cited: citationIds.length > 0,
+      };
+      const g = groups.get(key);
+      if (g) g.members.push(member);
+      else groups.set(key, { section, item: text, members: [member] });
+    };
+    course.expected_diagnostics.forEach((e, i) => add('diagnostics', i, e.item, e.by_day, e.citation_ids));
+    course.expected_therapeutics.forEach((e, i) => add('therapeutics', i, e.item, e.by_day, e.citation_ids));
+    course.expected_monitoring.forEach((e, i) => add('monitoring', i, e.item, null, e.citation_ids));
+    course.escalation_triggers.forEach((e, i) => add('escalation', i, `${e.trigger} → ${e.action}`, null, e.citation_ids));
+  }
+
+  const entries: DigestEntry[] = [...groups.values()].map((g) => {
+    const byDays = g.members.map((m) => m.byDay).filter((d): d is number => typeof d === 'number');
+    const representative = g.members.find((m) => m.cited) ?? g.members[0];
+    return {
+      section: g.section,
+      ref: representative.ref,
+      item: g.item,
+      byDay: byDays.length ? Math.min(...byDays) : null,
+      memberRefs: g.members.map((m) => m.ref),
+    };
+  });
+
+  const lines: string[] = [];
+  for (const section of CHECKPOINT_ENTRY_SECTIONS) {
+    const inSection = entries.filter((e) => e.section === section);
+    if (!inSection.length) continue;
+    lines.push(SECTION_HEADINGS[section]);
+    for (const e of inSection) {
+      const day = e.byDay == null ? '' : ` · by day ${e.byDay}`;
+      lines.push(`  ${e.ref}${day} · ${e.item}`);
+    }
+  }
+
+  return { entries, ungroupedCount, text: lines.join('\n') };
+}
+
 export interface DiffUserInput {
   admissionContext: string;
   /** ALREADY filtered by diffPassEvents — no discharge event reaches here. */
   events: EpisodeEvent[];
-  /** Rendered checkpoints, entry-referenced. */
-  checkpointBlocks: string[];
+  /** The deduplicated expectation digest (round 13 item 3), NOT the checkpoint JSON. */
+  digest: ExpectationDigest;
 }
 
 export function buildDiffUser(input: DiffUserInput): string {
+  const d = input.digest;
+  const stated = d.entries.length === d.ungroupedCount
+    ? `${d.entries.length} expectation${d.entries.length === 1 ? '' : 's'}`
+    : `${d.entries.length} distinct expectation${d.entries.length === 1 ? '' : 's'}, stated ${d.ungroupedCount} times across the checkpoints`;
   return `ADMISSION CONTEXT
 ${input.admissionContext}
 
 THE REAL COURSE (${input.events.length} event${input.events.length === 1 ? '' : 's'}; the discharge event is deliberately absent)
 ${input.events.length ? input.events.map(renderEvent).join('\n') : '(no events were assembled)'}
 
-THE CHECKPOINTS
-${input.checkpointBlocks.length ? input.checkpointBlocks.join('\n\n') : '(no checkpoint produced an expected course)'}
+WHAT WAS EXPECTED (${stated})
+${d.entries.length ? d.text : '(no checkpoint produced an expected course)'}
 
 Report the divergences as the JSON object described in your instructions.`;
 }

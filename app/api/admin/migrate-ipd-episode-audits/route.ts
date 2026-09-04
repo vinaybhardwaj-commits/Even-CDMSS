@@ -75,6 +75,8 @@ export async function POST(req: NextRequest) {
       checkpoint_wall_ms    INTEGER,
       prompt_events         INTEGER,
       assembled_events      INTEGER,
+      diff_prompt_chars     INTEGER,
+      digest_entries        INTEGER,
       stage_timings         JSONB,
       checkpoint_count      INTEGER DEFAULT 0,
       evidence_tiers        JSONB,
@@ -116,6 +118,8 @@ export async function POST(req: NextRequest) {
     await sql`ALTER TABLE ipd_episode_audits ADD COLUMN IF NOT EXISTS checkpoint_wall_ms INTEGER`;
     await sql`ALTER TABLE ipd_episode_audits ADD COLUMN IF NOT EXISTS prompt_events INTEGER`;
     await sql`ALTER TABLE ipd_episode_audits ADD COLUMN IF NOT EXISTS assembled_events INTEGER`;
+    await sql`ALTER TABLE ipd_episode_audits ADD COLUMN IF NOT EXISTS diff_prompt_chars INTEGER`;
+    await sql`ALTER TABLE ipd_episode_audits ADD COLUMN IF NOT EXISTS digest_entries INTEGER`;
     await sql`ALTER TABLE ipd_episode_audits ADD COLUMN IF NOT EXISTS stage_timings JSONB`;
     await sql`ALTER TABLE ipd_episode_audits ALTER COLUMN app_source SET DEFAULT 'standalone'`;
     steps.audits_columns = 'ok';

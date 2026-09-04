@@ -9,12 +9,12 @@
  * blinding cannot be broken by a change in here.
  */
 
-import { callModel } from './model-call';
+import { callModel, type ModelCallBudget } from './model-call';
 import { assertKnownBedrockModel } from '../bedrock-core';
 import {
   buildCommentaryUser, buildDiffUser, buildFidelityUser, parseFindings, validateCommentary,
   capFindings,
-  type Commentary, type EpisodeFinding, type ParseFailure,
+  type Commentary, type EpisodeFinding, type ExpectationDigest, type ParseFailure,
 } from './judge-core';
 import {
   IPD_EPISODE_COMMENTARY_SYSTEM, IPD_EPISODE_DIFF_SYSTEM, IPD_EPISODE_FIDELITY_SYSTEM,
@@ -73,16 +73,17 @@ export const COMMENTARY_MAX_TOKENS = 10000;
 /** Every judge call goes through the shared helper, so truncation is handled once (item 2). */
 async function callWithRetry(
   traceId: string | undefined, label: string, system: string, user: string, model: string, promptRef: string, maxTokens: number,
-): Promise<{ text: string; error: string | null; finishReason: string | null; truncated: boolean; attempts: number }> {
+  deadlineAt: number | null = null,
+): Promise<{ text: string; error: string | null; finishReason: string | null; truncated: boolean; attempts: number; budget: ModelCallBudget }> {
   const r = await callModel({
-    traceId, label, system, user, model, promptRef, maxTokens,
+    traceId, label, system, user, model, promptRef, maxTokens, deadlineAt,
     temperature: JUDGE_TEMPERATURE,
     truncationRetryInstruction:
       'YOUR PREVIOUS RESPONSE WAS CUT OFF because it was too long. Answer again with ONLY THE MOST '
       + 'CONSEQUENTIAL findings — at most 15 — most serious first. A shorter complete answer is '
       + 'worth far more than a longer truncated one, which is discarded entirely.',
   });
-  return { text: r.text, error: r.error, finishReason: r.finishReason, truncated: r.truncated, attempts: r.attempts };
+  return { text: r.text, error: r.error, finishReason: r.finishReason, truncated: r.truncated, attempts: r.attempts, budget: r.budget };
 }
 
 export interface PassResult {
@@ -100,6 +101,8 @@ export interface PassResult {
   failures: ParseFailure[];
   ok: boolean;
   error: string | null;
+  /** ROUND 13 ITEM 1. What the wall-clock budget did on this pass — recorded either way. */
+  budget: ModelCallBudget;
 }
 
 /** Pass A1 — divergence. Outcome-blind: `events` must already exclude the discharge event. */
@@ -107,12 +110,14 @@ export async function runDiffPass(a: {
   traceId: string | undefined;
   admissionContext: string;
   events: EpisodeEvent[];
-  checkpointBlocks: string[];
+  digest: ExpectationDigest;
   model: string;
-}): Promise<PassResult> {
-  const user = buildDiffUser({ admissionContext: a.admissionContext, events: a.events, checkpointBlocks: a.checkpointBlocks });
-  const { text, error, finishReason, truncated } = await callWithRetry(a.traceId, 'ipd_episode_diff', IPD_EPISODE_DIFF_SYSTEM, user, a.model, 'prompts/IPD_EPISODE_DIFF_SYSTEM', JUDGE_MAX_TOKENS);
-  if (error) return { findings: [], unparseable: 0, repaired: 0, failures: [], ok: false, error, truncated, finishReason, findingsTruncated: 0 };
+  deadlineAt?: number | null;
+}): Promise<PassResult & { promptChars: number }> {
+  const user = buildDiffUser({ admissionContext: a.admissionContext, events: a.events, digest: a.digest });
+  const promptChars = user.length;
+  const { text, error, finishReason, truncated, budget } = await callWithRetry(a.traceId, 'ipd_episode_diff', IPD_EPISODE_DIFF_SYSTEM, user, a.model, 'prompts/IPD_EPISODE_DIFF_SYSTEM', JUDGE_MAX_TOKENS, a.deadlineAt ?? null);
+  if (error) return { findings: [], unparseable: 0, repaired: 0, failures: [], ok: false, error, truncated, finishReason, findingsTruncated: 0, budget, promptChars };
   const parsed = parseFindings(text, { pass: 'divergence', idPrefix: 'a1' });
   // An empty findings list is a legitimate result — a concordant admission. Only a call or parse
   // FAILURE skips the episode (§8), so "no divergence found" must not look like a failure here.
@@ -121,7 +126,7 @@ export async function runDiffPass(a: {
   return {
     findings: capped.kept, unparseable: parsed.unparseable, repaired: parsed.repaired,
     failures: parsed.failures, ok: usable, error: usable ? null : 'the response carried no findings array',
-    truncated, finishReason, findingsTruncated: capped.dropped,
+    truncated, finishReason, findingsTruncated: capped.dropped, budget, promptChars,
   };
 }
 
@@ -133,20 +138,21 @@ export async function runFidelityPass(a: {
   extractedCase: unknown;
   extractionVersion: string | null;
   model: string;
+  deadlineAt?: number | null;
 }): Promise<PassResult> {
   const user = buildFidelityUser({
     admissionContext: a.admissionContext, events: a.events,
     extractedCase: a.extractedCase, extractionVersion: a.extractionVersion,
   });
-  const { text, error, finishReason, truncated } = await callWithRetry(a.traceId, 'ipd_episode_fidelity', IPD_EPISODE_FIDELITY_SYSTEM, user, a.model, 'prompts/IPD_EPISODE_FIDELITY_SYSTEM', JUDGE_MAX_TOKENS);
-  if (error) return { findings: [], unparseable: 0, repaired: 0, failures: [], ok: false, error, truncated, finishReason, findingsTruncated: 0 };
+  const { text, error, finishReason, truncated, budget } = await callWithRetry(a.traceId, 'ipd_episode_fidelity', IPD_EPISODE_FIDELITY_SYSTEM, user, a.model, 'prompts/IPD_EPISODE_FIDELITY_SYSTEM', JUDGE_MAX_TOKENS, a.deadlineAt ?? null);
+  if (error) return { findings: [], unparseable: 0, repaired: 0, failures: [], ok: false, error, truncated, finishReason, findingsTruncated: 0, budget };
   const parsed = parseFindings(text, { pass: 'fidelity', idPrefix: 'a2' });
   const usable = /\bfindings\b/.test(text);
   const capped = capFindings(parsed.findings);
   return {
     findings: capped.kept, unparseable: parsed.unparseable, repaired: parsed.repaired,
     failures: parsed.failures, ok: usable, error: usable ? null : 'the response carried no findings array',
-    truncated, finishReason, findingsTruncated: capped.dropped,
+    truncated, finishReason, findingsTruncated: capped.dropped, budget,
   };
 }
 
@@ -164,6 +170,7 @@ export async function runCommentaryPass(a: {
   outcomeLine: string;
   expectedCourses: string[];
   model: string;
+  deadlineAt?: number | null;
 }): Promise<{ commentary: Commentary | null; error: string | null }> {
   const user = buildCommentaryUser({
     admissionContext: a.admissionContext, events: a.events, findings: a.findings,
@@ -173,7 +180,7 @@ export async function runCommentaryPass(a: {
 
   let lastError: string | null = null;
   for (let attempt = 0; attempt < 2; attempt++) {
-    const { text, error } = await callWithRetry(a.traceId, `ipd_episode_commentary${attempt ? '_retry' : ''}`, IPD_EPISODE_COMMENTARY_SYSTEM, user, a.model, 'prompts/IPD_EPISODE_COMMENTARY_SYSTEM', COMMENTARY_MAX_TOKENS);
+    const { text, error } = await callWithRetry(a.traceId, `ipd_episode_commentary${attempt ? '_retry' : ''}`, IPD_EPISODE_COMMENTARY_SYSTEM, user, a.model, 'prompts/IPD_EPISODE_COMMENTARY_SYSTEM', COMMENTARY_MAX_TOKENS, a.deadlineAt ?? null);
     if (error) { lastError = error; continue; }
     const v = validateCommentary(text, knownIds);
     if (v.ok) return { commentary: v.commentary, error: null };

@@ -111,6 +111,13 @@ CREATE TABLE IF NOT EXISTS ipd_episode_audits (
   -- checkpoint re-rendered 269 billing lines; the ratio makes that visible before it is a failure.
   prompt_events         INTEGER,
   assembled_events      INTEGER,
+  -- ROUND 13 ITEM 3. The diff pass used to be sent every expected course in full; it is now sent a
+  -- deduplicated digest of item text (decision 33 left it judging commission, timing and
+  -- sequencing, none of which need the matchers, rationales or severities). Both numbers are
+  -- stored because either alone is unreadable: chars without entries cannot say whether a smaller
+  -- prompt came from the digest or from a quieter episode.
+  diff_prompt_chars     INTEGER,
+  digest_entries        INTEGER,
   -- Per-stage wall times. Without these, "which stage is superlinear" is a guess.
   stage_timings         JSONB,
   checkpoint_count      INTEGER DEFAULT 0,

@@ -111,6 +111,56 @@ The grouping key is `section | matcher (kind + lowercased, de-duplicated, sorted
 
 Both counts are stored, `n_resolver_grouped` and `n_resolver_ungrouped`. Reporting only the first hides the collapse; reporting only the second describes an episode nobody is shown.
 
+### 1.8 Round 13 — the budget, the ladder, and the digest (V's instruction 2026-09-04)
+
+*Not numbered as decisions, on the round-12 precedent: V gave these as round items and I am not
+going to assign decision numbers on V's behalf.*
+
+**The failure.** IP-1483 (LOS 7, 8 checkpoints) ran the diff pass three times, each ending
+`bedrock TIMEOUT after 110000ms (attempt 3/3)` at ~332 s, and the third began at +763.7 s inside an
+`maxDuration` of 800. The invocation was killed with **no audit row and no skip row** — the same
+class of loss as round 11's `::jsonb` cast, reached from a different direction.
+
+**Item 1 — a wall-clock deadline reaches the model calls.** The worker derives `deadlineAt` from
+its own `maxDuration` less a 40 s persist reserve and threads it to every call. `callModel` refuses
+to begin a call when less than one worst case remains, and the refusal is a returned `error`, so
+the episode lands as a recorded `diff_failed` skip (§8) rather than a dead invocation. The worst
+case is **derived** — `totalBudgetMs('bedrock', 'utility')` = 332,250 ms — never typed here; IP-1483
+measured 332,735 ms and 331,818 ms on consecutive attempts, so the derivation is the observed
+number. The deadline and the budget remaining at each attempt are recorded on `stage_timings`.
+
+**Item 2 — the nested ladder is gone.** `governedChat` already runs the provider ladder; this
+engine wrapped it in `TRANSPORT_ATTEMPTS = 3`, making nine provider attempts of a call that can
+cost 332 s each. `TRANSPORT_ATTEMPTS` is now **1**. The reasoning this file already applied to
+truncation applies unchanged to a timeout: a retry at the same size gets the same timeout.
+
+**Item 3 — the diff pass reads a digest, not the courses.** Since decision 33 A1 emits no
+omissions, so it does not need matchers, rationales, proposed severities or citation ordinals. It
+receives item text, deduplicated across checkpoints, grouped by category, with the earliest
+`by_day`. **One field is kept beyond "item text only": the entry ref**, because §3.4 requires
+`checkpoint_ref` non-null, the uncited cap resolves that ref against `entryRefs`, and citation
+inheritance (round 11 item 8) uses the same lookup — a digest line with no ref would break all
+three. The representative ref is the earliest member that carries citations, and only the earliest
+outright when no member carries any, so grouping cannot discard evidence that exists.
+`diff_prompt_chars` and `digest_entries` are stored.
+
+**MEASURED ON IP-1483, and it is smaller than it looks.** The expectations block fell 50,887 →
+20,485 chars (−60%), but the whole prompt fell only 246,859 → ~216,486 (−12.3%), because **the
+real course is 90.4% of what remains**. Deduplication barely fired: 125 entries collapsed to 123
+distinct, since the checkpoint model states the same expectation in different words each day
+("Serum creatinine and electrolytes (K, Na) to assess…" vs "Renal function test (creatinine, urea,
+electrolytes…)"). That is the same defect V raises for resolver grouping in round 14 item 4, and
+the digest will inherit whatever subject-level key that builds.
+
+**WHAT STILL BINDS, stated rather than raised.** The diff call is classified `utility` —
+110 s per attempt, the class `lib/bedrock.ts` documents as "a short bounded call (critic,
+classifier, expansion). Seconds." IPNO-416's diff took **212,402 ms** and succeeded only because a
+first attempt timed out and a second came in under the ceiling. The driver is generation time
+against `max_tokens: 16000` (416 emitted 18,829 chars), not input size, so no amount of prompt
+shaping reaches it. `PROVIDER_BUDGETS.bedrock` already carries `audit_ipd` (200 s × 1) and `audit`
+(380 s × 1), and `bedrock.ts` says "an audit-class caller passes its own". This engine has never
+passed one. **Nothing was raised — this is the flag V's instruction asked for.**
+
 ### 4.2a `unassessable` must be earned (added 2026-09-02, decision 33)
 
 A finding may carry `unassessable` only if its `evidence_basis` is empty or every cited source is Tier C. Anything else is rewritten to `context_dependent` in code and counted in `n_unassessable_rejected`. Resolver findings with `resolution = 'absent_class_missing'` are exempt: that gap was established by code rather than claimed by a model.

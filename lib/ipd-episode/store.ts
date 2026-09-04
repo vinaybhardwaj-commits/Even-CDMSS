@@ -264,6 +264,9 @@ export interface EpisodeAuditRow {
   /** Events the PROMPTS carried, against what assembly produced — the roll-up ratio. */
   promptEvents?: number | null;
   assembledEvents?: number | null;
+  /** ROUND 13 ITEM 3. The A1 user message's size, and how many distinct expectations it carried. */
+  diffPromptChars?: number | null;
+  digestEntries?: number | null;
   /** Per-stage wall times, so the next investigation does not have to guess which stage is slow. */
   timings?: unknown;
   /** Pass B's one un-rederivable input, persisted for the on-demand run (decision 35). */
@@ -381,7 +384,8 @@ export async function saveEpisodeAudit(row: EpisodeAuditRow, checkpoints: Checkp
          checkpoint_policy, checkpoint_concurrency, checkpoint_wall_ms,
          prompt_events, assembled_events, stage_timings,
          capped_count, checkpoint_count, evidence_tiers, real_course, findings, admission_context, commentary,
-         model_checkpoint, model_judge, trace_id, error_detail, raw_judge_error)
+         model_checkpoint, model_judge, trace_id, error_detail, raw_judge_error,
+         diff_prompt_chars, digest_entries)
        VALUES ($1,TRUE,$2,$3,$4,$5,
                $6,$7,$8,$9,$10,$11,
                $12,$13,$14,$15,$16,$17,
@@ -391,7 +395,8 @@ export async function saveEpisodeAudit(row: EpisodeAuditRow, checkpoints: Checkp
                $36,$37,$38::jsonb,$39,$40,$41,
                $42,$43,$44::jsonb,$45,$46,$47::jsonb,
                $48::jsonb,$49::jsonb,$50,$51::jsonb,$52,$53,
-               $54,$55,$56::jsonb)
+               $54,$55,$56::jsonb,
+               $57,$58)
        RETURNING id`,
       [
         runSeq,
@@ -419,6 +424,10 @@ export async function saveEpisodeAudit(row: EpisodeAuditRow, checkpoints: Checkp
         row.commentary == null ? null : JSON.stringify(row.commentary),
         row.modelCheckpoint, row.modelJudge, row.traceId, row.errorDetail ?? null,
         row.rawJudgeError == null ? null : JSON.stringify(row.rawJudgeError),
+        // APPENDED, NOT INSERTED. Round 11 renumbered this statement to add a column and left two
+        // casts on their old placeholders; the episode ran 314 s and persisted nothing. Adding at
+        // the end moves no existing $n, so the diff is two columns and two parameters.
+        row.diffPromptChars ?? null, row.digestEntries ?? null,
       ],
     );
     const first = res[0];

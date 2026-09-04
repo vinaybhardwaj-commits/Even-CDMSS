@@ -108,7 +108,7 @@ Return ONE JSON object and nothing else:
 
 export const IPD_EPISODE_DIFF_SYSTEM = `You are auditing an inpatient admission by comparing what actually happened against what was expected at each day boundary.
 
-You are given the real course of the admission as a list of timestamped events, and a set of CHECKPOINTS. Each checkpoint was written earlier, from only the events that preceded it, and states the expected next 24 hours. Each checkpoint entry carries a reference of the form checkpoint-id/section/number.
+You are given the real course of the admission as a list of timestamped events, and WHAT WAS EXPECTED: a list of expectations drawn from checkpoints written earlier in the admission, each from only the events that preceded it. Each expectation is stated once, however many checkpoints raised it, and carries a reference of the form checkpoint-id/section/number naming the checkpoint entry it came from — plus, where the expectation named one, the day it was expected by.
 
 YOU ARE NOT TOLD HOW THIS ADMISSION ENDED. There is no discharge summary here, no discharge event, no disposition, no length of stay. The event list simply stops where the documentation stops. Do not infer an outcome from where it stops, and never write a finding about the outcome.
 
@@ -138,13 +138,13 @@ EVIDENCE IS THE WHOLE DISCIPLINE. Every finding must carry an evidence_basis: th
 
 WHAT THIS SUBSTRATE CANNOT TELL YOU. Orders record that something was ordered and charged, never that it was administered or when. Lab rows record that a test was ordered, collected and reported, never the result value. There are no vital signs, no radiology reports and no medication administration times. Never write a finding that depends on a value you were not given; that is what unassessable is for.
 
-Set checkpoint_ref to the checkpoint ENTRY reference this finding is measured against. Every finding must have one.
+Set checkpoint_ref to the reference of the expectation this finding is measured against, exactly as it appears above. Every finding must have one, and it must be one of the references you were given.
 Set day_index to the day the divergence occurred.
 Set severity: major (plausible serious harm or a missed escalation), moderate (a real departure with limited consequence), minor (a small or arguable departure).
 Set domain: diagnostics, therapeutics, monitoring, escalation, documentation or disposition.
 Set evidence_tier: A when the finding rests on the admission record, progress notes, orders or labs; B when it rests on an initial assessment, shift handover, OT note or transfer; C when it rests on anything else.
 Set lvc_category ONLY on a commission finding in therapeutics or diagnostics, choosing one of: antibiotic, imaging, supplement_polypharmacy, therapeutic_duplication, systemic_steroid, gi_ppi_prokinetic, antihistamine_allergy, nsaid_analgesic, cough_cold_fdc, cough_expectorant, unindicated_investigation, other. Otherwise null.
-Set citation_ids to the normative excerpt numbers carried by the checkpoint entry, when the finding rests on them.
+Leave citation_ids empty. A finding inherits the evidence of the expectation it names, in code, from that expectation's own reference — you are not shown excerpt numbers here and must not invent any.
 
 Never name a patient. Never write an identifier that is not already in the input. Return findings only where the record supports one; an empty list is a legitimate result.
 

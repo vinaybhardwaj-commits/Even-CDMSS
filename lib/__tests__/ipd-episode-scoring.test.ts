@@ -16,7 +16,9 @@ import {
   storedDivergenceIndex, impliedFindingType, capSeverityAt, CAP_SEVERITY_CEILING,
   divergenceBandFor, bandIsUncertain, DIVERGENCE_BANDS, BAND_THRESHOLDS, INDEX_REPEAT_SPREAD,
   dropJudgedOmissions, enforceUnassessable, findingsFromResolved, domainForSection,
+  buildExpectationDigest, buildDiffUser,
   type EpisodeFinding, type Severity, type Verdict, type Domain, type AuditPass,
+  type DigestSource,
 } from '../ipd-episode/judge-core';
 import {
   checkpointEntryRefs, parseExpectedCourse, buildRetrievalQuery, renderExpectedCourse,
@@ -1586,4 +1588,173 @@ test('model env: an override is honoured; an unknown id is REFUSED before any wo
   // the refusal is the point: a mistyped variable must cost a throw, not a silently cheaper grader
   assert.throws(() => assertKnownBedrockModel(judgeModel({ IPD_EPISODE_JUDGE_MODEL: 'gpt-4o' })), /unknown model/);
   assert.throws(() => assertKnownBedrockModel(checkpointModel({ IPD_EPISODE_CHECKPOINT_MODEL: 'claude-haiku-4-5' })), /unknown model/);
+});
+
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+// ROUND 13 ITEM 3 · THE EXPECTATION DIGEST
+//
+// The diff pass was sent 50,978 characters of expected courses for IP-1483 — every entry with its
+// rationale, matcher, proposed severity and citation ordinals, restated by every checkpoint that
+// raised it. Since decision 33 A1 emits no omissions, so none of that apparatus is what it reads
+// with; it needs to know what was anticipated. These tests pin what survives the cut and, more
+// importantly, what must NOT be lost with the rest: the entry ref that `checkpoint_ref`, the
+// uncited cap and citation inheritance all resolve against.
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+
+const entry = (item: string, by_day: number | null, citation_ids: number[] = []) => ({
+  item, by_day, rationale: 'because the guideline says so', citation_ids,
+  matcher: { kind: 'lab' as const, terms: ['cbc', 'complete blood count'] },
+  proposed_severity: 'major' as const,
+});
+
+const src = (checkpointId: string, dayIndex: number, course: Partial<{
+  expected_diagnostics: ReturnType<typeof entry>[];
+  expected_therapeutics: ReturnType<typeof entry>[];
+  expected_monitoring: { item: string; frequency: string; rationale: string; citation_ids: number[]; matcher: { kind: 'note'; terms: string[] }; proposed_severity: 'minor' }[];
+  escalation_triggers: { trigger: string; action: string; citation_ids: number[]; matcher: { kind: 'other'; terms: string[] }; proposed_severity: 'moderate' }[];
+}>): DigestSource => ({
+  checkpointId, dayIndex,
+  course: {
+    expected_diagnostics: [], expected_therapeutics: [], expected_monitoring: [], escalation_triggers: [],
+    expected_los_days: 4, expected_disposition: 'home', uncertainty: ['the excerpts were quiet'],
+    ...course,
+  },
+});
+
+test('digest: one expectation stated by four checkpoints becomes ONE line that keeps all four refs', () => {
+  const d = buildExpectationDigest([
+    src('cp-d0', 0, { expected_diagnostics: [entry('Serum creatinine', 1)] }),
+    src('cp-d1', 1, { expected_diagnostics: [entry('Serum creatinine', 2)] }),
+    src('cp-d2', 2, { expected_diagnostics: [entry('serum   CREATININE', 3)] }),
+    src('cp-d3', 3, { expected_diagnostics: [entry('Serum creatinine', 4)] }),
+  ]);
+  assert.equal(d.entries.length, 1, 'one distinct expectation');
+  assert.equal(d.ungroupedCount, 4, 'standing for four expected-course entries');
+  // NOTHING IS DISCARDED — the same guarantee round 12 gives resolver grouping.
+  assert.deepEqual(d.entries[0].memberRefs,
+    ['cp-d0/diagnostics/1', 'cp-d1/diagnostics/1', 'cp-d2/diagnostics/1', 'cp-d3/diagnostics/1']);
+  // whitespace and case are normalised exactly as round 12's matcher-less fallback normalises
+  assert.equal(d.entries[0].item, 'Serum creatinine');
+});
+
+test('digest: the EARLIEST by_day wins — a timing finding is measured against the earlier deadline', () => {
+  const d = buildExpectationDigest([
+    src('cp-d0', 0, { expected_diagnostics: [entry('Blood cultures', 3)] }),
+    src('cp-d1', 1, { expected_diagnostics: [entry('Blood cultures', 1)] }),
+    src('cp-d2', 2, { expected_diagnostics: [entry('Blood cultures', 2)] }),
+  ]);
+  assert.equal(d.entries[0].byDay, 1);
+  assert.match(d.text, /by day 1/);
+});
+
+test('digest: the representative ref is the earliest CITED member, so the cap never loses evidence', () => {
+  // cp-d0 raised it uncited; cp-d2 raised the same expectation with a citation. Taking the
+  // earliest unconditionally would hand applyUncitedCap an uncited ref and cap a grounded
+  // expectation — the citation-losing defect round 11 item 8 was written to end.
+  const d = buildExpectationDigest([
+    src('cp-d0', 0, { expected_diagnostics: [entry('Chest radiograph', 1, [])] }),
+    src('cp-d1', 1, { expected_diagnostics: [entry('Chest radiograph', 1, [])] }),
+    src('cp-d2', 2, { expected_diagnostics: [entry('Chest radiograph', 1, [7])] }),
+  ]);
+  assert.equal(d.entries[0].ref, 'cp-d2/diagnostics/1');
+  assert.equal(d.entries[0].memberRefs.length, 3, 'and every member is still addressable');
+});
+
+test('digest: with no member cited anywhere, the representative is simply the earliest', () => {
+  const d = buildExpectationDigest([
+    src('cp-d1', 1, { expected_diagnostics: [entry('Lactate', 1, [])] }),
+    src('cp-d2', 2, { expected_diagnostics: [entry('Lactate', 1, [])] }),
+  ]);
+  assert.equal(d.entries[0].ref, 'cp-d1/diagnostics/1');
+});
+
+test('digest: sections never merge, and each is rendered under its own heading', () => {
+  const d = buildExpectationDigest([
+    src('cp-d0', 0, {
+      expected_diagnostics: [entry('Potassium', 1)],
+      expected_therapeutics: [entry('Potassium', 1)],   // same text, different section
+      expected_monitoring: [{ item: 'Urine output', frequency: 'hourly', rationale: 'r', citation_ids: [2], matcher: { kind: 'note', terms: ['urine'] }, proposed_severity: 'minor' }],
+      escalation_triggers: [{ trigger: 'SBP < 90', action: 'call the intensivist', citation_ids: [], matcher: { kind: 'other', terms: [] }, proposed_severity: 'moderate' }],
+    }),
+  ]);
+  assert.equal(d.entries.length, 4, 'the same text in two sections is two expectations');
+  for (const heading of ['DIAGNOSTICS', 'THERAPEUTICS', 'MONITORING', 'ESCALATION TRIGGERS']) {
+    assert.ok(d.text.includes(heading), `${heading} is rendered`);
+  }
+  assert.match(d.text, /SBP < 90 → call the intensivist/, 'a trigger renders as trigger → action');
+});
+
+test('digest: monitoring and escalation carry no by_day rather than a made-up one', () => {
+  const d = buildExpectationDigest([
+    src('cp-d0', 0, {
+      expected_monitoring: [{ item: 'Neuro obs', frequency: '4 hourly', rationale: 'r', citation_ids: [], matcher: { kind: 'note', terms: [] }, proposed_severity: 'minor' }],
+    }),
+  ]);
+  assert.equal(d.entries[0].byDay, null);
+  assert.ok(!/by day/.test(d.text), 'and nothing in the text claims one');
+});
+
+test('digest: the rationale, the matcher, the severity and the citations do NOT reach the prompt', () => {
+  const d = buildExpectationDigest([
+    src('cp-d0', 0, { expected_diagnostics: [entry('Serum creatinine', 1, [4, 9])] }),
+  ]);
+  const user = buildDiffUser({ admissionContext: 'ctx', events: [], digest: d });
+  assert.ok(!user.includes('because the guideline says so'), 'no rationale');
+  assert.ok(!user.includes('complete blood count'), 'no matcher terms');
+  assert.ok(!/proposed_severity|\bmajor\b/.test(user), 'no proposed severity');
+  assert.ok(!/citations? \d|\[citations/.test(user), 'no citation ordinals');
+  // and the two things that MUST survive
+  assert.ok(user.includes('cp-d0/diagnostics/1'), 'the entry ref survives — checkpoint_ref needs it');
+  assert.ok(user.includes('Serum creatinine'), 'the expectation itself survives');
+});
+
+test('digest: the prompt states the reduction, so a reader can see what was collapsed', () => {
+  const many = buildExpectationDigest([
+    src('cp-d0', 0, { expected_diagnostics: [entry('Serum creatinine', 1)] }),
+    src('cp-d1', 1, { expected_diagnostics: [entry('Serum creatinine', 1)] }),
+  ]);
+  assert.match(buildDiffUser({ admissionContext: 'c', events: [], digest: many }),
+    /1 distinct expectation, stated 2 times across the checkpoints/);
+  const one = buildExpectationDigest([src('cp-d0', 0, { expected_diagnostics: [entry('Serum creatinine', 1)] })]);
+  assert.match(buildDiffUser({ admissionContext: 'c', events: [], digest: one }), /\(1 expectation\)/);
+});
+
+test('digest: a checkpoint that produced no course contributes nothing and breaks nothing', () => {
+  const d = buildExpectationDigest([
+    { checkpointId: 'cp-d0', dayIndex: 0, course: null },
+    src('cp-d1', 1, { expected_diagnostics: [entry('CBC', 2)] }),
+  ]);
+  assert.equal(d.entries.length, 1);
+  assert.equal(d.entries[0].ref, 'cp-d1/diagnostics/1');
+  const empty = buildExpectationDigest([{ checkpointId: 'cp-d0', dayIndex: 0, course: null }]);
+  assert.equal(empty.entries.length, 0);
+  assert.match(buildDiffUser({ admissionContext: 'c', events: [], digest: empty }),
+    /no checkpoint produced an expected course/);
+});
+
+test('digest: an entry ref it emits always resolves in checkpointEntryRefs — the cap depends on it', () => {
+  const course = src('cp-d2', 2, {
+    expected_diagnostics: [entry('CBC', 1, [3])],
+    expected_therapeutics: [entry('Ceftriaxone', 0, [])],
+  }).course!;
+  const d = buildExpectationDigest([{ checkpointId: 'cp-d2', dayIndex: 2, course }]);
+  const known = new Set(checkpointEntryRefs('cp-d2', course).map((r) => r.ref));
+  for (const e of d.entries) {
+    assert.ok(known.has(e.ref), `${e.ref} is a real entry ref`);
+    for (const m of e.memberRefs) assert.ok(known.has(m), `${m} is a real entry ref`);
+  }
+});
+
+test('digest: it is materially smaller than the full render it replaces', () => {
+  const sources = [0, 1, 2, 3, 4, 5, 6].map((day) => src(`cp-d${day}`, day, {
+    expected_diagnostics: [entry('Serum creatinine and electrolytes', day + 1, [1]), entry('Complete blood count', day + 1, [2])],
+    expected_therapeutics: [entry('Empirical antibiotics per local policy', day, [3])],
+  }));
+  const digest = buildExpectationDigest(sources);
+  const full = sources.map((s) => renderExpectedCourse(s.checkpointId, s.dayIndex, 'daily', s.course, [1, 2, 3])).join('\n\n');
+  assert.equal(digest.entries.length, 3, 'three distinct expectations across seven checkpoints');
+  assert.equal(digest.ungroupedCount, 21);
+  assert.ok(digest.text.length * 4 < full.length,
+    `the digest (${digest.text.length}) is a small fraction of the full render (${full.length})`);
 });

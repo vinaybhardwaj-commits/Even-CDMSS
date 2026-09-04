@@ -29,11 +29,12 @@ import { admissionContextLine, renderExpectedCourse, type CheckpointEntryRef } f
 import { checkpointModel, normativeSourcesForProvenance, runCheckpoint, type CheckpointResult } from './checkpoint';
 import { judgeModel, runDiffPass, runFidelityPass, JUDGE_TEMPERATURE } from './judge';
 import {
-  evidenceTiersOf, finalizeFindings, completenessPct, resolveFindingCitations,
+  buildExpectationDigest, evidenceTiersOf, finalizeFindings, completenessPct, resolveFindingCitations,
   scoringStatusFor, storedDivergenceIndex, findingsFromResolved, domainForSection,
   divergenceBandFor, bandIsUncertain,
   type EpisodeFinding,
 } from './judge-core';
+import { ONE_CALL_WORST_CASE_MS } from './model-call';
 import { resolveAll, resolutionCounts, type ResolvableEntry } from './resolve-core';
 import { fetchProgressNotes, fetchDischargeSummary } from './db13';
 import {
@@ -64,6 +65,15 @@ export interface RunEpisodeInput {
   /** From the selection query; used to date a skip row when the episode never assembles. */
   dischargedAtHint?: string | null;
   engineVersion?: string;
+  /**
+   * ROUND 13 ITEM 1. Epoch ms by which the INVOCATION must be finished — the worker's box, not
+   * this episode's share of it. Every model call refuses to start unless a whole worst case still
+   * fits before it, so an episode that cannot finish lands as a recorded skip rather than as a
+   * killed function that leaves neither an audit row nor a skip row.
+   *
+   * Absent means unbudgeted. Only a test calls it that way; the worker always passes one.
+   */
+  deadlineAt?: number | null;
 }
 
 export interface RunEpisodeResult {
@@ -182,6 +192,9 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
   const t0 = Date.now();
   const encounterId = input.encounterId;
   const engineVersion = input.engineVersion ?? IPD_EPISODE_ENGINE_VERSION;
+  // Round 13 item 1. Bound once here and passed to every model call, so one episode cannot spend
+  // the box a later episode in the same tick still has to run in.
+  const deadlineAt = input.deadlineAt ?? null;
 
   // MODELS FIRST, BEFORE ANY WORK (§3.7). An unlisted id must cost nothing — not a db13 read, not
   // a retrieval, and certainly not three Opus calls that then land on a row nobody can attribute.
@@ -287,6 +300,7 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
 
       return runCheckpoint({
         traceId,
+        deadlineAt,
         checkpointId: entry.checkpoint_id,
         checkpointType: entry.checkpoint_type,
         dayIndex: entry.day_index,
@@ -336,6 +350,8 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
       checkpoint_count: checkpoints.length,
       assembled_events: events.length,
       prompt_events: summariseEventsForPrompt(diffPassEvents(events)).length,
+      deadline_at: deadlineAt,
+      budget_remaining_ms: deadlineAt == null ? null : deadlineAt - Date.now(),
       checkpoints: checkpoints.map((c) => ({
         id: c.checkpointId, status: c.status, entries: c.entryCount,
         finish_reason: c.finishReason, attempts: c.attempts, wall_ms: c.wallMs,
@@ -352,6 +368,13 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
       return { encounterId, skip: 'diff_failed', error: 'every checkpoint errored', traceId, latencyMs: Date.now() - t0, notes: assemblyNotes };
     }
 
+    // ROUND 13 ITEM 3. The DIGEST goes to the diff pass — item text, deduplicated across
+    // checkpoints, grouped by category, earliest by_day, one resolvable entry ref. The fully
+    // rendered courses are still built, because pass B reads them on the detail page and the
+    // resolver reads the courses themselves; only A1's input changes.
+    const digest = buildExpectationDigest(
+      checkpoints.map((c) => ({ checkpointId: c.checkpointId, dayIndex: c.dayIndex, course: c.expectedCourse })),
+    );
     const checkpointBlocks = checkpoints
       .filter((c) => c.expectedCourse)
       .map((c) => renderExpectedCourse(c.checkpointId, c.dayIndex, c.checkpointType, c.expectedCourse, c.citationIds));
@@ -403,10 +426,10 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
     // ── 4. diff (A1) — blind: the discharge event is filtered out ──
     const tDiff = Date.now();
     const a1 = await runDiffPass({
-      traceId, admissionContext,
+      traceId, admissionContext, deadlineAt,
       // PROMPT SHAPING: the judge reads the rolled-up order stream too (item 2)
       events: summariseEventsForPrompt(diffPassEvents(events)),
-      checkpointBlocks, model: modelJudge,
+      digest, model: modelJudge,
     });
     const diffMs = Date.now() - tDiff;
     if (!a1.ok) {
@@ -420,7 +443,8 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
     // ── 5. fidelity (A2) — the only pass that reads the summary ──
     const tFid = Date.now();
     const a2 = await runFidelityPass({
-      traceId, admissionContext, events: summariseEventsForPrompt(fidelityPassEvents(events)),
+      traceId, admissionContext, deadlineAt,
+      events: summariseEventsForPrompt(fidelityPassEvents(events)),
       extractedCase: extraction.extractedJson, extractionVersion: extraction.extractionVersion, model: modelJudge,
     });
     const fidelityMs = Date.now() - tFid;
@@ -602,11 +626,24 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
       checkpointWallMs,
       promptEvents: summariseEventsForPrompt(diffPassEvents(events)).length,
       assembledEvents: events.length,
+      // ROUND 13 ITEM 3, THE MEASUREMENT. Both halves, for the same reason round 12 stores both
+      // resolver counts: `diff_prompt_chars` alone cannot say whether a smaller prompt came from
+      // the digest or from a quieter episode, and `digest_entries` alone cannot say what it saved.
+      diffPromptChars: a1.promptChars,
+      digestEntries: digest.entries.length,
       timings: {
         assemble_ms: assembleMs, retrieval_ms: retrievalMsTotal,
         checkpoint_ms: checkpointMsTotal, checkpoint_max_ms: checkpointMsMax,
         checkpoint_wall_ms: checkpointWallMs,
         diff_ms: diffMs, fidelity_ms: fidelityMs, commentary_ms: commentaryMs,
+        // ROUND 13 ITEM 1. The deadline this invocation ran against, and what each judge pass had
+        // left when it was considered. A budget that never bound still records that it did not.
+        budget: {
+          deadline_at: deadlineAt,
+          worst_case_one_call_ms: ONE_CALL_WORST_CASE_MS,
+          diff_remaining_ms: a1.budget.remainingMsAtAttempt,
+          fidelity_remaining_ms: a2.budget.remainingMsAtAttempt,
+        },
       },
       checkpointCount: checkpoints.length,
       evidenceTiers: evidenceTiersOf(sourcesPresent),

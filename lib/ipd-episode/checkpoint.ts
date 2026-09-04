@@ -98,6 +98,8 @@ export interface RunCheckpointInput {
   events: EpisodeEvent[];
   retrievalQueryInput: Parameters<typeof buildRetrievalQuery>[0];
   model: string;
+  /** ROUND 13 ITEM 1. Epoch ms the invocation must finish by; no call starts without room. */
+  deadlineAt?: number | null;
 }
 
 export interface CheckpointResult {
@@ -318,6 +320,7 @@ export async function runCheckpoint(input: RunCheckpointInput): Promise<Checkpoi
       promptRef: 'prompts/IPD_EPISODE_CHECKPOINT_SYSTEM',
       maxTokens: CHECKPOINT_MAX_TOKENS,
       temperature: CHECKPOINT_TEMPERATURE,
+      deadlineAt: input.deadlineAt ?? null,
       truncationRetryInstruction:
         'YOUR PREVIOUS RESPONSE WAS CUT OFF because it was too long. Answer again with FEWER '
         + 'entries — at most two per category, the most consequential ones — and keep every '
