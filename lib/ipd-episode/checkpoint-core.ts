@@ -13,7 +13,7 @@
 
 import { extractJsonObject } from '../lvc-value-core';
 import { collapseSpaces, PHARMACY_SERVICE_TYPE, type EpisodeEvent } from './assemble-core';
-import { MATCHER_KINDS, type MatcherKind } from './resolve-core';
+import { MATCHER_KINDS, SUBJECT_CONCEPTS, subjectWords, type MatcherKind } from './resolve-core';
 
 export const RETRIEVAL_TOP_K = 8;
 const NOTE_QUERY_CHARS = 400;
@@ -407,6 +407,11 @@ export function offTopicThreshold(total: number): number {
   return Math.max(OFF_TOPIC_MIN, Math.ceil(total * OFF_TOPIC_FRACTION));
 }
 
+/** The canonical clinical concepts a piece of text is about (resolve-core's shared vocabulary). */
+function conceptsOf(text: string): Set<string> {
+  return new Set(subjectWords(text).filter((w) => SUBJECT_CONCEPTS.has(w)));
+}
+
 export function clinicalTerms(text: string): Set<string> {
   const out = new Set<string>();
   for (const raw of (text || '').toLowerCase().split(/[^a-z0-9]+/)) {
@@ -445,9 +450,25 @@ export function assessTopicality(
     return out;
   };
   const q = distinctive(query);
+  // ⚠️ CONCEPTS FIRST, RAW WORDS ONLY AS A FALLBACK — and this is the correction that made the
+  // flag honest rather than merely loud. Judging titles on raw distinctive words made IP-1483
+  // report 52 of 64 excerpts off topic while the day-1 slate was Chronic Kidney Disease,
+  // End-Stage Renal Disease, Uraemia, Acute Kidney Injury and diabetes-with-CKD — squarely on
+  // topic for a CKD admission. The query said "renal" and "CKD"; the titles said "kidney" and
+  // "nephrology"; no raw word matched. That is item 4's defect for the third time in one round:
+  // a test asking whether the WORDS agree, about things that plainly do.
+  //
+  // So the vocabulary that groups expectations by subject also decides topicality. One shared
+  // CONCEPT is enough — a title is a compressed topic statement, and agreeing with the query
+  // about what the case IS is not a coincidence the way one shared word can be.
+  const qConcepts = conceptsOf(query);
   if (q.size === 0 || excerpts.length === 0) return { offTopic: false, offTopicCount: 0, total: excerpts.length };
   let off = 0;
   for (const x of excerpts) {
+    if (qConcepts.size) {
+      const shared = [...conceptsOf(x.label)].some((c) => qConcepts.has(c));
+      if (shared) continue;
+    }
     // ⚠️ ROUND 14 ITEM 7, HALF ONE — JUDGE THE TITLE, NOT THE BODY. Topicality is a property of
     // what a passage is ABOUT, and the label says that; a 1,100-character body shares vocabulary
     // with almost anything clinical. On IPNO-416's day-2 checkpoint the slate included

@@ -8,6 +8,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
   applyTierCRule, applySeverityCap, entryWasUncited, attachAttribution, attributedParty, completenessPct,
   countFindings, divergenceIndex, normalizeFidelityFindings, evidenceTiersOf, finalizeFindings,
@@ -17,7 +18,7 @@ import {
   divergenceBandFor, bandIsUncertain, DIVERGENCE_BANDS, BAND_THRESHOLDS, INDEX_REPEAT_SPREAD,
   dropJudgedOmissions, enforceUnassessable, findingsFromResolved, domainForSection,
   buildExpectationDigest, buildDiffUser, applyBillingOnlyCap, notesOnDay, missingDischargeDayNote,
-  subjectWords, SUBJECT_CONCEPTS,
+  subjectWords, SUBJECT_CONCEPTS, MISSING_DISCHARGE_NOTE_ID,
   type EpisodeFinding, type Severity, type Verdict, type Domain, type AuditPass,
   type DigestSource,
 } from '../ipd-episode/judge-core';
@@ -1844,4 +1845,68 @@ test('ITEM 4: every canonical concept is reachable as a word in its own right', 
   for (const concept of SUBJECT_CONCEPTS) {
     assert.deepEqual(subjectWords(concept), [concept], `"${concept}" canonicalises to itself`);
   }
+});
+
+
+test('ITEM 7 (corrected): topicality is judged on CONCEPTS — "renal" and "kidney" are one subject', () => {
+  // THE OVER-FIRE THIS FIXES. Judging titles on raw distinctive words made IP-1483 report 52 of 64
+  // excerpts off topic while its day-1 slate was Chronic Kidney Disease, End-Stage Renal Disease,
+  // Uraemia and Acute Kidney Injury — for a CKD admission. The query said "renal"; the titles said
+  // "kidney". A flag that fires on good retrieval is as useless as one that never fires.
+  const query = 'PATIENT REVIEWED K/C/O OF TYPE 2 DM / HYPERTENSION / CKD ON MEDICAL MANAGEMENT / RECURRENT UTI creatinine';
+  const onTopic = [
+    'UpToDate · Chronic kidney disease · Patient information',
+    'StatPearls · End-Stage Renal Disease · Pearls and Other Issues',
+    'StatPearls · Uremia · Continuing Education Activity',
+    'Nephrology · Acute Kidney Injury',
+  ].map((label) => ({ label, text: '' }));
+  const r = assessTopicality(query, onTopic);
+  assert.equal(r.offTopicCount, 0, 'a nephrology slate for a CKD admission is on topic');
+  assert.equal(r.offTopic, false);
+});
+
+test('ITEM 7 (corrected): a genuinely unrelated title is still caught', () => {
+  const query = 'bilateral acute pyelonephritis hydroureteronephrosis DJ stenting urosepsis pancreatitis';
+  const off = [
+    { label: 'Tintinallis · 145 Oncologic Emergencies in Infants and Children', text: '' },
+    { label: 'UpToDate · Causes of hyperkalemia in children · REFERENCES', text: '' },
+    { label: 'Lit-Indian-J-Crit-Care-Med · Weil’s syndrome with paraparesis', text: '' },
+    { label: 'StatPearls · Ureterolithiasis · Evaluation', text: '' },
+  ];
+  const r = assessTopicality(query, off);
+  assert.equal(r.offTopicCount, 3, 'the paediatric and leptospirosis passages, not the ureteric one');
+  assert.equal(r.offTopic, true);
+});
+
+test('ITEM 7: one vocabulary serves grouping and topicality — the same map, not two copies', () => {
+  // item 4 and item 7 were the same defect, so they must not drift apart.
+  const core = readFileSync('lib/ipd-episode/checkpoint-core.ts', 'utf8');
+  assert.match(core, /import \{[^}]*SUBJECT_CONCEPTS, subjectWords[^}]*\} from '\.\/resolve-core'/,
+    'topicality reads the shared vocabulary rather than defining its own');
+  assert.ok(SUBJECT_CONCEPTS.has('renalfunction'));
+  assert.deepEqual(subjectWords('chronic kidney disease'), ['renalfunction']);
+  assert.deepEqual(subjectWords('End-Stage Renal Disease'), ['renalfunction']);
+  assert.deepEqual(subjectWords('nephrology'), ['renalfunction']);
+});
+
+
+test('ITEM 2b: the discharge-note finding SURVIVES the whole finalise chain — the test that was missing', () => {
+  // ⚠️ THE FIRST VERSION OF THIS FINDING WAS DELETED ON EVERY EPISODE and the unit test above
+  // still passed, because it tested the constructor and not the pipeline. `dropJudgedOmissions`
+  // drops any divergence-pass omission carrying no `resolution`, which was exactly this finding's
+  // shape. IP-1483, IPNO-495 and IPNO-416 each reported "1 omission finding dropped" — this one.
+  const events = [
+    evt({ event_id: 'n0', day_index: 0 }), evt({ event_id: 'n1', day_index: 1 }),
+    evt({ event_id: 'disch', day_index: 3, event_type: 'discharge' }),
+  ];
+  const finding = missingDischargeDayNote(events, 3)!;
+  assert.ok(finding.resolution, 'it must look code-owned, because it is');
+  const res = finalizeFindings([finding], new Map(), events, 0, SOURCES, NORMATIVE);
+  assert.equal(res.counters.n_judged_omissions_dropped, 0, 'it is not a judged omission');
+  assert.equal(res.findings.length, 1, 'and it reaches the stored row');
+  const kept = res.findings[0];
+  assert.equal(kept.finding_id, MISSING_DISCHARGE_NOTE_ID);
+  assert.equal(kept.severity, 'major', 'at full weight — Tier A evidence, no citation needed (item 10)');
+  assert.equal(kept.verdict, 'divergent');
+  assert.equal(res.divergence_index, 92);
 });

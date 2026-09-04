@@ -36,7 +36,12 @@ import {
   type EpisodeEvent, type EvidenceTier,
 } from './assemble-core';
 import { CHECKPOINT_ENTRY_SECTIONS, renderEvent, type CheckpointEntryRef, type ExpectedCourse } from './checkpoint-core';
-import type { Resolution, ResolvableEntry, ResolvedOutcome } from './resolve-core';
+import {
+  SUBJECT_CONCEPTS, subjectWords,
+  type Resolution, type ResolvableEntry, type ResolvedOutcome,
+} from './resolve-core';
+// Re-exported so the vocabulary has ONE definition and every existing caller keeps one import.
+export { SUBJECT_CONCEPTS, subjectWords };
 
 // ── enums (PRD §3.4.2) ───────────────────────────────────────────────────────────────────────
 
@@ -797,7 +802,18 @@ export function missingDischargeDayNote(
     lvc_category: null,
     citation_ids: [], citation_provenance: null,
     verdict_before_cap: 'divergent', severity_before_cap: 'major', capped: false,
-    resolution: null, matcher_kind: null, matcher_terms: null, matched_term: null,
+    // ⚠️ `absent_class_present`, NOT null, AND THE FIRST VERSION OF THIS WAS DELETED FOR WANT OF
+    // IT. `dropJudgedOmissions` identifies a code-owned omission by its `resolution` and drops
+    // every other divergence-pass omission as a judgement the model had no business making. With
+    // `resolution: null` this finding matched that description exactly: IP-1483, IPNO-495 and
+    // IPNO-416 all have no note on their discharge day, and all three runs reported "1 omission
+    // finding dropped" — which was this one, deleted on the way out and counted against the diff
+    // pass. The unit test passed throughout, because it tested the constructor and not the chain.
+    //
+    // The value is also the honest one: progress notes ARE represented in the episode, and there
+    // is none on this day. That is `absent_class_present` in the resolver's own vocabulary.
+    resolution: 'absent_class_present', matcher_kind: 'note', matcher_terms: null,
+    matched_term: null,
     confound: null,
     group_size: 1, grouped_refs: [], grouped_days: [],
   };
@@ -1243,104 +1259,6 @@ const TIER_RANK: Record<EvidenceTier, number> = { A: 0, B: 1, C: 2 };
  * `resolution` and `verdict` STAY IN THE KEY, unchanged from round 12 and for the same reason: a
  * day the thing happened must never merge into a group saying it did not.
  */
-const PURPOSE_CLAUSE = /\b(to (assess|evaluate|guide|monitor|detect|exclude|rule out|confirm|check|determine|track|follow)|for (assessment|evaluation|monitoring|surveillance)|in order to)\b.*$/i;
-
-const SUBJECT_STOPWORDS = new Set([
-  'a', 'an', 'and', 'the', 'of', 'or', 'with', 'without', 'per', 'as', 'at', 'by', 'on', 'in',
-  'is', 'be', 'should', 'must', 'may', 'if', 'any', 'all', 'both', 'each', 'this', 'that',
-  'repeat', 'repeated', 'serial', 'daily', 'hourly', 'routine', 'regular', 'ongoing', 'continue',
-  'continued', 'consider', 'indicated', 'required', 'needed', 'appropriate', 'adequate', 'new',
-  'further', 'additional', 'follow', 'up', 'documented', 'documentation', 'document', 'record',
-  'recorded', 'obtain', 'obtained', 'perform', 'performed', 'check', 'checked', 'ensure', 'review',
-  'reviewed', 'assessment', 'assessed', 'level', 'levels', 'status', 'test', 'tests', 'study',
-  'studies', 'value', 'values', 'result', 'results', 'patient', 'patients', 'within', 'hours',
-  'hour', 'day', 'days', 'post', 'pre', 'including', 'include', 'includes', 'such',
-]);
-
-/**
- * Words that mean the same subject. Small and deliberate — not a medical ontology.
- *
- * ⚠️ EVERY CANONICAL VALUE IS ALSO A KEY, and that is enforced below rather than typed out. The
- * first version of this map omitted `stent: 'stent'`, so the word "stent" itself was not
- * recognised as a concept and the three stent-monitoring expectations fell back to their full word
- * sets — the exact failure the map exists to fix, reintroduced by a gap a reader cannot see.
- */
-const SUBJECT_SYNONYM_SEED: Record<string, string> = {
-  kft: 'renalfunction', rft: 'renalfunction', renal: 'renalfunction', kidney: 'renalfunction',
-  creatinine: 'renalfunction', urea: 'renalfunction', bun: 'renalfunction',
-  lft: 'liverfunction', liver: 'liverfunction', hepatic: 'liverfunction',
-  cbc: 'bloodcount', haemogram: 'bloodcount', hemogram: 'bloodcount', haemoglobin: 'bloodcount',
-  hemoglobin: 'bloodcount', hb: 'bloodcount', platelet: 'bloodcount', platelets: 'bloodcount',
-  // Electrolytes fold into renal function DELIBERATELY: they are reported in the same panel
-  // (see PANEL_CONTENTS' renal function test), ordered together, and monitored for the same
-  // reason. Keeping them apart split "serum creatinine and electrolytes" from "renal function
-  // test (creatinine, urea, electrolytes)" — the two round-13 wordings the digest could not merge.
-  electrolyte: 'renalfunction', electrolytes: 'renalfunction', sodium: 'renalfunction',
-  potassium: 'renalfunction', na: 'renalfunction', chloride: 'renalfunction',
-  hyperkalemia: 'renalfunction', hyperkalaemia: 'renalfunction',
-  dj: 'stent', stents: 'stent', stenting: 'stent', ureteric: 'stent', ureteral: 'stent',
-  abg: 'bloodgas', gas: 'bloodgas', gases: 'bloodgas',
-  antibiotic: 'antibiotics', antimicrobial: 'antibiotics', abx: 'antibiotics',
-  dialysis: 'dialysis', haemodialysis: 'dialysis', hemodialysis: 'dialysis', hd: 'dialysis',
-  culture: 'culture', cultures: 'culture', sensitivity: 'culture',
-  urine: 'urine', urinary: 'urine', urinalysis: 'urine',
-  vte: 'vte', thromboprophylaxis: 'vte', prophylaxis: 'vte', enoxaparin: 'vte', heparin: 'vte',
-  glucose: 'glycaemia', sugar: 'glycaemia', glycaemic: 'glycaemia', glycemic: 'glycaemia',
-  bp: 'bloodpressure', pressure: 'bloodpressure',
-  output: 'urineoutput', fluid: 'fluidbalance', balance: 'fluidbalance', euvolemia: 'fluidbalance',
-  pain: 'pain', analgesia: 'pain', analgesic: 'pain',
-  nutrition: 'nutrition', diet: 'nutrition', feeding: 'nutrition',
-};
-
-/** The seed plus an identity entry for every canonical value it names. */
-const SUBJECT_SYNONYMS: Record<string, string> = (() => {
-  const m: Record<string, string> = { ...SUBJECT_SYNONYM_SEED };
-  for (const v of Object.values(SUBJECT_SYNONYM_SEED)) m[v] = v;
-  return m;
-})();
-
-/** The canonical concepts themselves — what `subjectWords` may return as a concept. */
-export const SUBJECT_CONCEPTS: ReadonlySet<string> = new Set(Object.values(SUBJECT_SYNONYM_SEED));
-
-/**
- * The canonical subject of a piece of expectation text: the CONCEPTS it is about, and nothing else.
- *
- * ⚠️ THE SET OF ALL SURVIVING WORDS IS THE WRONG KEY, and measuring it on IPNO-416 proved it —
- * grouping by full word-set produced 70 classes from 79 entries, WORSE than the 68 the term list
- * gave. Exact set equality is as brittle as an exact term list; it just fails on different words.
- * The three stent-monitoring expectations differed only in which symptoms each day happened to
- * list, and that was enough to keep them apart:
- *
- *   "Stent patency and complications (flank pain, fever, sepsis signs)"
- *   "Stent-related symptoms (dysuria, urgency, frequency, gross hematuria) and signs of migration"
- *   "Stent function and complications (flank pain, hematuria, fever, signs of obstruction)"
- *
- * All three are about ONE thing: the stent. So only words that canonicalise to a known concept
- * count toward the key; the incidental vocabulary around them is dropped. Text with no recognised
- * concept falls back to its own normalised words and can then only group with text like itself —
- * conservative, and the same fallback round 12 chose for a matcher-less entry.
- *
- * AND FOR AN ESCALATION TRIGGER, THE SUBJECT IS THE TRIGGER. Entries reach here as
- * "trigger → action"; the action is the response, not the thing being expected, and including it
- * splits two identical triggers that name different escalation routes.
- */
-export function subjectWords(text: string): string[] {
-  const trigger = String(text || '').split('→')[0];
-  const cut = trigger.replace(/\([^)]*\)/g, ' ').replace(PURPOSE_CLAUSE, ' ');
-  const concepts = new Set<string>();
-  const plain = new Set<string>();
-  for (const raw of cut.toLowerCase().split(/[^a-z0-9]+/)) {
-    if (!raw || raw.length < 2) continue;
-    if (SUBJECT_STOPWORDS.has(raw)) continue;
-    if (/^\d+$/.test(raw)) continue;
-    const singular = raw.endsWith('s') && raw.length > 3 ? raw.slice(0, -1) : raw;
-    const canonical = SUBJECT_SYNONYMS[raw] ?? SUBJECT_SYNONYMS[singular];
-    if (canonical) concepts.add(canonical); else plain.add(singular);
-  }
-  return concepts.size ? [...concepts].sort() : [...plain].sort();
-}
-
-/** The subject key an expectation groups on: its item text and its matcher terms, canonicalised. */
 export function expectationSubject(entry: ResolvableEntry): string {
   // The matcher terms are folded in ONLY when the item text yielded no concept of its own —
   // otherwise a four-term matcher would re-introduce exactly the term-list brittleness this

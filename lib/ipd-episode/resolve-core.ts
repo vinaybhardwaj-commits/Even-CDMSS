@@ -357,6 +357,130 @@ export function expandClinicalShorthand(text: string): string {
   return extra.length ? `${text} ${extra.join(' ')}` : text;
 }
 
+/**
+ * ── THE CANONICAL SUBJECT VOCABULARY (round 14 items 4 and 7) ────────────────────────────────
+ *
+ * It lives HERE, beside the clinical-shorthand layer, because both answer the same question — how
+ * this engine normalises clinical language — and because BOTH of its callers can reach it from
+ * here: judge-core groups expectations by subject, and checkpoint-core judges whether a retrieved
+ * passage is on topic. Keeping one vocabulary is the whole lesson of this round: item 4 and the
+ * round-13 digest were one defect in two places, and item 7 turned out to be a third.
+ */
+const PURPOSE_CLAUSE = /\b(to (assess|evaluate|guide|monitor|detect|exclude|rule out|confirm|check|determine|track|follow)|for (assessment|evaluation|monitoring|surveillance)|in order to)\b.*$/i;
+
+const SUBJECT_STOPWORDS = new Set([
+  'a', 'an', 'and', 'the', 'of', 'or', 'with', 'without', 'per', 'as', 'at', 'by', 'on', 'in',
+  'is', 'be', 'should', 'must', 'may', 'if', 'any', 'all', 'both', 'each', 'this', 'that',
+  'repeat', 'repeated', 'serial', 'daily', 'hourly', 'routine', 'regular', 'ongoing', 'continue',
+  'continued', 'consider', 'indicated', 'required', 'needed', 'appropriate', 'adequate', 'new',
+  'further', 'additional', 'follow', 'up', 'documented', 'documentation', 'document', 'record',
+  'recorded', 'obtain', 'obtained', 'perform', 'performed', 'check', 'checked', 'ensure', 'review',
+  'reviewed', 'assessment', 'assessed', 'level', 'levels', 'status', 'test', 'tests', 'study',
+  'studies', 'value', 'values', 'result', 'results', 'patient', 'patients', 'within', 'hours',
+  'hour', 'day', 'days', 'post', 'pre', 'including', 'include', 'includes', 'such',
+]);
+
+/**
+ * Words that mean the same subject. Small and deliberate — not a medical ontology.
+ *
+ * ⚠️ EVERY CANONICAL VALUE IS ALSO A KEY, and that is enforced below rather than typed out. The
+ * first version of this map omitted `stent: 'stent'`, so the word "stent" itself was not
+ * recognised as a concept and the three stent-monitoring expectations fell back to their full word
+ * sets — the exact failure the map exists to fix, reintroduced by a gap a reader cannot see.
+ */
+const SUBJECT_SYNONYM_SEED: Record<string, string> = {
+  kft: 'renalfunction', rft: 'renalfunction', renal: 'renalfunction', kidney: 'renalfunction',
+  creatinine: 'renalfunction', urea: 'renalfunction', bun: 'renalfunction',
+  lft: 'liverfunction', liver: 'liverfunction', hepatic: 'liverfunction',
+  cbc: 'bloodcount', haemogram: 'bloodcount', hemogram: 'bloodcount', haemoglobin: 'bloodcount',
+  hemoglobin: 'bloodcount', hb: 'bloodcount', platelet: 'bloodcount', platelets: 'bloodcount',
+  // Electrolytes fold into renal function DELIBERATELY: they are reported in the same panel
+  // (see PANEL_CONTENTS' renal function test), ordered together, and monitored for the same
+  // reason. Keeping them apart split "serum creatinine and electrolytes" from "renal function
+  // test (creatinine, urea, electrolytes)" — the two round-13 wordings the digest could not merge.
+  electrolyte: 'renalfunction', electrolytes: 'renalfunction', sodium: 'renalfunction',
+  potassium: 'renalfunction', na: 'renalfunction', chloride: 'renalfunction',
+  hyperkalemia: 'renalfunction', hyperkalaemia: 'renalfunction',
+  dj: 'stent', stents: 'stent', stenting: 'stent', ureteric: 'stent', ureteral: 'stent',
+  abg: 'bloodgas', gas: 'bloodgas', gases: 'bloodgas',
+  antibiotic: 'antibiotics', antimicrobial: 'antibiotics', abx: 'antibiotics',
+  dialysis: 'dialysis', haemodialysis: 'dialysis', hemodialysis: 'dialysis', hd: 'dialysis',
+  culture: 'culture', cultures: 'culture', sensitivity: 'culture',
+  urine: 'urine', urinary: 'urine', urinalysis: 'urine',
+  vte: 'vte', thromboprophylaxis: 'vte', prophylaxis: 'vte', enoxaparin: 'vte', heparin: 'vte',
+  glucose: 'glycaemia', sugar: 'glycaemia', glycaemic: 'glycaemia', glycemic: 'glycaemia',
+  bp: 'bloodpressure', pressure: 'bloodpressure',
+  output: 'urineoutput', fluid: 'fluidbalance', balance: 'fluidbalance', euvolemia: 'fluidbalance',
+  pain: 'pain', analgesia: 'pain', analgesic: 'pain',
+  nutrition: 'nutrition', diet: 'nutrition', feeding: 'nutrition',
+  // ROUND 14 ITEM 7 uses this same vocabulary to judge whether a retrieved passage is on topic,
+  // so the DIAGNOSIS words a corpus title uses belong here beside the investigation words. The
+  // query said "renal" and "CKD" while the titles said "kidney" and "nephrology", and a raw-word
+  // overlap test called eight on-topic nephrology sources off topic for it.
+  ckd: 'renalfunction', esrd: 'renalfunction', uremia: 'renalfunction', uraemia: 'renalfunction',
+  nephropathy: 'renalfunction', nephrology: 'renalfunction', aki: 'renalfunction',
+  diabetes: 'diabetes', diabetic: 'diabetes', dm: 'diabetes', hyperglycaemia: 'diabetes',
+  hypertension: 'hypertension', hypertensive: 'hypertension', htn: 'hypertension',
+  sepsis: 'sepsis', septic: 'sepsis', urosepsis: 'sepsis', septicaemia: 'sepsis',
+  uti: 'urinaryinfection', pyelonephritis: 'urinaryinfection', cystitis: 'urinaryinfection',
+  bacteriuria: 'urinaryinfection',
+  pancreatitis: 'pancreatitis', pancreatic: 'pancreatitis',
+  hepatitis: 'hepatitis', hbsag: 'hepatitis',
+  hydroureteronephrosis: 'stent', ureterolithiasis: 'stent', ureteroscopy: 'stent',
+  urs: 'stent', hydronephrosis: 'stent',
+  anaemia: 'anaemia', anemia: 'anaemia', transfusion: 'anaemia',
+};
+
+/** The seed plus an identity entry for every canonical value it names. */
+const SUBJECT_SYNONYMS: Record<string, string> = (() => {
+  const m: Record<string, string> = { ...SUBJECT_SYNONYM_SEED };
+  for (const v of Object.values(SUBJECT_SYNONYM_SEED)) m[v] = v;
+  return m;
+})();
+
+/** The canonical concepts themselves — what `subjectWords` may return as a concept. */
+export const SUBJECT_CONCEPTS: ReadonlySet<string> = new Set(Object.values(SUBJECT_SYNONYM_SEED));
+
+/**
+ * The canonical subject of a piece of expectation text: the CONCEPTS it is about, and nothing else.
+ *
+ * ⚠️ THE SET OF ALL SURVIVING WORDS IS THE WRONG KEY, and measuring it on IPNO-416 proved it —
+ * grouping by full word-set produced 70 classes from 79 entries, WORSE than the 68 the term list
+ * gave. Exact set equality is as brittle as an exact term list; it just fails on different words.
+ * The three stent-monitoring expectations differed only in which symptoms each day happened to
+ * list, and that was enough to keep them apart:
+ *
+ *   "Stent patency and complications (flank pain, fever, sepsis signs)"
+ *   "Stent-related symptoms (dysuria, urgency, frequency, gross hematuria) and signs of migration"
+ *   "Stent function and complications (flank pain, hematuria, fever, signs of obstruction)"
+ *
+ * All three are about ONE thing: the stent. So only words that canonicalise to a known concept
+ * count toward the key; the incidental vocabulary around them is dropped. Text with no recognised
+ * concept falls back to its own normalised words and can then only group with text like itself —
+ * conservative, and the same fallback round 12 chose for a matcher-less entry.
+ *
+ * AND FOR AN ESCALATION TRIGGER, THE SUBJECT IS THE TRIGGER. Entries reach here as
+ * "trigger → action"; the action is the response, not the thing being expected, and including it
+ * splits two identical triggers that name different escalation routes.
+ */
+export function subjectWords(text: string): string[] {
+  const trigger = String(text || '').split('→')[0];
+  const cut = trigger.replace(/\([^)]*\)/g, ' ').replace(PURPOSE_CLAUSE, ' ');
+  const concepts = new Set<string>();
+  const plain = new Set<string>();
+  for (const raw of cut.toLowerCase().split(/[^a-z0-9]+/)) {
+    if (!raw || raw.length < 2) continue;
+    if (SUBJECT_STOPWORDS.has(raw)) continue;
+    if (/^\d+$/.test(raw)) continue;
+    const singular = raw.endsWith('s') && raw.length > 3 ? raw.slice(0, -1) : raw;
+    const canonical = SUBJECT_SYNONYMS[raw] ?? SUBJECT_SYNONYMS[singular];
+    if (canonical) concepts.add(canonical); else plain.add(singular);
+  }
+  return concepts.size ? [...concepts].sort() : [...plain].sort();
+}
+
+/** The subject key an expectation groups on: its item text and its matcher terms, canonicalised. */
+
 const norm = (s: string) => s.toLowerCase();
 
 /** A term matches when it appears in the haystack, whole-word where the term is a single word.
