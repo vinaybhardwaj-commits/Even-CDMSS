@@ -2054,3 +2054,27 @@ test('ITEM 2: the section is read from the ref, and a malformed ref does not gat
   const weird = f({ finding_id: 'w', verdict: 'divergent', checkpoint_ref: 'nonsense' });
   assert.equal(enforceEscalationConditional(weird).rewritten, false);
 });
+
+
+test('ROUND 19 ITEM 3: the escalation exemption covers a MODEL-asserted unassessable too', () => {
+  // The comment used to claim the exemption was for findings code had gated; the predicate has
+  // always been broader. The predicate is right: the exemption is a property of the QUESTION —
+  // an escalation trigger's antecedent is not in this mirror — so `unassessable` is the true
+  // verdict there whoever reaches it, and §4.2a has nothing to correct.
+  const modelSaid = f({
+    finding_id: 'm', verdict: 'unassessable', checkpoint_ref: 'cp-d2/escalation/1',
+    resolution: null,   // the model's own verdict, not one this file rewrote
+    evidence_basis: [{ source_table: 'kx_clinical_template_progress_reports', source_record_id: 'n1', source_timestamp: null }],
+  });
+  const r = enforceUnassessable(modelSaid);
+  assert.equal(r.rejected, false, 'a Tier A basis would normally make this a rejected hedge');
+  assert.equal(r.finding.verdict, 'unassessable');
+
+  // and the rule still bites everywhere else: same finding, non-escalation ref
+  const elsewhere = enforceUnassessable(f({
+    finding_id: 'e', verdict: 'unassessable', checkpoint_ref: 'cp-d2/diagnostics/1', resolution: null,
+    evidence_basis: [{ source_table: 'kx_clinical_template_progress_reports', source_record_id: 'n1', source_timestamp: null }],
+  }));
+  assert.equal(elsewhere.rejected, true, '“I would rather not say” is still rejected');
+  assert.equal(elsewhere.finding.verdict, 'context_dependent');
+});

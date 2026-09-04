@@ -382,14 +382,13 @@ export function parseFindings(text: string, opts: ParseFindingsOptions): ParseFi
   return { findings, unparseable, repaired, failures };
 }
 
-/**
- * §3.4 as amended by decision 33: the diff pass no longer decides omissions, so an `omission`
- * finding from A1 is a second answer to a question the resolver has already settled — and an
- * unstable one, which is the whole reason the resolver exists. Dropped and counted.
- *
- * Fidelity findings are untouched: A2 is normalised to `commission` by its own rule and never
- * produces omissions in the first place.
- */
+/** The section segment of a `<checkpoint-id>/<section>/<n>` entry ref, or null if it has none. */
+export function escalationSectionOf(ref: string | null): string | null {
+  if (!ref) return null;
+  const parts = ref.split('/');
+  return parts.length >= 2 ? parts[1] : null;
+}
+
 /**
  * ROUND 18 ITEM 2 — THE RESIDUAL ESCALATION GAP, and it is the same argument twice.
  *
@@ -414,12 +413,6 @@ export function parseFindings(text: string, opts: ParseFindingsOptions): ParseFi
  * RESOLVER FINDINGS ARE EXEMPT because they have already been through the gate in resolve-core;
  * `resolution != null` identifies them, the same marker `dropJudgedOmissions` uses.
  */
-export function escalationSectionOf(ref: string | null): string | null {
-  if (!ref) return null;
-  const parts = ref.split('/');
-  return parts.length >= 2 ? parts[1] : null;
-}
-
 export function enforceEscalationConditional(f: EpisodeFinding): { finding: EpisodeFinding; rewritten: boolean } {
   if (f.resolution != null) return { finding: f, rewritten: false };
   if (f.pass !== 'divergence' || f.verdict !== 'divergent') return { finding: f, rewritten: false };
@@ -434,6 +427,14 @@ export function enforceEscalationConditional(f: EpisodeFinding): { finding: Epis
   };
 }
 
+/**
+ * §3.4 as amended by decision 33: the diff pass no longer decides omissions, so an `omission`
+ * finding from A1 is a second answer to a question the resolver has already settled — and an
+ * unstable one, which is the whole reason the resolver exists. Dropped and counted.
+ *
+ * Fidelity findings are untouched: A2 is normalised to `commission` by its own rule and never
+ * produces omissions in the first place.
+ */
 export function dropJudgedOmissions(findings: EpisodeFinding[]): { kept: EpisodeFinding[]; dropped: number } {
   const kept: EpisodeFinding[] = [];
   let dropped = 0;
@@ -467,12 +468,23 @@ export function dropJudgedOmissions(findings: EpisodeFinding[]): { kept: Episode
 export function enforceUnassessable(f: EpisodeFinding): { finding: EpisodeFinding; rejected: boolean } {
   if (f.verdict !== 'unassessable') return { finding: f, rejected: false };
   if (f.resolution === 'absent_class_missing') return { finding: f, rejected: false };
-  // ⚠️ ROUND 18 ITEM 2: a finding CODE has just gated is exempt for the same reason a resolver
-  // `absent_class_missing` is. This rule exists to stop the MODEL using `unassessable` as "I would
-  // rather not say"; it must not then overturn a verdict code established on evidence the model
-  // never saw. Without this the escalation gate was silently undone one line later — the gated
-  // finding carries a Tier A basis, so `genuinelyUnanswerable` was false and it came back as
-  // `context_dependent`, still in the denominator.
+  // ⚠️ ROUND 18 ITEM 2, WITH ITS SCOPE STATED HONESTLY (round 19 item 3).
+  //
+  // EVERY divergence-pass finding measured against an escalation entry is exempt — not only the
+  // ones this file's own gate rewrote. The first version of this comment claimed the narrower
+  // thing ("a finding code has just gated"), and the predicate below has always been the broader
+  // one, so a MODEL-asserted `unassessable` on an escalation ref was exempt too.
+  //
+  // THE COMMENT WAS CHANGED TO MATCH THE PREDICATE, NOT THE OTHER WAY ROUND, because the broad
+  // behaviour is the correct one. The exemption is a property of the QUESTION, not of who answered
+  // it: an escalation trigger is a conditional whose antecedent this mirror cannot supply, so
+  // `unassessable` is the true verdict there no matter who reaches it. A model that says so is
+  // agreeing with what code would have concluded anyway, and §4.2a — which exists to stop the model
+  // using `unassessable` as "I would rather not say" — has nothing to correct in that case.
+  //
+  // Without the exemption in some form the escalation gate was silently undone one line later: the
+  // gated finding carries a Tier A basis, so `genuinelyUnanswerable` was false and it came back as
+  // `context_dependent`, still in the denominator and still in the band.
   if (escalationSectionOf(f.checkpoint_ref) === ESCALATION_SECTION && f.pass === 'divergence') {
     return { finding: f, rejected: false };
   }
@@ -1227,12 +1239,6 @@ export const DIVERGENCE_BANDS = [
 export type DivergenceBand = (typeof DIVERGENCE_BANDS)[number];
 
 /**
- * The thresholds, as V proposed them. KEPT UNCHANGED, and the reason is that the data cannot yet
- * argue: one episode has been measured repeatedly, and its five readings (36–41) all sit in one
- * band. Moving a threshold on the strength of a single admission's noise would be fitting the
- * scale to the only case we have looked at, which is worse than using a stated prior.
- */
-/**
  * DECISION 37 — THE BANDS, SETTLED (V, 2026-09-03) against the rate of decision 38.
  *
  * The old thresholds (90 / 70 / 45) were set against a TOTAL, where 45 meant "55 penalty points"
@@ -1397,25 +1403,6 @@ export function storedDivergenceIndex(index: number | null, status: ScoringStatu
 const SEVERITY_RANK: Record<Severity, number> = { minor: 0, moderate: 1, major: 2 };
 const TIER_RANK: Record<EvidenceTier, number> = { A: 0, B: 1, C: 2 };
 
-/**
- * ROUND 12 ITEM 2 — THE GROUPING KEY, stated once so the report and the code cannot disagree.
- *
- * Two resolved entries belong to the same expectation class when all four of these match:
- *   1. `section`     — diagnostics / therapeutics / monitoring / escalation. Never merge across.
- *   2. the MATCHER   — its kind plus its terms, lowercased, de-duplicated and sorted. The matcher
- *                      is the machine-checkable definition of the expectation, so two entries with
- *                      the same matcher are, to the resolver, literally the same question.
- *                      An entry with NO matcher falls back to its normalised item text, and can
- *                      only ever group with another entry whose text is identical.
- *   3. `resolution`  — present / absent_class_present / absent_class_missing / ambiguous_confounded
- *   4. `verdict`
- *
- * (3) and (4) are in the key deliberately. "CBC expected on four days, done on two" is TWO
- * statements, not one: collapsing a present day into an absent group would erase the day it
- * happened, which is the concordant-erasure defect under another name.
- *
- * Grouping never drops a member. Every ref, every day and every citation survives on the group.
- */
 /**
  * ROUND 14 ITEM 4 — THE SUBJECT OF AN EXPECTATION, NOT ITS SEARCH TERMS.
  *

@@ -7,10 +7,23 @@ import { isAdminUnlocked } from '@/lib/admin-cookie';
 export const runtime = 'nodejs';
 
 /**
- * Creates the three IPD Episode Audit tables (PRD §7). Idempotent — every statement is
- * IF NOT EXISTS, so running it twice is a no-op. Mirrors migrations/0052_ipd_episode_audits.sql
- * byte-for-byte in intent; the .sql file is the reference copy, this route is the executable
- * path, because `migrations/` is not bundled into the Vercel serverless function.
+ * Creates the three IPD Episode Audit tables (PRD §7). Mirrors
+ * migrations/0052_ipd_episode_audits.sql byte-for-byte in intent; the .sql file is the reference
+ * copy, this route is the executable path, because `migrations/` is not bundled into the Vercel
+ * serverless function.
+ *
+ * ⚠️ REPEATABLE, BUT NO LONGER PURELY ADDITIVE — AND THIS HEADER USED TO SAY OTHERWISE.
+ *
+ * It read "Idempotent — every statement is IF NOT EXISTS, so running it twice is a no-op". That
+ * stopped being true in round 17, when `DROP COLUMN IF EXISTS de_identified` was added, and the
+ * sentence sat directly above it for two rounds telling every reader the route could not destroy
+ * anything. A header that grants that assurance falsely is worse than no header, because it is
+ * read instead of the code.
+ *
+ * What is true: every statement is safe to REPEAT — running it twice does the same as running it
+ * once — but one of them REMOVES something the first time it runs. See the note at the DROP
+ * itself (search `DROP COLUMN IF EXISTS`, around line 143) for what it removes and why nothing
+ * depends on it. Any future DROP carries its own note there, and this paragraph stays.
  *
  * Auth is the shipped pattern: ADMIN_TOKEN (Bearer / ?token=) OR a logged-in admin session.
  *
