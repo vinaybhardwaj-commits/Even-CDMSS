@@ -409,6 +409,42 @@ What is lost is the round-by-round commit trail. That is a real loss and it is a
 the reasoning it carried is in this document, section by section, and the branch itself survives
 unmerged for anyone who wants to read the sequence.
 
+### 1.17a The squash controlled the tree, not the trailers (V, 2026-09-03)
+
+Decision 40 was reasoned entirely about CONTENT: which blobs reach `main`, which commits carry a
+name, what the one squashed commit contains. It got all of that right. The squash commit
+`1a836282` still arrived carrying two assistant attribution trailers —
+`Co-Authored-By: Claude …` and `Claude-Session: …` — on a repository whose commits are otherwise
+authored plainly.
+
+**"I wrote the message myself" did not cover it, and could not.** A trailer is appended AFTER the
+message is composed. Reviewing the message I had written told me nothing about what would be added
+to it afterwards, so the check and the defect never met. Every part of the merge was verified —
+37 files, tree byte-identical to the branch tip, gate green on the merged tree, no name in the
+staged diff — and none of that verification was looking at the place the problem was.
+
+**THIS IS THE FOURTH TIME IN THIS BUILD that a check examined the thing and not what gets attached
+to it**, and the pattern is worth naming because it has now cost four rounds:
+
+| | the thing that was right | what was attached to it, and wrong |
+|---|---|---|
+| round 11 | column, placeholder and parameter COUNTS all agreed | the `::jsonb` cast sat on the wrong placeholder — a count cannot see a cast's position |
+| round 16 | the fix stopping staff names entering the store | the comment explaining it QUOTED the name it had found |
+| round 18 | decision 40's reasoning about which strings reach `main` | the paragraph recording it quoted the string, putting it in the one commit the squash carries |
+| round 19a | the merge: tree, files, gate, staged diff all verified | the trailers appended to the commit message afterwards |
+
+The common shape: a verification aimed at an artefact, and a second thing riding along on that
+artefact which the verification's frame excluded. Counts do not see casts; a fix does not review
+its own explanation; a decision about content does not inspect its own prose; a written message
+does not know what is appended to it.
+
+**`1a836282` keeps its trailers.** Amending a pushed commit on `main` — the ref everything builds
+from — is a larger risk than the cosmetic inconsistency it would remove, and V ruled accordingly.
+The trailers stop at the next commit instead: a `commit-msg` hook in `.git/hooks/` strips both
+keys from every message, whoever or whatever composed it. Machine-local by construction, since
+`.git/hooks` is never tracked. That is the right layer precisely because it is the only one that
+sees the FINISHED message rather than the one that was written.
+
 ### 1.18 Round 18 — the last round (V, 2026-09-03)
 
 | # | Change |
