@@ -410,19 +410,20 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
       const course = c.expectedCourse;
       if (!course) continue;
       const push = (section: string, idx: number, item: string, rationale: string, byDay: number | null,
-                    citationIds: number[], matcher: ResolvableEntry['matcher'], sev: ResolvableEntry['proposedSeverity']) => {
+                    citationIds: number[], matcher: ResolvableEntry['matcher'], sev: ResolvableEntry['proposedSeverity'],
+                    recurrence: ResolvableEntry['recurrence']) => {
         resolvableEntries.push({
           ref: `${c.checkpointId}/${section}/${idx + 1}`,
           checkpointId: c.checkpointId, dayIndex: c.dayIndex, section,
-          item, rationale, byDay, citationIds, matcher, proposedSeverity: sev,
+          item, rationale, byDay, citationIds, matcher, proposedSeverity: sev, recurrence,
         });
       };
-      course.expected_diagnostics.forEach((e, i) => push('diagnostics', i, e.item, e.rationale, e.by_day, e.citation_ids, e.matcher, e.proposed_severity));
-      course.expected_therapeutics.forEach((e, i) => push('therapeutics', i, e.item, e.rationale, e.by_day, e.citation_ids, e.matcher, e.proposed_severity));
-      course.expected_monitoring.forEach((e, i) => push('monitoring', i, e.item, e.rationale, null, e.citation_ids, e.matcher, e.proposed_severity));
+      course.expected_diagnostics.forEach((e, i) => push('diagnostics', i, e.item, e.rationale, e.by_day, e.citation_ids, e.matcher, e.proposed_severity, e.recurrence));
+      course.expected_therapeutics.forEach((e, i) => push('therapeutics', i, e.item, e.rationale, e.by_day, e.citation_ids, e.matcher, e.proposed_severity, e.recurrence));
+      course.expected_monitoring.forEach((e, i) => push('monitoring', i, e.item, e.rationale, null, e.citation_ids, e.matcher, e.proposed_severity, e.recurrence));
       // ROUND 17 ITEM 1: the section string is what the resolver's conditional gate keys on, so it
       // comes from the constant rather than a literal repeated here.
-      course.escalation_triggers.forEach((e, i) => push(ESCALATION_SECTION, i, `${e.trigger} → ${e.action}`, e.action, null, e.citation_ids, e.matcher, e.proposed_severity));
+      course.escalation_triggers.forEach((e, i) => push(ESCALATION_SECTION, i, `${e.trigger} → ${e.action}`, e.action, null, e.citation_ids, e.matcher, e.proposed_severity, e.recurrence));
     }
     // Resolved against the SAME filtered list the diff pass sees — no discharge event, so an
     // expectation cannot be satisfied by something recorded only in the discharge summary.

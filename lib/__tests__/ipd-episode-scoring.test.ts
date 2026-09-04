@@ -530,7 +530,7 @@ test('the expected course is capped at four per category, keeping the model’s 
   assert.equal(MAX_ENTRIES_PER_CATEGORY, 4);
   const mk = (n: number, prefix: string) => Array.from({ length: n }, (_, i) => ({
     item: `${prefix}${i + 1}`, by_day: 0, rationale: 'r', citation_ids: [], matcher: null,
-    proposed_severity: 'moderate' as const,
+    proposed_severity: 'moderate' as const, recurrence: 'repeat' as const,
   }));
   const course = {
     expected_diagnostics: mk(7, 'dx'), expected_therapeutics: mk(6, 'tx'),
@@ -1646,14 +1646,14 @@ test('model env: an override is honoured; an unknown id is REFUSED before any wo
 const entry = (item: string, by_day: number | null, citation_ids: number[] = []) => ({
   item, by_day, rationale: 'because the guideline says so', citation_ids,
   matcher: { kind: 'lab' as const, terms: ['cbc', 'complete blood count'] },
-  proposed_severity: 'major' as const,
+  proposed_severity: 'major' as const, recurrence: 'repeat' as const,
 });
 
 const src = (checkpointId: string, dayIndex: number, course: Partial<{
   expected_diagnostics: ReturnType<typeof entry>[];
   expected_therapeutics: ReturnType<typeof entry>[];
-  expected_monitoring: { item: string; frequency: string; rationale: string; citation_ids: number[]; matcher: { kind: 'note'; terms: string[] }; proposed_severity: 'minor' }[];
-  escalation_triggers: { trigger: string; action: string; citation_ids: number[]; matcher: { kind: 'other'; terms: string[] }; proposed_severity: 'moderate' }[];
+  expected_monitoring: { item: string; frequency: string; rationale: string; citation_ids: number[]; matcher: { kind: 'note'; terms: string[] }; proposed_severity: 'minor'; recurrence: 'repeat' }[];
+  escalation_triggers: { trigger: string; action: string; citation_ids: number[]; matcher: { kind: 'other'; terms: string[] }; proposed_severity: 'moderate'; recurrence: 'repeat' }[];
 }>): DigestSource => ({
   checkpointId, dayIndex,
   course: {
@@ -1715,8 +1715,8 @@ test('digest: sections never merge, and each is rendered under its own heading',
     src('cp-d0', 0, {
       expected_diagnostics: [entry('Potassium', 1)],
       expected_therapeutics: [entry('Potassium', 1)],   // same text, different section
-      expected_monitoring: [{ item: 'Urine output', frequency: 'hourly', rationale: 'r', citation_ids: [2], matcher: { kind: 'note', terms: ['urine'] }, proposed_severity: 'minor' }],
-      escalation_triggers: [{ trigger: 'SBP < 90', action: 'call the intensivist', citation_ids: [], matcher: { kind: 'other', terms: [] }, proposed_severity: 'moderate' }],
+      expected_monitoring: [{ item: 'Urine output', frequency: 'hourly', rationale: 'r', citation_ids: [2], matcher: { kind: 'note', terms: ['urine'] }, proposed_severity: 'minor', recurrence: 'repeat' as const }],
+      escalation_triggers: [{ trigger: 'SBP < 90', action: 'call the intensivist', citation_ids: [], matcher: { kind: 'other', terms: [] }, proposed_severity: 'moderate', recurrence: 'repeat' as const }],
     }),
   ]);
   assert.equal(d.entries.length, 4, 'the same text in two sections is two expectations');
@@ -1729,7 +1729,7 @@ test('digest: sections never merge, and each is rendered under its own heading',
 test('digest: monitoring and escalation carry no by_day rather than a made-up one', () => {
   const d = buildExpectationDigest([
     src('cp-d0', 0, {
-      expected_monitoring: [{ item: 'Neuro obs', frequency: '4 hourly', rationale: 'r', citation_ids: [], matcher: { kind: 'note', terms: [] }, proposed_severity: 'minor' }],
+      expected_monitoring: [{ item: 'Neuro obs', frequency: '4 hourly', rationale: 'r', citation_ids: [], matcher: { kind: 'note', terms: [] }, proposed_severity: 'minor', recurrence: 'repeat' as const }],
     }),
   ]);
   assert.equal(d.entries[0].byDay, null);

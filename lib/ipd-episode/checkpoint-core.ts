@@ -675,14 +675,18 @@ export interface ExpectedItem {
   matcher: EntryMatcher | null;
   /** Chosen at GENERATION time, while the model is still blind to the outcome. */
   proposed_severity: 'minor' | 'moderate' | 'major';
+  /** DECISION 42. Whether an earlier occurrence can satisfy this (see `asRecurrence`). */
+  recurrence: Recurrence;
 }
 export interface ExpectedMonitoring {
   item: string; frequency: string; rationale: string; citation_ids: number[];
   matcher: EntryMatcher | null; proposed_severity: 'minor' | 'moderate' | 'major';
+  recurrence: Recurrence;
 }
 export interface EscalationTrigger {
   trigger: string; action: string; citation_ids: number[];
   matcher: EntryMatcher | null; proposed_severity: 'minor' | 'moderate' | 'major';
+  recurrence: Recurrence;
 }
 
 const SEVERITY_VALUES = ['minor', 'moderate', 'major'] as const;
@@ -704,6 +708,35 @@ function asMatcher(v: unknown): EntryMatcher | null {
 function asProposedSeverity(v: unknown): 'minor' | 'moderate' | 'major' {
   const t = String(v ?? '').trim().toLowerCase();
   return (SEVERITY_VALUES as readonly string[]).includes(t) ? (t as 'minor' | 'moderate' | 'major') : 'moderate';
+}
+
+/**
+ * DECISION 42 (V, 2026-09-04) — THE CHECKPOINT DECLARES RECURRENCE, WHILE IT IS STILL BLIND.
+ *
+ * Round 14 item 3 floored every search at the expectation's own day so "repeat CBC on day 2" could
+ * not be answered by the day-0 order. Round 21 item 1 removed that floor so "EEG if not yet
+ * completed" could be answered by the day-0 EEG. Both were right about the case in front of them
+ * and wrong about the other one, because the question they were guessing at belongs to the
+ * expectation, not to the resolver: is an EARLIER occurrence enough, or is a NEW one required?
+ *
+ * The checkpoint knows, and it is the one party that can say so without hindsight — it writes this
+ * beside `matcher` and `proposed_severity`, before anything is scored.
+ *
+ *   'once'   — resolve across the whole episode to date. An EEG done on day 0 satisfies it.
+ *   'repeat' — resolve only from the entry's own day forward. A day-0 CBC does not satisfy a
+ *              day-2 repeat.
+ *
+ * ⚠️ THE DEFAULT IS 'repeat', AND DELIBERATELY THE CONSERVATIVE DIRECTION. An omitted or
+ * unrecognised value must not silently satisfy an expectation from an earlier day: defaulting to
+ * 'once' would let a missing field quietly erase a finding, while defaulting to 'repeat' at worst
+ * produces a finding a clinician can argue with. A wrong finding is visible; a vanished one is not.
+ */
+export const RECURRENCE_VALUES = ['once', 'repeat'] as const;
+export type Recurrence = (typeof RECURRENCE_VALUES)[number];
+
+export function asRecurrence(v: unknown): Recurrence {
+  const t = String(v ?? '').trim().toLowerCase();
+  return t === 'once' ? 'once' : 'repeat';
 }
 
 export interface ExpectedCourse {
@@ -775,6 +808,7 @@ export function parseExpectedCourse(text: string, chunkIds: readonly number[]): 
       item: asText(e.item), by_day: asNum(e.by_day), rationale: asText(e.rationale),
       citation_ids: asCitationIds(e.citation_ids, chunkIds),
       matcher: asMatcher(e.matcher), proposed_severity: asProposedSeverity(e.proposed_severity),
+      recurrence: asRecurrence(e.recurrence),
     };
   }).filter((e) => e.item !== '');
 
@@ -784,6 +818,7 @@ export function parseExpectedCourse(text: string, chunkIds: readonly number[]): 
       item: asText(e.item), frequency: asText(e.frequency, 200), rationale: asText(e.rationale),
       citation_ids: asCitationIds(e.citation_ids, chunkIds),
       matcher: asMatcher(e.matcher), proposed_severity: asProposedSeverity(e.proposed_severity),
+      recurrence: asRecurrence(e.recurrence),
     };
   }).filter((e) => e.item !== '');
 
@@ -793,6 +828,7 @@ export function parseExpectedCourse(text: string, chunkIds: readonly number[]): 
       trigger: asText(e.trigger), action: asText(e.action),
       citation_ids: asCitationIds(e.citation_ids, chunkIds),
       matcher: asMatcher(e.matcher), proposed_severity: asProposedSeverity(e.proposed_severity),
+      recurrence: asRecurrence(e.recurrence),
     };
   }).filter((e) => e.trigger !== '');
 

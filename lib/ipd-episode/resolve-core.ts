@@ -689,6 +689,8 @@ export interface ResolvableEntry {
   citationIds: number[];
   matcher: ExpectationMatcher | null;
   proposedSeverity: 'minor' | 'moderate' | 'major';
+  /** DECISION 42: 'once' resolves across the whole episode, 'repeat' from this entry's day. */
+  recurrence?: 'once' | 'repeat';
 }
 
 export interface ResolvedOutcome {
@@ -805,24 +807,19 @@ export function resolveEntry(
     };
   }
 
-  // ⚠️ ROUND 21 ITEM 1 — THE WHOLE EPISODE TO DATE, NOT THE EXPECTATION'S OWN DAY FORWARD.
+  // ⚠️ DECISION 42 — THE WINDOW IS THE EXPECTATION'S OWN DECLARATION, NOT THE RESOLVER'S GUESS.
   //
-  // Round 14 item 3 set this floor to `entry.dayIndex` to stop a "repeat CBC" being satisfied by
-  // the very order that prompted it. That reasoning was right about repeats and wrong about
-  // everything else, because most expectations are not repeats — they are the checkpoint noticing,
-  // on day N, that something ought to have happened.
+  // Round 14 item 3 floored every search at the entry's own day, so "repeat CBC on day 2" could not
+  // be answered by the day-0 order — right, and it broke the EEG. Round 21 item 1 removed the floor
+  // so "EEG if not yet completed" found the day-0 EEG — right, and it re-opened the CBC. Two rounds
+  // arguing over one window because the resolver was guessing at something only the expectation
+  // knows: is an EARLIER occurrence enough, or is a NEW one required?
   //
-  // IPNO-486 measured the cost. An EEG was billed on DAY 0. The day-1 checkpoint expected an EEG
-  // and the day-2 checkpoint expected one again; both searched only from their own day forward,
-  // found nothing, and each scored a MAJOR omission — 16 of that episode's 106 penalty points, for
-  // a test the audit's own event list shows was done. The day-2 entry's text reads, in full,
-  // "EEG with sleep and awake recordings (IF NOT YET COMPLETED)": the model was explicitly asking
-  // whether it had already happened, and the resolver was structurally unable to look.
-  //
-  // So the search is the whole episode to date. The repeat case that round 14 fixed is now handled
-  // where it belongs — in item 2's catalogue matching and in the model's own wording — rather than
-  // by a day floor that silently converts "already done" into "never done".
-  const fromDay = null;
+  // The checkpoint now says, while still blinded. `once` searches the whole episode to date;
+  // `repeat` searches from its own day. An absent or unrecognised value defaults to `repeat`, the
+  // conservative direction — a wrong finding is visible and arguable, a silently satisfied
+  // expectation is neither.
+  const fromDay = (entry.recurrence ?? 'repeat') === 'once' ? null : entry.dayIndex;
 
   // ⚠️ CLASS PRESENCE STAYS DAY-SCOPED (round 14 item 2), and the two are NOT the same question.
   // MATCHING asks "did this ever happen in this admission" — the whole episode is the right search.

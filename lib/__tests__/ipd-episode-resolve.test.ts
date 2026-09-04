@@ -17,6 +17,7 @@ import {
   type ExpectationMatcher, type ResolvableEntry,
 } from '../ipd-episode/resolve-core';
 import { DEATH_DISCHARGE_TYPES, dischargeIndicatesDeath } from '../ipd-episode/assemble-core';
+import { asRecurrence } from '../ipd-episode/checkpoint-core';
 import { findingsFromResolved, domainForSection, countFindings, resolverGroupKey } from '../ipd-episode/judge-core';
 import type { EpisodeEvent } from '../ipd-episode/assemble-core';
 
@@ -323,7 +324,7 @@ test('GROUPING: the two counts describe the same list, and neither can be read a
 // ROUND 14 ITEMS 2, 3 AND 5 — THE DAY WINDOW, AND THE SHORTHAND
 // ═══════════════════════════════════════════════════════════════════════════════════════════════
 
-test('ROUND 21 ITEM 1: an expectation resolves across the WHOLE EPISODE, not its own day forward', () => {
+test('DECISION 42: a `once` expectation resolves across the WHOLE EPISODE', () => {
   // ⚠️ THIS REVERSES ROUND 14 ITEM 3, DELIBERATELY (V, round 21 item 1). That rule floored the
   // search at the expectation's own day so a "repeat CBC" could not be satisfied by the order that
   // prompted it. Right about repeats, wrong about everything else: most expectations are a
@@ -335,15 +336,41 @@ test('ROUND 21 ITEM 1: an expectation resolves across the WHOLE EPISODE, not its
   // for a test the event list shows was performed. The day-2 entry even read "(if not yet
   // completed)": the model was asking whether it had already happened and the resolver could not look.
   const events = [labOrder('COMPLETE BLOOD COUNT', 0)];
-  const r = resolveEntry(entry({ dayIndex: 2, byDay: 2, matcher: { kind: 'lab', terms: ['complete blood count'] } }), events);
-  assert.equal(r.resolution, 'present', 'a day-0 order now answers a day-2 expectation');
+  const r = resolveEntry(entry({ dayIndex: 2, byDay: 2, recurrence: 'once',
+    matcher: { kind: 'lab', terms: ['complete blood count'] } }), events);
+  assert.equal(r.resolution, 'present', 'a day-0 order answers a day-2 `once` expectation');
   assert.match(r.statement, /day 0/, 'and the statement names the day it actually happened');
 });
 
-test('ROUND 21 ITEM 1: an order on ANY day satisfies, and the day is reported honestly', () => {
+test('DECISION 42: a `repeat` expectation is NOT satisfied by the order that prompted it', () => {
+  // r-32 on IPNO-416, and the defect round 21 item 1 re-opened by widening the window for
+  // everything. "Repeat CBC on day 2" answered by the DAY 0 order is the audit reporting a thing
+  // was done, using as proof the very order whose repetition was being asked for.
+  const events = [labOrder('COMPLETE BLOOD COUNT', 0)];
+  const r = resolveEntry(entry({ dayIndex: 2, byDay: 2, recurrence: 'repeat',
+    matcher: { kind: 'lab', terms: ['complete blood count'] } }), events);
+  assert.notEqual(r.resolution, 'present', 'the day-0 order is not a day-2 repeat');
+});
+
+test('DECISION 42: the DEFAULT is `repeat` — a missing field must not silently satisfy', () => {
+  // An omitted or unrecognised value takes the conservative direction: a wrong finding is visible
+  // and arguable, a silently satisfied expectation is neither.
+  const events = [labOrder('COMPLETE BLOOD COUNT', 0)];
+  for (const rec of [undefined, 'sometimes' as never, '' as never, null as never]) {
+    const r = resolveEntry(entry({ dayIndex: 2, recurrence: rec,
+      matcher: { kind: 'lab', terms: ['complete blood count'] } }), events);
+    assert.notEqual(r.resolution, 'present', `recurrence=${String(rec)} must default to repeat`);
+  }
+  assert.equal(asRecurrence(undefined), 'repeat');
+  assert.equal(asRecurrence('nonsense'), 'repeat');
+  assert.equal(asRecurrence('REPEAT'), 'repeat');
+  assert.equal(asRecurrence('Once'), 'once', 'and `once` is honoured whatever its case');
+});
+
+test('DECISION 42: a `once` order on ANY day satisfies, and the day is reported honestly', () => {
   for (const day of [0, 2, 3]) {
     const r = resolveEntry(
-      entry({ dayIndex: 2, matcher: { kind: 'lab', terms: ['complete blood count'] } }),
+      entry({ dayIndex: 2, recurrence: 'once', matcher: { kind: 'lab', terms: ['complete blood count'] } }),
       [labOrder('COMPLETE BLOOD COUNT', day)],
     );
     assert.equal(r.resolution, 'present', `a day-${day} order satisfies a day-2 expectation`);

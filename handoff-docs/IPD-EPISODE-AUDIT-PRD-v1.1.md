@@ -584,6 +584,41 @@ drug names **only where the catalogue recognises them as drugs**, which is what 
 code, so subtracting today's resolver delta from their stored totals is not arithmetic that holds —
 IPNO-416's impossible −32 penalty / index 105 is the tell, and it is left in the table as one.
 
+### 1.22 Decision 42 — the checkpoint declares recurrence (V, 2026-09-04)
+
+Each expected-course entry now carries `recurrence`, emitted while the checkpoint is still blinded,
+beside `matcher` and `proposed_severity`.
+
+- **`once`** — resolve across the whole episode to date. "EEG if not yet completed" is satisfied by
+  an EEG on any earlier day.
+- **`repeat`** — resolve only from the entry's own day forward. "Repeat CBC on day 2" is not
+  satisfied by the day-0 order.
+
+**Why it belongs to the checkpoint and not the resolver.** Round 14 item 3 floored every search at
+the entry's own day, which was right for the CBC and broke the EEG. Round 21 item 1 removed the
+floor, which was right for the EEG and re-opened the CBC. Two rounds arguing over one window,
+because the resolver was guessing at something only the expectation knows: is an earlier occurrence
+enough, or is a new one required? The checkpoint knows, and it is the one party that can say so
+without hindsight.
+
+**THE DEFAULT IS `repeat`.** An omitted or unrecognised value takes the conservative direction: a
+wrong finding is visible and arguable, while an expectation silently satisfied by an earlier day
+leaves no trace. Class presence remains day-scoped under both values.
+
+**Re-measured on the seven episodes on recent code, with recurrence inferred from entry wording as
+a PROXY:** 7 entry-level verdict changes and −40 resolver penalty, against the 104 changes and −374
+that round 21 item 1 produced by widening the window for everything. IPNO-486 moves 77 → 79 and
+stays `substantial`; only its cp-d2 EEG flips, the entry whose own text reads "if not yet
+completed". The proxy is conservative by construction and **understates** — the real figure depends
+on what the model emits when asked directly, which only a re-run can show.
+
+⚠️ **THE FIVE ROUND-15 EPISODES CANNOT BE PROJECTED AT ALL** — IP-1313, IP-1286, IPNO-416, IP-1483,
+IPNO-495 were last audited at 07:44–08:01 on engine code several rounds old, so subtracting today's
+resolver delta from their stored totals is not arithmetic that holds. Round 21 showed IPNO-416 at
+penalty −32 and index 105 as the proof. They are excluded from the projection and can only be
+re-run. (V's instruction said four stale and eight recent; the stored `audited_at` timestamps say
+**five and seven**.)
+
 ### 4.2a `unassessable` must be earned (added 2026-09-02, decision 33)
 
 A finding may carry `unassessable` only if its `evidence_basis` is empty or every cited source is Tier C. Anything else is rewritten to `context_dependent` in code and counted in `n_unassessable_rejected`. Resolver findings with `resolution = 'absent_class_missing'` are exempt: that gap was established by code rather than claimed by a model.
