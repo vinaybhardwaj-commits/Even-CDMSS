@@ -8,8 +8,10 @@ import { principalFor, labV2KeysConfigured, scopesFor } from '../../mcp-v2/auth'
 
 // ── §15.1 registry ───────────────────────────────────────────────────────────────────
 test('§15.1: round 1 registers exactly the fifteen named tools', () => {
-  assert.equal(REGISTRY.length, 15);
-  assert.deepEqual(REGISTRY.map((t) => t.name).sort(), [
+  // lab-v2 round A2 (§17.2): the registry grew by the nine observation tools. Round 1's fifteen
+  // are pinned BY SLICE below, which is stronger than the bare count this line used to carry.
+  assert.equal(REGISTRY.filter((t) => t.slice === 'A-1').length, 15);
+  assert.deepEqual(REGISTRY.filter((t) => t.slice === 'A-1').map((t) => t.name).sort(), [
     'dataset_create', 'dataset_preview', 'dataset_validate', 'engine_describe',
     'experiment_create', 'experiment_run', 'model_capabilities', 'run_cancel',
     'run_result', 'run_retry', 'run_status', 'system_capabilities', 'system_health',
@@ -110,6 +112,22 @@ test('§15.2: an empty env var cannot be authenticated with the empty string', (
 });
 
 // ── §15.3 visibility ─────────────────────────────────────────────────────────────────
+test('§17.2: round A2 adds nine read-only, free observation tools', () => {
+  const a2 = REGISTRY.filter((t) => t.slice === 'A-2');
+  assert.equal(a2.length, 9);
+  assert.deepEqual(a2.map((t) => t.name).sort(), [
+    'audit_aggregate', 'audit_explain', 'audit_search', 'case_snapshot', 'citation_check',
+    'corpus_search', 'report_export', 'retrieval_inspect', 'source_freshness',
+  ]);
+  for (const t of a2) {
+    assert.equal(t.effect, 'read', `${t.name} must be read`);
+    assert.equal(t.cost_class, 'free', `${t.name} must be free`);
+    assert.equal(t.classification, 'deidentified');
+  }
+  // source_freshness is the only one on production_read; the other eight are research_read.
+  assert.deepEqual(a2.filter((t) => t.scopes.includes('production_read')).map((t) => t.name), ['source_freshness']);
+});
+
 test('§15.3: tools/list under the research key does NOT include worker_control', () => {
   const names = visibleTools(SCOPES_BY_PRINCIPAL.research).map((t) => t.name);
   assert.ok(!names.includes('worker_control'), 'research must not see worker_control');

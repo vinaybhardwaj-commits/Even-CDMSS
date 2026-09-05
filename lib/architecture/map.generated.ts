@@ -3819,6 +3819,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "lab-v2",
+    "to": "db",
+    "kind": "value"
+  },
+  {
+    "from": "lab-v2",
     "to": "lab-execution-context",
     "kind": "value"
   },
@@ -3855,6 +3860,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "lab-v2",
     "to": "retrieve",
+    "kind": "value"
+  },
+  {
+    "from": "lab-v2",
+    "to": "sql-guard-core",
     "kind": "value"
   },
   {

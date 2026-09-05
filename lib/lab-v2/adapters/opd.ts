@@ -135,7 +135,13 @@ export function makeOpdAdapter(deps: OpdAdapterDeps = {}): Adapter {
               engine_version: (audit as { engineVersion?: string }).engineVersion ?? armVersion,
               findings: findings.length,
               finding_subjects: (findings as { subject?: string }[]).slice(0, 25).map((f) => f.subject ?? null),
-              note_quality_index: (audit as { scorecard?: { noteQualityIndex?: number } }).scorecard?.noteQualityIndex ?? null,
+              // FIX 26b — the summary read a key the engine does not have. `OpdScorecard`
+              // (lib/opd-note-score-core.ts:93) calls the 0..100 OPD Note-Quality Index
+              // `headline`; round 1 read `noteQualityIndex`, which is undefined on every audit,
+              // so the field was null even on assessed items. The ENGINE was never at fault and
+              // does not skip PDQI-9 — lib/opd-note-audit.ts is untouched by this fix.
+              note_quality_index: (audit as { scorecard?: { headline?: number } }).scorecard?.headline ?? null,
+              band: (audit as { scorecard?: { band?: string } }).scorecard?.band ?? null,
               llm_leg_failed: llmLegFailed,
             },
             execution_status: 'succeeded',

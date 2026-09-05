@@ -25,7 +25,19 @@ export interface TransportRequest {
   signal?: AbortSignal;
 }
 
-export interface Served { provider: string; model: string | null; options: Record<string, unknown> }
+/**
+ * §6.2 / fix 26a — the token counts behind a call's cost, stored ON the served receipt.
+ * `usage_missing` is a POSITIVE statement, not an absence: a provider that returned no usage is a
+ * different fact from one we forgot to record, and only the first is acceptable.
+ */
+export interface ServedUsage {
+  prompt_tokens: number | null;
+  completion_tokens: number | null;
+  reasoning_tokens?: number | null;
+  usage_missing?: true;
+}
+
+export interface Served { provider: string; model: string | null; options: Record<string, unknown>; usage: ServedUsage }
 
 export interface TransportResult {
   completion: unknown;
@@ -47,6 +59,30 @@ function usageOf(completion: unknown): { input_tokens: number; output_tokens: nu
   return { input_tokens: inTok, output_tokens: outTok };
 }
 
+/**
+ * Fix 26a — the usage block in the shape §17.2 names, read from the completion rather than from
+ * the attribution receipt. `readTransportAttribution` carries dispatch evidence only
+ * (`dispatched_provider`, `dispatched_model`, `cloud_response_received`); the token counts have
+ * always been on the completion's own `usage`, which is why round 1 stored none.
+ * Reasoning tokens live under `completion_tokens_details` on the OpenAI shape and sometimes at
+ * the top level, so both are read.
+ */
+export function servedUsage(completion: unknown): ServedUsage {
+  const u = (completion as { usage?: Record<string, unknown> } | null)?.usage;
+  if (!u) return { prompt_tokens: null, completion_tokens: null, usage_missing: true };
+  const details = (u.completion_tokens_details ?? {}) as Record<string, unknown>;
+  const reasoning = details.reasoning_tokens ?? u.reasoning_tokens;
+  const prompt = Number(u.prompt_tokens ?? u.input_tokens);
+  const completion_tokens = Number(u.completion_tokens ?? u.output_tokens);
+  const out: ServedUsage = {
+    prompt_tokens: Number.isFinite(prompt) ? prompt : null,
+    completion_tokens: Number.isFinite(completion_tokens) ? completion_tokens : null,
+  };
+  if (reasoning != null && Number.isFinite(Number(reasoning))) out.reasoning_tokens = Number(reasoning);
+  if (out.prompt_tokens === null && out.completion_tokens === null) out.usage_missing = true;
+  return out;
+}
+
 function textOf(completion: unknown): string {
   const c = completion as { choices?: { message?: { content?: unknown } }[] } | null;
   const content = c?.choices?.[0]?.message?.content;
@@ -62,7 +98,12 @@ export const liveTransport: Transport = async (req) => {
     // rather than being papered over with the requested values, which would make every
     // unattributed call look verified.
     served: receipt
-      ? { provider: receipt.dispatched_provider, model: receipt.dispatched_model, options: { cloud_response_received: receipt.cloud_response_received } }
+      ? {
+        provider: receipt.dispatched_provider,
+        model: receipt.dispatched_model,
+        options: { cloud_response_received: receipt.cloud_response_received },
+        usage: servedUsage(completion),
+      }
       : null,
     usage: usageOf(completion),
     text: textOf(completion),
@@ -91,7 +132,7 @@ export function fixtureTransport(opts: FixtureOptions = {}): Transport {
     const servedModel = req.model === 'fixture-mismatch' ? 'some-other-model' : req.model;
     return {
       completion,
-      served: { provider: req.provider, model: servedModel, options: {} },
+      served: { provider: req.provider, model: servedModel, options: {}, usage: servedUsage(completion) },
       usage: { input_tokens: inputTokens, output_tokens: outputTokens },
       text: reply,
     };

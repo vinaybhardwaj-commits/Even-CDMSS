@@ -56,13 +56,15 @@ test('§15.3: tools/list is scope-filtered for each of the four principals', asy
   // §3.1 gives research `production_read`, so the two production READS are visible to it.
   assert.ok(listed.research.includes('system_health'));
   assert.ok(listed.research.includes('worker_status'));
-  assert.equal(listed.research.length, 14);
+  // lab-v2 round A2 (§17.2): 14 round-1 tools + 9 observation tools.
+  assert.equal(listed.research.length, 23);
 
   // The operator holds production_write, so it alone sees worker_control — but it holds
   // no research_write, so the five research-writing tools are hidden from it.
   assert.ok(listed.operator.includes('worker_control'));
   assert.ok(!listed.operator.includes('dataset_create'));
-  assert.equal(listed.operator.length, 10);
+  // A2 adds source_freshness (production_read) and the eight research_read tools it can see.
+  assert.equal(listed.operator.length, 19);
 
   // reviewer and release hold no research_write: no dataset or experiment creation.
   for (const p of ['reviewer', 'release'] as const) {
@@ -71,9 +73,9 @@ test('§15.3: tools/list is scope-filtered for each of the four principals', asy
     assert.ok(!listed[p].includes('worker_control'));
   }
   // reviewer = 3 unrestricted + 2 production reads + 4 research reads.
-  assert.equal(listed.reviewer.length, 9);
-  // release = 3 unrestricted + 2 production reads. Nothing else in round 1 carries `release`.
-  assert.equal(listed.release.length, 5);
+  assert.equal(listed.reviewer.length, 18);
+  // release = 3 unrestricted + 2 production reads + source_freshness. Nothing carries `release`.
+  assert.equal(listed.release.length, 6);
   await db.close();
 });
 
@@ -103,7 +105,7 @@ test('§8: a real tool call round-trips through the SDK with structured content'
   assert.equal(body.principal, 'research');
   assert.equal(body.protocol_version, MCP_V2_PROTOCOL_VERSION);
   assert.equal(body.sdk_version, MCP_V2_SDK_VERSION);
-  assert.equal(body.tools.length, 14);
+  assert.equal(body.tools.length, 23);
   assert.ok(body.pricing_version.startsWith('lab-v2-pricing/'));
   await handler.close();
   await db.close();

@@ -28,6 +28,7 @@ import {
   getRun, getWorker, itemsOf, putObject, recordEvent, requestCancel, retryRun, setWorkerPaused, submitRun,
 } from './store';
 import { opdAdapter } from './adapters/opd';
+import { OBSERVATION_HANDLERS, OBSERVATION_SCHEMAS } from './tools/observation';
 import { freezeOpdCase, validateFrozenCase } from './sources/opd';
 import { openrouterConfigured, geminiConfigured } from '../llm';
 import { bedrockConfigured } from '../bedrock';
@@ -40,6 +41,17 @@ export interface ServiceDeps {
 }
 
 const DEFAULT_BUDGET_CAP_MICROUSD = 5_000_000;   // $5 per named budget until an operator raises it.
+
+/**
+ * Round A2 (§17.2) — one schema table for both rounds. Round 1's schemas live in contracts.ts;
+ * the nine observation schemas live beside their handlers, because A2's file contract does not
+ * permit editing contracts.ts. Dispatch does not care which side a tool came from.
+ */
+interface SchemaPair { input: { safeParse: (v: unknown) => unknown }; output: { safeParse: (v: unknown) => unknown } }
+const SCHEMAS: Record<string, SchemaPair> = {
+  ...(toolSchemas as unknown as Record<string, SchemaPair>),
+  ...(OBSERVATION_SCHEMAS as unknown as Record<string, SchemaPair>),
+};
 
 function scopesOf(principal: Principal): readonly Scope[] { return SCOPES_BY_PRINCIPAL[principal]; }
 
@@ -59,18 +71,18 @@ export async function callTool(deps: ServiceDeps, name: string, rawArgs: unknown
     throw new LabError('SCOPE_DENIED', `principal '${deps.principal}' may not call '${name}'`);
   }
   const args = stripIdentityFields((rawArgs ?? {}) as Record<string, unknown>);
-  const parsed = toolSchemas[spec.name as ToolName].input.safeParse(args);
+  const parsed = SCHEMAS[spec.name].input.safeParse(args) as unknown as { success: boolean; data?: unknown; error?: { issues: { path: (string | number)[]; message: string }[] } };
   if (!parsed.success) {
-    throw new LabError('INVALID_INPUT', `invalid input for '${name}': ${parsed.error.issues.map((i) => `${i.path.join('.')} ${i.message}`).join('; ')}`);
+    throw new LabError('INVALID_INPUT', `invalid input for '${name}': ${(parsed.error?.issues ?? []).map((i) => `${i.path.join('.')} ${i.message}`).join('; ')}`);
   }
 
-  const out = await HANDLERS[spec.name](deps, parsed.data as never);
+  const out = await ALL_HANDLERS[spec.name](deps, parsed.data as never);
 
   // Outputs are validated before return (§8): a handler that drifts from its declared
   // contract fails here rather than shipping a shape a client will silently mis-read.
-  const validated = toolSchemas[spec.name as ToolName].output.safeParse(out);
+  const validated = SCHEMAS[spec.name].output.safeParse(out) as unknown as { success: boolean; data?: unknown; error?: { issues: { message: string }[] } };
   if (!validated.success) {
-    throw new LabError('STORE_UNAVAILABLE', `internal: '${name}' produced an output that does not match its schema: ${validated.error.issues[0]?.message ?? ''}`);
+    throw new LabError('STORE_UNAVAILABLE', `internal: '${name}' produced an output that does not match its schema: ${validated.error?.issues[0]?.message ?? ''}`);
   }
   // §3.2.3 — actor, tool and outcome. NEVER the request body of a tool carrying clinical text.
   await recordEvent(deps.db, deps.principal, name, 'tool_call', { tool: name, request_hash: hash(args), outcome: 'ok' })
@@ -112,7 +124,15 @@ const HANDLERS: Record<ToolName, Handler> = {
     };
   },
 
-  async model_capabilities() {
+  async model_capabilities(deps) {
+    // Newest settled call per provider — the whole of decision 28's health signal.
+    const rows = await deps.db.query<{ provider: string; newest: string }>(
+      `SELECT served->>'provider' AS provider, max(settled_at) AS newest
+       FROM lab_v2.calls WHERE state = 'settled' AND served->>'provider' IS NOT NULL
+       GROUP BY 1`,
+    ).catch(() => []);
+    const lastSettled: Record<string, string> = {};
+    for (const r of rows) if (r.newest) lastSettled[r.provider] = new Date(String(r.newest)).toISOString();
     const configured: Record<string, boolean> = {
       bedrock: bedrockConfigured(),
       openrouter: openrouterConfigured(),
@@ -124,10 +144,11 @@ const HANDLERS: Record<ToolName, Handler> = {
       providers: PROVIDERS.map((p) => ({
         provider: p,
         configured: configured[p] ?? false,
-        // Round 1 reports configuration only. An actual probe is a live model call and
-        // would make a capability read cost money; §6.1 asks for the last SUCCESSFUL
-        // probe, and until a probe exists the honest answer is null, not a guess.
-        health_tested_at: null,
+        // DECISION 28 — DERIVED, NEVER PROBED: the newest `settled` call for this provider in
+        // lab_v2.calls, or null. A probe would be a live model call, which would make a
+        // capability read cost money and put a call outside any run's ledger. A settled call IS
+        // the evidence that the provider answered, and it is evidence we already paid for.
+        health_tested_at: lastSettled[p] ?? null,
         models: modelsFor(p),
       })),
     };
@@ -388,4 +409,13 @@ const HANDLERS: Record<ToolName, Handler> = {
     const requeued = await retryRun(deps.db, run.id);
     return { run_id: run.id, requeued };
   },
+};
+
+/**
+ * Round A2 — the dispatch table both rounds share. The observation handlers take the same
+ * (deps, args) shape, and `ServiceDeps` already carries the `db` and `principal` they need.
+ */
+const ALL_HANDLERS: Record<string, Handler> = {
+  ...HANDLERS,
+  ...(OBSERVATION_HANDLERS as unknown as Record<string, Handler>),
 };

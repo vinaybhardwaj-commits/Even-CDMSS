@@ -17,11 +17,15 @@ import type { ZodTypeAny } from 'zod';
 import {
   SCOPES, toolSchemas, type Classification, type CostClass, type Effect, type Scope, type ToolName,
 } from './contracts';
+// Round A2 (§17.2). The nine observation schemas live beside their handlers because the round's
+// file contract does not list contracts.ts among the files it may edit.
+import { OBSERVATION_SCHEMAS, type ObservationToolName } from './tools/observation';
 
 export interface ToolAnnotations { readOnlyHint: boolean; destructiveHint: boolean; idempotentHint: boolean }
 
 export interface ToolSpec {
-  name: ToolName;
+  /** A round-1 name from contracts.ts, or a round-A2 name from tools/observation.ts. */
+  name: ToolName | ObservationToolName;
   description: string;
   inputSchema: ZodTypeAny;
   outputSchema: ZodTypeAny;
@@ -67,6 +71,21 @@ const t = (
   slice: 'A-1',
 });
 
+/** Round A2's entries (§17.2). Same shape, schemas from the observation module. */
+const o = (
+  name: ObservationToolName, description: string, scopes: readonly Scope[],
+): ToolSpec => ({
+  name,
+  description,
+  inputSchema: OBSERVATION_SCHEMAS[name].input as unknown as ZodTypeAny,
+  outputSchema: OBSERVATION_SCHEMAS[name].output as unknown as ZodTypeAny,
+  scopes,
+  effect: 'read',
+  classification: 'deidentified',
+  cost_class: 'free',
+  slice: 'A-2',
+});
+
 export const REGISTRY: readonly ToolSpec[] = [
   // ── capability discovery ──────────────────────────────────────────────────────────
   t('system_capabilities', 'List the tools this principal can see, the negotiated MCP protocol version, the SDK version, whether LAB_V2_ENABLED is set, and the pricing table version.', ANY, 'read'),
@@ -88,6 +107,17 @@ export const REGISTRY: readonly ToolSpec[] = [
   t('run_result', 'Paginated items with bounded result summaries. The full result of each item is addressable as an artifact resource.', ['research_read'], 'read'),
   t('run_cancel', 'Request cancellation. Queued items cancel at once; a running item is signalled at its next heartbeat. Owner only.', ['research_write'], 'research_write'),
   t('run_retry', 'Re-queue the failed and expired items of a run as new attempts on the same item ids. Never re-runs a succeeded item. Owner only.', ['research_write'], 'research_write', 'metered'),
+
+  // ── round A2: observation (§17.2). All nine are read-only and free. ────────────────
+  o('source_freshness', 'For each source the platform reads — the db13 OPD note table, opd_note_audits, ipd_episode_audits, mksap_chunks and the v2 call ledger — the newest row time and the row count in the last 24 hours. Each source fails independently.', ['production_read']),
+  o('audit_search', 'Search opd_note_audits by a filter schema, never SQL: engine version, doctor uid, band, note date range, LVC category, verdict and a minimum finding count. Returns scores and finding subjects. Never note text.', ['research_read']),
+  o('audit_aggregate', 'Aggregate the same filter by engine_version, doctor_uid, band, lvc_category or note_month, over count, average note-quality index, average completeness, summed findings or summed low-value findings. Metrics are computed per audit.', ['research_read']),
+  o('case_snapshot', 'For one OPD note uid: its current audit row, the v2 datasets that froze that uid, and the runs that consumed them.', ['research_read']),
+  o('audit_explain', 'For one OPD uid and one finding index: the finding with its rule reference, LVC category, signal type and source, and every citation id resolved against the corpus. Unresolvable ids are listed, never dropped.', ['research_read']),
+  o('retrieval_inspect', 'Run the production retrieval CANDIDATE stage for a query — embedding and lexical, never the reranker and never query expansion, so the tool makes no chat model call. Returns the candidates with scores and the pool sizes.', ['research_read']),
+  o('citation_check', 'Structural citation check: for each citation id, whether the chunk exists, whether it is active, and whether it appears in the sources of the named run or audit. No model.', ['research_read']),
+  o('corpus_search', 'Lexical search over the corpus by text, optionally narrowed by book, source or active state. Returns bounded previews and the quarantine prefix where one applies.', ['research_read']),
+  o('report_export', 'Write one evidence-pack artifact for a run: the experiment, dataset metadata without frozen text, the arms, every item with its three statuses, the call ledger, the replay exactness, and a fixed caveat about single-run sampling.', ['research_read']),
 ];
 
 export const BY_NAME: Record<string, ToolSpec> = Object.fromEntries(REGISTRY.map((s) => [s.name, s]));
