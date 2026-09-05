@@ -21,9 +21,14 @@ import { OBSERVATION_HANDLERS, REPORT_CAVEAT } from '../tools/observation';
 import {
   buildAggregateSql, buildFindingsSql, buildOneAuditSql, buildSearchSql, BANDS, VERDICTS,
 } from '../sources/audits';
-import { buildChunksByIdSql, buildCorpusSearchSql, quarantinePrefix, ACTIVE_PREDICATE } from '../sources/corpus';
+import {
+  buildChunksByIdSql, buildCorpusFilterSql, buildCorpusSearchSql, corpusSearch, quarantinePrefix, ACTIVE_PREDICATE,
+} from '../sources/corpus';
+import { searchAudits } from '../sources/audits';
+import { setSourceExecutor, setSourceTimeoutMs } from '../sources/read';
 import {
   DB13_FRESHNESS_SQL, IPD_EPISODE_FRESHNESS_SQL, MKSAP_FRESHNESS_SQL, OPD_AUDITS_FRESHNESS_SQL,
+  sourceFreshness,
 } from '../sources/freshness';
 import { servedUsage } from '../transport';
 import type { Db } from '../db';
@@ -46,7 +51,10 @@ async function seed(db: Db): Promise<void> {
     );
     CREATE TABLE mksap_chunks (
       id bigint PRIMARY KEY, book text, chapter text, source text, text text,
-      visible boolean DEFAULT true, created_at timestamptz DEFAULT now()
+      visible boolean DEFAULT true, created_at timestamptz DEFAULT now(),
+      -- decision 31: corpus_search now runs on the lexical index, so the fixture needs the
+      -- column that index is built on. Production's mksap_chunks_tsv_idx is GIN over text_tsv.
+      text_tsv tsvector
     );
   `);
   // Two audits. `note_body` exists ONLY so the projection test can prove the column is never
@@ -70,6 +78,7 @@ async function seed(db: Db): Promise<void> {
     `INSERT INTO mksap_chunks (id, book, chapter, source, text, visible) VALUES
       (101, 'Tintinalli', 'Acute Bronchitis', 'textbook', 'Antibiotics are not indicated for the common cold.', true),
       (102, 'LabStaged', 'Staged chapter', 'labq:trial-22jul', 'Quarantined material awaiting activation.', false)`);
+  await db.query(`UPDATE mksap_chunks SET text_tsv = to_tsvector('english', text)`);
 }
 
 // ── the SQL, against real Postgres ───────────────────────────────────────────────────
@@ -143,9 +152,11 @@ test('§17.2: the corpus reads resolve ids, honour the active predicate, and bou
   assert.equal(active['101'], true);
   assert.equal(active['102'], false, 'labq: + visible false is not active');
 
-  const hits = await db.query<{ id: string }>(buildCorpusSearchSql({ text: 'antibiotics', limit: 25 }));
+  // decision 31 — the search is the retrieval BM25 predicate, with $1 bound, not an ILIKE scan.
+  const hits = await db.query<{ id: string }>(buildCorpusSearchSql({ text: 'antibiotics', limit: 25 }), ['antibiotics']);
   assert.deepEqual(hits.map((h) => String(h.id)), ['101']);
-  const inactive = await db.query<{ id: string }>(buildCorpusSearchSql({ text: 'Quarantined', active: false, limit: 25 }));
+  const inactive = await db.query<{ id: string }>(
+    buildCorpusSearchSql({ text: 'quarantined', active: false, limit: 25 }), ['quarantined']);
   assert.deepEqual(inactive.map((h) => String(h.id)), ['102']);
   await db.close();
 });
@@ -431,7 +442,7 @@ test('§17.2: no observation tool output carries note text or a patient field', 
   // Plus the raw SQL results, which is where note text would actually have to leak from.
   outputs.push(await db.query(buildSearchSql({}, 50, 0)));
   outputs.push(await db.query(buildFindingsSql('uid-a')));
-  outputs.push(await db.query(buildCorpusSearchSql({ text: 'antibiotics', limit: 25 })));
+  outputs.push(await db.query(buildCorpusSearchSql({ text: 'antibiotics', limit: 25 }), ['antibiotics']));
 
   const blob = JSON.stringify(outputs);
   assert.ok(!blob.includes(NOTE_SENTENCE), 'a note sentence reached an output');
@@ -443,4 +454,86 @@ test('§17.2: the nine handlers are all registered and all dispatchable', () => 
   const a2 = REGISTRY.filter((t) => t.slice === 'A-2').map((t) => t.name).sort();
   assert.deepEqual(Object.keys(OBSERVATION_HANDLERS).sort(), a2);
   assert.equal(a2.length, 9);
+});
+
+// ── decision 31 ──────────────────────────────────────────────────────────────────────
+test('decision 31: corpus_search runs on the lexical index, never ILIKE over text', () => {
+  const sqlText = buildCorpusSearchSql({ text: 'therapeutic duplication antihistamine', limit: 5 });
+  // The indexed predicate — this is what reaches mksap_chunks_tsv_idx (GIN over text_tsv),
+  // confirmed live on 05 Sep 2026. The ILIKE it replaces was a full corpus scan and 504'd twice.
+  assert.ok(sqlText.includes(`text_tsv @@ plainto_tsquery('english', $1)`), 'the indexed predicate');
+  assert.ok(!/ILIKE/i.test(sqlText), 'no substring scan may return');
+  assert.ok(sqlText.includes('ts_rank_cd'), 'ranked the way retrieval ranks');
+
+  // And it is production's own builder, imported rather than copied, so the two cannot drift.
+  const src = readFileSync('lib/lab-v2/sources/corpus.ts', 'utf8');
+  assert.ok(src.includes("import { defaultBm25Sql } from '../../retrieve'"), 'the BM25 template is imported');
+  const retrieveSrc = readFileSync('lib/retrieve.ts', 'utf8');
+  assert.ok(retrieveSrc.includes('export function defaultBm25Sql('), 'and lib/retrieve.ts still exports it');
+});
+
+test('decision 31: the query text is a bind parameter, never interpolated', () => {
+  const sqlText = buildCorpusSearchSql({ text: "o'brien; DROP TABLE x", limit: 5 });
+  assert.ok(!sqlText.includes('DROP TABLE'), 'the search text never reaches the statement text');
+  assert.ok(sqlText.includes('$1'), 'it travels as a bind');
+  // Filters bind too, starting at $2 exactly as lib/retrieve.ts orders them.
+  const withBook = buildCorpusSearchSql({ text: 'x', book: 'StatPearls', limit: 5 });
+  assert.ok(withBook.includes('book = $2'));
+  assert.deepEqual(buildCorpusFilterSql({ text: 'x', book: 'StatPearls', limit: 5 }).params, ['StatPearls']);
+});
+
+test('decision 31: audits.ts returns SOURCE_UNAVAILABLE when the read exceeds its deadline', async () => {
+  const restoreT = setSourceTimeoutMs(30);
+  const restoreE = setSourceExecutor(() => new Promise(() => {}));   // never settles
+  try {
+    await assert.rejects(
+      () => searchAudits({}, 10, 0),
+      (e: { code?: string; message?: string }) => e.code === 'SOURCE_UNAVAILABLE' && /read deadline/.test(e.message ?? ''),
+    );
+  } finally { setSourceExecutor(restoreE); setSourceTimeoutMs(restoreT); }
+});
+
+test('decision 31: corpus.ts returns SOURCE_UNAVAILABLE when the read exceeds its deadline', async () => {
+  const restoreT = setSourceTimeoutMs(30);
+  const restoreE = setSourceExecutor(() => new Promise(() => {}));
+  try {
+    await assert.rejects(
+      () => corpusSearch({ text: 'therapeutic duplication antihistamine', limit: 5 }),
+      (e: { code?: string; message?: string }) => e.code === 'SOURCE_UNAVAILABLE' && /read deadline/.test(e.message ?? ''),
+    );
+  } finally { setSourceExecutor(restoreE); setSourceTimeoutMs(restoreT); }
+});
+
+test('decision 31: freshness.ts reports a per-source deadline without failing the tool', async () => {
+  const db = await freshDb();
+  const restoreT = setSourceTimeoutMs(30);
+  const restoreE = setSourceExecutor(() => new Promise(() => {}));
+  try {
+    const out = await sourceFreshness(db);
+    // Every Neon source times out; the tool still answers, and lab_v2 (its own store) still works.
+    for (const name of ['neon:opd_note_audits', 'neon:ipd_episode_audits', 'neon:mksap_chunks']) {
+      const row = out.find((s) => s.source === name)!;
+      assert.equal(row.ok, false, `${name} must report its own failure`);
+      assert.match(row.error ?? '', /SOURCE_UNAVAILABLE/);
+    }
+    assert.equal(out.find((s) => s.source === 'lab_v2:calls')!.ok, true, 'one dead source must not take the answer down');
+  } finally { setSourceExecutor(restoreE); setSourceTimeoutMs(restoreT); await db.close(); }
+});
+
+test('decision 31: a non-timeout read error is also SOURCE_UNAVAILABLE, with a short reason', async () => {
+  const restoreE = setSourceExecutor(async () => { throw new Error('connection reset by peer'); });
+  try {
+    await assert.rejects(
+      () => searchAudits({}, 10, 0),
+      (e: { code?: string; message?: string }) => e.code === 'SOURCE_UNAVAILABLE' && /connection reset/.test(e.message ?? ''),
+    );
+  } finally { setSourceExecutor(restoreE); }
+});
+
+test('decision 31: the deadline lives in the v2 wrapper, and the v1 guard is untouched', () => {
+  const guard = readFileSync('lib/sql-guard-core.ts', 'utf8');
+  assert.ok(!/timeout/i.test(guard), 'the v1 guard gained no timeout parameter');
+  const read = readFileSync('lib/lab-v2/sources/read.ts', 'utf8');
+  assert.ok(read.includes('SOURCE_TIMEOUT_MS = 15_000'), 'decision 31 asks for 15 s');
+  assert.ok(read.includes('guardReadOnlySql'), 'and the guard still decides what may run');
 });

@@ -12,12 +12,9 @@
  * one that could NOT be validated that way — `audit_query` fronts production Neon, not db13 — so
  * it is marked INFERRED-UNVALIDATED in the report. It reads the table `fetchOpdNoteByUid` reads.
  */
-import { guardReadOnlySql } from '../../sql-guard-core';
-import { sql } from '../../db';
 import { metabaseQuery } from '../../metabase';
 import type { Db } from '../db';
-
-const run = sql as unknown as (text: string, params?: unknown[]) => Promise<Record<string, unknown>[]>;
+import { boundedRead, withDeadline } from './read';
 
 /** db13, through the same Metabase reader the OPD worker uses. The table name needs the quotes. */
 export const DB13_FRESHNESS_SQL =
@@ -60,26 +57,27 @@ async function probe(name: string, fn: () => Promise<{ newest: unknown; last_24h
   }
 }
 
-async function neon(statement: string): Promise<{ newest: unknown; last_24h: unknown }> {
-  const g = guardReadOnlySql(statement, 500);
-  if (!g.ok) throw new Error(g.error);
-  const rows = await run(g.sql, []);
-  return (rows[0] ?? { newest: null, last_24h: 0 }) as { newest: unknown; last_24h: unknown };
+async function neon(source: string, statement: string): Promise<{ newest: unknown; last_24h: unknown }> {
+  const rows = await boundedRead<{ newest: unknown; last_24h: unknown }>(source, statement);
+  return rows[0] ?? { newest: null, last_24h: 0 };
 }
 
 /** All five sources. `lab_v2.calls` is read from the v2 store, not production Neon. */
 export async function sourceFreshness(db: Db): Promise<SourceFreshness[]> {
   return Promise.all([
-    probe('db13:individuals-prescriptions', async () => {
+    // db13 goes through Metabase, not the Neon client, so it takes the deadline directly.
+    probe('db13:individuals-prescriptions', () => withDeadline('db13', async () => {
       const rows = await metabaseQuery(DB13_FRESHNESS_SQL);
       return (rows[0] ?? { newest: null, last_24h: 0 }) as { newest: unknown; last_24h: unknown };
-    }),
-    probe('neon:opd_note_audits', () => neon(OPD_AUDITS_FRESHNESS_SQL)),
-    probe('neon:ipd_episode_audits', () => neon(IPD_EPISODE_FRESHNESS_SQL)),
-    probe('neon:mksap_chunks', () => neon(MKSAP_FRESHNESS_SQL)),
-    probe('lab_v2:calls', async () => {
+    })),
+    probe('neon:opd_note_audits', () => neon('opd_note_audits', OPD_AUDITS_FRESHNESS_SQL)),
+    probe('neon:ipd_episode_audits', () => neon('ipd_episode_audits', IPD_EPISODE_FRESHNESS_SQL)),
+    probe('neon:mksap_chunks', () => neon('mksap_chunks', MKSAP_FRESHNESS_SQL)),
+    // The v2 store is not production Neon, but a hung read there would time the route out just
+    // the same, so it takes the deadline too.
+    probe('lab_v2:calls', () => withDeadline('lab_v2.calls', async () => {
       const rows = await db.query<{ newest: unknown; last_24h: unknown }>(LAB_V2_CALLS_FRESHNESS_SQL);
       return rows[0] ?? { newest: null, last_24h: 0 };
-    }),
+    })),
   ]);
 }

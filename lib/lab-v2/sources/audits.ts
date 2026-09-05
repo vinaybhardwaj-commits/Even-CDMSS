@@ -27,11 +27,10 @@
  * identifier and no note body, and this file selects `*` from nothing.
  */
 import { z } from 'zod';
-import { guardReadOnlySql } from '../../sql-guard-core';
-import { sql } from '../../db';
 import { LabError } from '../contracts';
+import { boundedRead } from './read';
 
-const run = sql as unknown as (text: string, params?: unknown[]) => Promise<Record<string, unknown>[]>;
+const SOURCE = 'opd_note_audits';
 
 /** The ceiling handed to the v1 guard. It appends `LIMIT` when a statement carries none. */
 const GUARD_MAX = 500;
@@ -124,15 +123,13 @@ export interface AuditRow {
   n_findings: number | null; n_low_value: number | null; finding_subjects: string[] | null;
 }
 
-/** Run a statement through the v1 guard, then execute it. STORE_UNAVAILABLE never leaks SQL. */
-async function guarded<T>(statement: string, source: string): Promise<T[]> {
-  const g = guardReadOnlySql(statement, GUARD_MAX);
-  if (!g.ok) throw new LabError('INVALID_INPUT', `generated statement refused by the read-only guard: ${g.error}`);
-  try {
-    return (await run(g.sql, [])) as T[];
-  } catch (e) {
-    throw new LabError('SOURCE_UNAVAILABLE', `${source} unavailable: ${(e as Error).message}`);
-  }
+/**
+ * Guard, then deadline (decision 31). ./read.ts owns both, so an added statement here cannot
+ * accidentally run unguarded or unbounded — a 60 s route timeout is a 504 with no tool error in
+ * it, which is what corpus_search produced before that decision.
+ */
+async function guarded<T>(statement: string): Promise<T[]> {
+  return boundedRead<T>(SOURCE, statement, [], GUARD_MAX);
 }
 
 export function buildSearchSql(f: AuditFilter, limit: number, offset: number): string {
@@ -142,7 +139,7 @@ export function buildSearchSql(f: AuditFilter, limit: number, offset: number): s
 }
 
 export async function searchAudits(f: AuditFilter, limit: number, offset: number): Promise<AuditRow[]> {
-  return guarded<AuditRow>(buildSearchSql(f, limit, offset), 'opd_note_audits');
+  return guarded<AuditRow>(buildSearchSql(f, limit, offset));
 }
 
 const GROUP_EXPR: Record<(typeof GROUP_BY)[number], string> = {
@@ -188,7 +185,7 @@ export interface AggregateRow { group_key: string | null; value: string | number
 export async function aggregateAudits(
   f: AuditFilter, groupBy: (typeof GROUP_BY)[number], metric: (typeof METRICS)[number], maxGroups: number,
 ): Promise<AggregateRow[]> {
-  return guarded<AggregateRow>(buildAggregateSql(f, groupBy, metric, maxGroups), 'opd_note_audits');
+  return guarded<AggregateRow>(buildAggregateSql(f, groupBy, metric, maxGroups));
 }
 
 export function buildOneAuditSql(uid: string): string {
@@ -196,7 +193,7 @@ export function buildOneAuditSql(uid: string): string {
 }
 
 export async function oneAudit(uid: string): Promise<AuditRow | null> {
-  const rows = await guarded<AuditRow>(buildOneAuditSql(uid), 'opd_note_audits');
+  const rows = await guarded<AuditRow>(buildOneAuditSql(uid));
   return rows[0] ?? null;
 }
 
@@ -218,6 +215,6 @@ export interface AuditFindingsRow {
 }
 
 export async function auditFindings(uid: string): Promise<AuditFindingsRow | null> {
-  const rows = await guarded<AuditFindingsRow>(buildFindingsSql(uid), 'opd_note_audits');
+  const rows = await guarded<AuditFindingsRow>(buildFindingsSql(uid));
   return rows[0] ?? null;
 }
