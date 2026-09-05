@@ -485,3 +485,97 @@ export async function appliedMigrations(db: Db): Promise<string[]> {
 }
 
 export const newId = randomUUID;
+
+// ── steps: the exact-replay ledger (§4.1, decision 45) ───────────────────────────────
+export interface StepRow { item_id: string; name: string; dependency_hash: string; artifact_id: string }
+
+/**
+ * One memoised stage output. `(item_id, name)` is the primary key, so a re-run of the same stage
+ * on the same item overwrites rather than accumulating — a step is the LATEST evidence for that
+ * stage, and a replay wants the reply the stored result came from.
+ */
+export async function writeStep(
+  db: Db, itemId: string, name: string, dependencyHash: string, body: unknown, owner = 'system',
+): Promise<string> {
+  const { object } = await putObject(db, owner, 'artifact', body, 'deidentified', null);
+  await db.query(
+    `INSERT INTO lab_v2.steps (item_id, name, dependency_hash, artifact_id) VALUES ($1, $2, $3, $4)
+     ON CONFLICT (item_id, name) DO UPDATE SET dependency_hash = EXCLUDED.dependency_hash, artifact_id = EXCLUDED.artifact_id`,
+    [itemId, name, dependencyHash, object.id],
+  );
+  return object.id;
+}
+
+/** Every stored stage for one item, by stage name. */
+export async function stepsOf(db: Db, itemId: string): Promise<Map<string, StepRow>> {
+  const rows = await db.query<StepRow>(
+    `SELECT item_id, name, dependency_hash, artifact_id FROM lab_v2.steps WHERE item_id = $1`, [itemId]);
+  return new Map(rows.map((r) => [r.name, r]));
+}
+
+// ── decision 42: budget_reconcile ────────────────────────────────────────────────────
+export interface ReconcileResult {
+  call_id: string; from_unknown_microusd: number; to_spent_microusd: number; budget_id: string;
+}
+
+/**
+ * DECISION 42 — the ONLY way money leaves `unknown`. Nothing moves on its own: an operator names
+ * the amount and the reason, and both are stored. The call must actually be in `unknown`, so a
+ * settled call cannot be re-settled at a different number and a reconcile cannot be replayed.
+ */
+export async function reconcileCall(
+  db: Db, callId: string, actualMicrousd: number, reason: string, actor: string,
+): Promise<ReconcileResult> {
+  return db.transaction(async (tx) => {
+    const rows = await tx.query<{ id: string; budget_id: string; reserved_microusd: string; state: string }>(
+      `SELECT id, budget_id, reserved_microusd, state FROM lab_v2.calls WHERE id = $1 FOR UPDATE`, [callId]);
+    const call = rows[0];
+    if (!call) throw new LabError('NOT_FOUND', `no call ${callId}`);
+    if (call.state !== 'unknown') {
+      throw new LabError('INVALID_INPUT', `call ${callId} is '${call.state}', not 'unknown' — only an unknown call can be reconciled`);
+    }
+    const held = Number(call.reserved_microusd);
+    await tx.query(
+      `UPDATE lab_v2.budgets SET unknown_microusd = GREATEST(0, unknown_microusd - $2), spent_microusd = spent_microusd + $3 WHERE id = $1`,
+      [call.budget_id, held, actualMicrousd]);
+    await tx.query(
+      `UPDATE lab_v2.calls SET state = 'settled', actual_microusd = $2, settled_at = now(),
+         served = COALESCE(served, '{}'::jsonb) || jsonb_build_object('reconciled', true, 'reconcile_reason', $3::text)
+       WHERE id = $1`,
+      [callId, actualMicrousd, reason]);
+    await recordEvent(tx, actor, callId, 'budget_reconciled', {
+      call_id: callId, from_unknown_microusd: held, to_spent_microusd: actualMicrousd, reason,
+    });
+    return { call_id: callId, from_unknown_microusd: held, to_spent_microusd: actualMicrousd, budget_id: call.budget_id };
+  });
+}
+
+// ── decision 43: queue wait ──────────────────────────────────────────────────────────
+export interface QueueWait { p50: number | null; p95: number | null; n: number }
+
+/**
+ * DECISION 43 — an item's creation to the FIRST `attempts.started_at`, so a requeued item is
+ * counted once, by how long it waited to be picked up at all. That is the number that decides
+ * whether a cron tick is fast enough or a long-lived worker is needed; counting later attempts
+ * would measure retry behaviour instead and flatter the cron.
+ *
+ * ⚠️ THE CREATION TIME COMES FROM `runs`, AND IT IS THE SAME INSTANT. Decision 43 names
+ * `items.created_at`; migration 0001 gave `lab_v2.items` no such column, and B1's file contract
+ * adds no migration. It needs none: `submitRun` is the only writer of `lab_v2.items` and it
+ * inserts the run and every one of its items in ONE transaction, so `runs.created_at` IS each
+ * item's creation time — not an approximation of it. Flagged in the B1 report.
+ */
+export async function queueWait(db: Db, windowHours: number): Promise<QueueWait> {
+  const rows = await db.query<{ wait_ms: string }>(
+    `SELECT EXTRACT(EPOCH FROM (first_start - r.created_at)) * 1000 AS wait_ms
+     FROM lab_v2.items i
+     JOIN lab_v2.runs r ON r.id = i.run_id
+     JOIN (SELECT item_id, min(started_at) AS first_start FROM lab_v2.attempts GROUP BY item_id) a ON a.item_id = i.id
+     WHERE r.created_at > now() - make_interval(hours => $1)
+     ORDER BY 1`,
+    [windowHours]);
+  const values = rows.map((r) => Number(r.wait_ms)).filter((v) => Number.isFinite(v) && v >= 0);
+  if (!values.length) return { p50: null, p95: null, n: 0 };
+  const at = (q: number) => values[Math.min(values.length - 1, Math.max(0, Math.floor(q * (values.length - 1))))];
+  return { p50: Math.round(at(0.5)), p95: Math.round(at(0.95)), n: values.length };
+}

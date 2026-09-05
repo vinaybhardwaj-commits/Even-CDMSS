@@ -56,15 +56,16 @@ test('§15.3: tools/list is scope-filtered for each of the four principals', asy
   // §3.1 gives research `production_read`, so the two production READS are visible to it.
   assert.ok(listed.research.includes('system_health'));
   assert.ok(listed.research.includes('worker_status'));
-  // lab-v2 round A2 (§17.2): 14 round-1 tools + 9 observation tools.
-  assert.equal(listed.research.length, 23);
+  // lab-v2 A2 (+9 observation) and B1 (+3 research-visible: run_diff, experiment_compare,
+  // run_replay; budget_reconcile is production_write and is not).
+  assert.equal(listed.research.length, 26);
 
   // The operator holds production_write, so it alone sees worker_control — but it holds
   // no research_write, so the five research-writing tools are hidden from it.
   assert.ok(listed.operator.includes('worker_control'));
   assert.ok(!listed.operator.includes('dataset_create'));
-  // A2 adds source_freshness (production_read) and the eight research_read tools it can see.
-  assert.equal(listed.operator.length, 19);
+  // The operator adds budget_reconcile (production_write) on top of the reads it can see.
+  assert.equal(listed.operator.length, 22);
 
   // reviewer and release hold no research_write: no dataset or experiment creation.
   for (const p of ['reviewer', 'release'] as const) {
@@ -73,7 +74,7 @@ test('§15.3: tools/list is scope-filtered for each of the four principals', asy
     assert.ok(!listed[p].includes('worker_control'));
   }
   // reviewer = 3 unrestricted + 2 production reads + 4 research reads.
-  assert.equal(listed.reviewer.length, 18);
+  assert.equal(listed.reviewer.length, 20);
   // release = 3 unrestricted + 2 production reads + source_freshness. Nothing carries `release`.
   assert.equal(listed.release.length, 6);
   await db.close();
@@ -105,7 +106,7 @@ test('§8: a real tool call round-trips through the SDK with structured content'
   assert.equal(body.principal, 'research');
   assert.equal(body.protocol_version, MCP_V2_PROTOCOL_VERSION);
   assert.equal(body.sdk_version, MCP_V2_SDK_VERSION);
-  assert.equal(body.tools.length, 23);
+  assert.equal(body.tools.length, 26);
   assert.ok(body.pricing_version.startsWith('lab-v2-pricing/'));
   await handler.close();
   await db.close();
@@ -187,7 +188,8 @@ test('§14.2: the bridge supplies the jsonSchema half that zod 3 lacks', () => {
   // optional — opd_note_audit freezes a uid, the five route engines freeze a request body. The
   // bridge assertion is about the BRIDGE, so it pins what the bridge must reproduce: every
   // declared property, and the two fields that are required whichever shape of case is used.
-  assert.deepEqual(Object.keys(json.properties as object).sort(), ['body', 'case_key', 'engine', 'idempotency_key']);
+  // B1 (§17.4 item 1) adds cohort mode: `cohort` and `exclusions` join the shape.
+  assert.deepEqual(Object.keys(json.properties as object).sort(), ['body', 'case_key', 'cohort', 'engine', 'exclusions', 'idempotency_key']);
   assert.deepEqual((json.required as string[]).sort(), ['engine', 'idempotency_key']);
 });
 

@@ -24,7 +24,7 @@ import {
 import { PRICING_VERSION, isSupportedModel, modelsFor } from './pricing';
 import { BY_NAME, visibleTools } from './registry';
 import {
-  appliedMigrations, countItemsByState, deriveRunState, ensureBudget, getBudget, getObject,
+  appliedMigrations, countItemsByState, deriveRunState, ensureBudget, getBudget, getObject, queueWait, reconcileCall,
   getRun, getWorker, itemsOf, putObject, recordEvent, requestCancel, retryRun, setWorkerPaused, submitRun,
 } from './store';
 import { opdAdapter } from './adapters/opd';
@@ -33,6 +33,10 @@ import { opdAdapter } from './adapters/opd';
 import { ALL_ADAPTERS } from './adapters/types';
 import { freezeRequestCase, requestFieldsFor, requiresIdentifyingInput } from './sources/requests';
 import { OBSERVATION_HANDLERS, OBSERVATION_SCHEMAS } from './tools/observation';
+// Slice B round B1 (§17.4).
+import { COMPARE_SCHEMAS, experimentCompare, runDiff } from './tools/compare';
+import { REPLAY_SCHEMAS, runReplay } from './tools/replay';
+import { freezeCohort } from './sources/cohort';
 import { freezeOpdCase, validateFrozenCase } from './sources/opd';
 import { openrouterConfigured, geminiConfigured } from '../llm';
 import { bedrockConfigured } from '../bedrock';
@@ -55,6 +59,8 @@ interface SchemaPair { input: { safeParse: (v: unknown) => unknown }; output: { 
 const SCHEMAS: Record<string, SchemaPair> = {
   ...(toolSchemas as unknown as Record<string, SchemaPair>),
   ...(OBSERVATION_SCHEMAS as unknown as Record<string, SchemaPair>),
+  ...(COMPARE_SCHEMAS as unknown as Record<string, SchemaPair>),
+  ...(REPLAY_SCHEMAS as unknown as Record<string, SchemaPair>),
 };
 
 function scopesOf(principal: Principal): readonly Scope[] { return SCOPES_BY_PRINCIPAL[principal]; }
@@ -189,6 +195,11 @@ const HANDLERS: Record<ToolName, Handler> = {
       oldest_queued_age_seconds: oldest[0]?.age == null ? null : Number(oldest[0].age),
       reaped_last_24h: Number(reaped[0]?.c ?? 0),
       calls_by_state_last_24h: Object.fromEntries(calls.map((r) => [r.state, Number(r.c)])),
+      // DECISION 43 — the measurement that decides worker hosting after a week of it.
+      queue_wait_ms: {
+        last_24h: await queueWait(db, 24),
+        last_7d: await queueWait(db, 24 * 7),
+      },
     };
   },
 
@@ -211,9 +222,37 @@ const HANDLERS: Record<ToolName, Handler> = {
     if (requiresIdentifyingInput(engine as never)) {
       throw new LabError('CLASSIFICATION_REQUIRED', `engine '${engine}' requires identifying input until Slice D (§3.3)`);
     }
-    // TWO SHAPES OF CASE. opd_note_audit's case is a uid whose inputs live in db13 and Neon, so
-    // freezing it is a read. The five round-A3 engines take their whole case in the request body,
-    // so freezing one is a validation and a hash — no read, and no new SQL in round A3.
+    // ── Slice B cohort mode (§17.4 item 1) ──────────────────────────────────────────
+    // Many cases, each frozen with decision 41's sources and decision 44's member key, so the
+    // dataset is `frozen` rather than `mutable_source`. One case's failure is an exclusion with a
+    // reason, never the cohort's failure.
+    if (args.cohort) {
+      if (engine !== 'opd_note_audit') {
+        throw new LabError('ENGINE_UNSUPPORTED', `cohort mode is opd_note_audit only in round B1; '${engine}' takes a single body`);
+      }
+      const cohort = await freezeCohort(args.cohort as never, (args.exclusions as string[]) ?? []);
+      const body = datasetBodySchema.parse({
+        engine,
+        cases: cohort.cases.map((c) => ({ case_key: c.case_key, member_key: c.member_key, frozen: c.frozen })),
+        snapshot_policy: 'cohort_at_creation',
+        exclusions: (args.exclusions as string[]) ?? [],
+        classification: 'deidentified',
+        source_versions: { cohort_size: cohort.cases.length, frozen_at: new Date().toISOString() },
+        // DECISION 41 — retrieval IS frozen here, so a replay sees the corpus this run saw.
+        replay_exactness: 'frozen',
+      });
+      const { object, deduplicated } = await putObject(deps.db, deps.principal, 'dataset', body, 'deidentified', String(args.idempotency_key));
+      return {
+        dataset_id: object.id, hash: object.hash, replay_exactness: body.replay_exactness,
+        classification: 'deidentified', deduplicated,
+        counts: { requested: cohort.requested, frozen: cohort.cases.length, excluded: cohort.excluded.length },
+        excluded: cohort.excluded,
+      };
+    }
+
+    // TWO SHAPES OF SINGLE CASE. opd_note_audit's case is a uid whose inputs live in db13 and
+    // Neon, so freezing it is a read. The five round-A3 engines take their whole case in the
+    // request body, so freezing one is a validation and a hash.
     const frozen = engine === 'opd_note_audit'
       ? await (async () => {
         if (!args.case_key) throw new LabError('INVALID_INPUT', 'case_key is required for opd_note_audit');
@@ -239,7 +278,12 @@ const HANDLERS: Record<ToolName, Handler> = {
       replay_exactness: 'mutable_source',
     });
     const { object, deduplicated } = await putObject(deps.db, deps.principal, 'dataset', body, 'deidentified', String(args.idempotency_key));
-    return { dataset_id: object.id, hash: object.hash, replay_exactness: body.replay_exactness, classification: 'deidentified', deduplicated };
+    return {
+      dataset_id: object.id, hash: object.hash, replay_exactness: body.replay_exactness,
+      classification: 'deidentified', deduplicated,
+      counts: { requested: 1, frozen: 1, excluded: 0 },
+      excluded: [],
+    };
   },
 
   async dataset_preview(deps, args) {
@@ -435,6 +479,14 @@ const HANDLERS: Record<ToolName, Handler> = {
     return { run_id: run.id, state, cancelled_items: cancelled };
   },
 
+  async budget_reconcile(deps, args) {
+    // DECISION 42 — the reason is required by the schema, so a reconcile always carries an
+    // account of itself. reconcileCall refuses a call that is not in `unknown`, so this cannot be
+    // used to re-settle a settled call at a different number.
+    const out = await reconcileCall(deps.db, String(args.call_id), Number(args.actual_microusd), String(args.reason), deps.principal);
+    return { ...out, reason: String(args.reason) };
+  },
+
   async run_retry(deps, args) {
     const run = await getRun(deps.db, String(args.run_id));
     if (!run) throw new LabError('NOT_FOUND', `no run ${args.run_id}`);
@@ -448,7 +500,21 @@ const HANDLERS: Record<ToolName, Handler> = {
  * Round A2 — the dispatch table both rounds share. The observation handlers take the same
  * (deps, args) shape, and `ServiceDeps` already carries the `db` and `principal` they need.
  */
+/** Slice B round B1 (§17.4). Same shape; their schemas live beside them in tools/. */
+const B1_HANDLERS: Record<string, Handler> = {
+  async run_diff(deps, args) {
+    return runDiff({ db: deps.db, principal: deps.principal }, args as never);
+  },
+  async experiment_compare(deps, args) {
+    return experimentCompare({ db: deps.db, principal: deps.principal }, args as never);
+  },
+  async run_replay(deps, args) {
+    return runReplay({ db: deps.db, principal: deps.principal }, args as never);
+  },
+};
+
 const ALL_HANDLERS: Record<string, Handler> = {
   ...HANDLERS,
   ...(OBSERVATION_HANDLERS as unknown as Record<string, Handler>),
+  ...B1_HANDLERS,
 };

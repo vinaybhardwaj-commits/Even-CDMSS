@@ -40,6 +40,12 @@ export interface TickOptions {
   now?: () => number;
   /** Injection seam for unit tests (repo idiom). Production uses the real ADAPTERS map. */
   adapters?: Record<string, Adapter>;
+  /**
+   * Decision 45 — when an item carries `replay_from`, its stages are served from that item's
+   * stored `steps` instead of a provider. Supplied by `run_replay`; absent on every normal tick,
+   * where an item never carries `replay_from` and this is never consulted.
+   */
+  replayTransportFor?: (itemId: string, sourceItemId: string) => Transport;
 }
 
 export interface TickReport {
@@ -71,7 +77,12 @@ export async function tick(opts: TickOptions): Promise<TickReport> {
     const item = await claim(db, workerId);
     if (!item) break;
     claimed += 1;
-    const ok = await runItem({ db, transport, item, workerId, adapters: opts.adapters ?? ALL_ADAPTERS() });
+    // A replayed item runs on its source's stored replies; everything else on the live transport.
+    const replayFrom = (item.payload as { replay_from?: string })?.replay_from;
+    const itemTransport = replayFrom && opts.replayTransportFor
+      ? opts.replayTransportFor(item.id, String(replayFrom))
+      : transport;
+    const ok = await runItem({ db, transport: itemTransport, item, workerId, adapters: opts.adapters ?? ALL_ADAPTERS() });
     if (ok) finished += 1;
     await deriveRunState(db, item.run_id);
   }

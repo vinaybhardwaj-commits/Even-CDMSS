@@ -290,7 +290,7 @@ async function runStub(db: Db, stages: string[], opts: { error?: boolean } = {})
     { case_key: 'req:x', arm_hash: 'h', repetition: 1, payload: { engine: 'stub', frozen: { engine: 'ask', body: { question: 'q' } }, arm: { stages: armStages }, budget_id: budget.id } },
   ]);
   const adapter = makeRouteAdapter({
-    engine: 'ask', path: '/api/ask', post: stubPost(stages, opts) as never,
+    engine: 'ask', path: '/api/ask', file: 'app/api/ask/route.ts', post: stubPost(stages, opts) as never,
     summarise: (read) => ({ event_types: eventTypes(read) }),
     assess: assessStream,
   });
@@ -330,7 +330,7 @@ test('§17.3: a stage the arm did not price fails the item by NAME, never silent
     { case_key: 'req:x', arm_hash: 'h', repetition: 1, payload: { engine: 'stub', frozen: { engine: 'ask', body: { question: 'q' } }, arm: { stages: { draft: { provider: 'ollama', model: 'local-model', max_cost_microusd: 5_000 } } }, budget_id: budget.id } },
   ]);
   const adapter = makeRouteAdapter({
-    engine: 'ask', path: '/api/ask', post: stubPost(['draft', 'critique']) as never,
+    engine: 'ask', path: '/api/ask', file: 'app/api/ask/route.ts', post: stubPost(['draft', 'critique']) as never,
     summarise: () => ({}), assess: assessStream,
   });
   await tick({ db: db2, transport: fixtureTransport(), adapters: { stub: adapter } });
@@ -388,7 +388,7 @@ test('§7: each new adapter runs its engine inside the lab execution context', a
     { case_key: 'req:x', arm_hash: 'h', repetition: 1, payload: { engine: 'stub', frozen: { engine: 'ask', body: { question: 'q' } }, arm: { stages: {} }, budget_id: budget.id } },
   ]);
   const adapter = makeRouteAdapter({
-    engine: 'ask', path: '/api/ask',
+    engine: 'ask', path: '/api/ask', file: 'app/api/ask/route.ts',
     post: (async () => {
       sawContext = !!labExecution();
       // Production sql must be unreachable from here.

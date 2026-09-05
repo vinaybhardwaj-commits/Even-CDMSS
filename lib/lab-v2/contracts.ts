@@ -216,6 +216,16 @@ export const opdFrozenSchema = z.object({
   // the lab must not re-type a clinical structure it does not own.
   suppressions: z.array(z.record(z.unknown())),
   quieting_config: z.object({ rules: z.array(z.record(z.unknown())), gen: z.number().int() }),
+  // Decision 41 — present only on a cohort dataset, which is what makes it `frozen` rather than
+  // `mutable_source`. The adapter's retrieve edge serves this list instead of reading the corpus.
+  sources: z.array(z.object({
+    id: z.union([z.string(), z.number()]),
+    book: z.string().nullable(),
+    chapter: z.string().nullable(),
+    source: z.string().nullable(),
+    preview: z.string().nullable(),
+    score: z.number().nullable(),
+  })).optional(),
 });
 export type OpdFrozen = z.infer<typeof opdFrozenSchema>;
 
@@ -327,6 +337,14 @@ export const toolSchemas = {
       oldest_queued_age_seconds: z.number().nullable(),
       reaped_last_24h: z.number(),
       calls_by_state_last_24h: z.record(z.number()),
+      /**
+       * Decision 43 — the measurement that decides worker hosting after a week. Items' wait from
+       * creation to their FIRST attempt, so a requeued item is not counted as if it waited twice.
+       */
+      queue_wait_ms: z.object({
+        last_24h: z.object({ p50: z.number().nullable(), p95: z.number().nullable(), n: z.number().int() }),
+        last_7d: z.object({ p50: z.number().nullable(), p95: z.number().nullable(), n: z.number().int() }),
+      }),
     }),
   },
   worker_status: {
@@ -350,6 +368,16 @@ export const toolSchemas = {
       case_key: z.string().min(1).optional(),
       /** The five round-A3 engines: the request body itself IS the case (§17.3, decision 34). */
       body: z.record(z.unknown()).optional(),
+      /**
+       * Slice B cohort mode (§17.4 item 1). Either an explicit case list or an `audit_search`
+       * filter. Max 200 cases — a cohort is a study, not a sweep, and 200 frozen cases is already
+       * 200 retrieval reads and 200 db13 resolutions at creation time.
+       */
+      cohort: z.union([
+        z.object({ case_keys: z.array(z.string().min(1)).min(1).max(200) }),
+        z.object({ filter: z.record(z.unknown()) }),
+      ]).optional(),
+      exclusions: z.array(z.string()).default([]),
       idempotency_key: z.string().min(1),
     }),
     output: z.object({
@@ -358,6 +386,13 @@ export const toolSchemas = {
       replay_exactness: z.enum(REPLAY_EXACTNESS),
       classification: z.enum(CLASSIFICATIONS),
       deduplicated: z.boolean(),
+      /** Cohort mode reports what it asked for, what it froze, and what it dropped and why. */
+      counts: z.object({
+        requested: z.number().int(),
+        frozen: z.number().int(),
+        excluded: z.number().int(),
+      }),
+      excluded: z.array(z.object({ case_key: z.string(), reason: z.string() })),
     }),
   },
   dataset_preview: {
@@ -455,6 +490,21 @@ export const toolSchemas = {
   run_cancel: {
     input: z.object({ run_id: z.string().uuid() }),
     output: z.object({ run_id: z.string().uuid(), state: z.enum(RUN_STATES), cancelled_items: z.number().int() }),
+  },
+  budget_reconcile: {
+    input: z.object({
+      call_id: z.string().uuid(),
+      actual_microusd: z.number().int().min(0),
+      /** DECISION 42 — non-empty, always. Money does not move on a shrug. */
+      reason: z.string().min(1).max(500),
+    }),
+    output: z.object({
+      call_id: z.string().uuid(),
+      budget_id: z.string().uuid(),
+      from_unknown_microusd: z.number().int(),
+      to_spent_microusd: z.number().int(),
+      reason: z.string(),
+    }),
   },
   run_retry: {
     input: z.object({ run_id: z.string().uuid() }),

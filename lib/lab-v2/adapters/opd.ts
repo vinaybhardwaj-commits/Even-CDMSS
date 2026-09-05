@@ -90,13 +90,35 @@ export function makeOpdAdapter(deps: OpdAdapterDeps = {}): Adapter {
     // Both halves matter: capturing outside means the closure does not itself carry the
     // store, and exit() means the production `sql` inside `retrieve` sees no context and
     // takes the normal DATABASE_URL read path instead of hitting its own guard.
+    // DECISION 41 — a cohort dataset froze its sources at creation, so the edge SERVES THEM and
+    // reads nothing. That is what makes such a dataset `replay_exactness: 'frozen'`: the corpus
+    // can move underneath and the run still sees what it saw. A Slice A dataset has no frozen
+    // list, takes the path below, and stays `mutable_source`. Both are logged as retrieval_read,
+    // with `frozen` saying which happened — a report must never have to guess.
+    const frozenSources = frozen.sources;
     const retrieveEdge = async (query: string, opts?: unknown): Promise<RetrieveResult> => {
       const started = Date.now();
+      if (frozenSources && frozenSources.length) {
+        ctx.event('retrieval_read', {
+          query_hash: hash(query), chunks: frozenSources.length, ms: Date.now() - started, frozen: true,
+        });
+        return {
+          hits: frozenSources.map((f) => ({
+            id: Number(f.id), source: f.source ?? '', book: f.book ?? '', chapter: f.chapter,
+            section: null, page_start: null, page_end: null, item_number: null,
+            chunk_type: 'narrative', text: f.preview ?? '', token_count: null,
+            similarity: f.score ?? 0,
+          })) as unknown as RetrieveResult['hits'],
+          expandedQuery: query,
+          meta: { vector_pool: 0, bm25_pool: 0, fused: frozenSources.length, reranked: false },
+        };
+      }
       const out = await exitLabExecution(() => retrieveImpl(query, (opts ?? {}) as RetrieveOptions));
       ctx.event('retrieval_read', {
         query_hash: hash(query),
         chunks: out?.hits?.length ?? 0,
         ms: Date.now() - started,
+        frozen: false,
       });
       return out;
     };
@@ -134,6 +156,10 @@ export function makeOpdAdapter(deps: OpdAdapterDeps = {}): Adapter {
               engine: 'opd_note_audit',
               engine_version: (audit as { engineVersion?: string }).engineVersion ?? armVersion,
               findings: findings.length,
+              // experiment_compare pairs on this; deriving it here keeps the summary the one
+              // place a comparison reads, rather than re-walking the artifact per case.
+              n_low_value: (findings as { verdict?: string; informational?: boolean }[])
+                .filter((f) => f.verdict === 'low-value' && !f.informational).length,
               finding_subjects: (findings as { subject?: string }[]).slice(0, 25).map((f) => f.subject ?? null),
               // FIX 26b — the summary read a key the engine does not have. `OpdScorecard`
               // (lib/opd-note-score-core.ts:93) calls the 0..100 OPD Note-Quality Index

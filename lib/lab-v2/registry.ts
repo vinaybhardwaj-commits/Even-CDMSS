@@ -20,6 +20,9 @@ import {
 // Round A2 (§17.2). The nine observation schemas live beside their handlers because the round's
 // file contract does not list contracts.ts among the files it may edit.
 import { OBSERVATION_SCHEMAS, type ObservationToolName } from './tools/observation';
+// Slice B round B1 (§17.4). Same pattern: schemas beside their handlers.
+import { COMPARE_SCHEMAS } from './tools/compare';
+import { REPLAY_SCHEMAS } from './tools/replay';
 
 export interface ToolAnnotations { readOnlyHint: boolean; destructiveHint: boolean; idempotentHint: boolean }
 
@@ -86,6 +89,22 @@ const o = (
   slice: 'A-2',
 });
 
+/** Slice B round B1 entries. All free: compare and diff read, replay serves stored replies. */
+const B1 = { ...COMPARE_SCHEMAS, ...REPLAY_SCHEMAS } as unknown as Record<string, { input: ZodTypeAny; output: ZodTypeAny }>;
+const b = (
+  name: string, description: string, scopes: readonly Scope[], effect: Effect,
+): ToolSpec => ({
+  name: name as ToolName,
+  description,
+  inputSchema: B1[name].input,
+  outputSchema: B1[name].output,
+  scopes,
+  effect,
+  classification: 'deidentified',
+  cost_class: 'free',
+  slice: 'B-1',
+});
+
 export const REGISTRY: readonly ToolSpec[] = [
   // ── capability discovery ──────────────────────────────────────────────────────────
   t('system_capabilities', 'List the tools this principal can see, the negotiated MCP protocol version, the SDK version, whether LAB_V2_ENABLED is set, and the pricing table version.', ANY, 'read'),
@@ -118,6 +137,23 @@ export const REGISTRY: readonly ToolSpec[] = [
   o('citation_check', 'Structural citation check: for each citation id, whether the chunk exists, whether it is active, and whether it appears in the sources of the named run or audit. No model.', ['research_read']),
   o('corpus_search', 'Lexical search over the corpus by text, optionally narrowed by book, source or active state. Returns bounded previews and the quarantine prefix where one applies.', ['research_read']),
   o('report_export', 'Write one evidence-pack artifact for a run: the experiment, dataset metadata without frozen text, the arms, every item with its three statuses, the call ledger, the replay exactness, and a fixed caveat about single-run sampling.', ['research_read']),
+
+  // ── Slice B round B1 (§17.4) ──────────────────────────────────────────────────────
+  b('run_diff', 'Compare two runs case by case: the three statuses on each side, finding subjects added and removed, note-quality index and band before and after, and whether the result hashes match.', ['research_read'], 'read'),
+  b('experiment_compare', 'Compare each arm against the baseline on paired cases: differences in findings, low-value findings, note-quality index and subject overlap, with member-clustered bootstrap intervals. Every denominator is counted separately and the metric denominator is named.', ['research_read'], 'read'),
+  b('run_replay', 'Re-run a run against its stored model replies and report, per item, whether the result hash is unchanged. Zero model calls and zero cost; a stage whose request no longer matches is refused as REPLAY_DIVERGED.', ['research_write'], 'research_write'),
+  {
+    // Its schema lives in contracts.ts with round 1's, but it is a Slice B tool and says so.
+    name: 'budget_reconcile',
+    description: 'Move one call from unknown to settled at a stated amount, with a required reason. The only way money leaves the unknown bucket; nothing moves on its own.',
+    inputSchema: toolSchemas.budget_reconcile.input as unknown as ZodTypeAny,
+    outputSchema: toolSchemas.budget_reconcile.output as unknown as ZodTypeAny,
+    scopes: ['production_write'],
+    effect: 'production_write',
+    classification: 'deidentified',
+    cost_class: 'free',
+    slice: 'B-1',
+  },
 ];
 
 export const BY_NAME: Record<string, ToolSpec> = Object.fromEntries(REGISTRY.map((s) => [s.name, s]));

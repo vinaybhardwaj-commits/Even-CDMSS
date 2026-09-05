@@ -18,9 +18,11 @@
  * marked `attribution_status: 'invalid'` and every comparison excludes it by default.
  */
 import type { Db } from './db';
-import { LabError, type AttributionStatus, type Provider } from './contracts';
+import { LabError, hash, type AttributionStatus, type Provider } from './contracts';
 import { PRICING_VERSION, costMicrousd, isSupportedModel } from './pricing';
-import { openCall, settleCall, markCallUnknown, reserve, settleReservation, moveReservationToUnknown } from './store';
+import {
+  openCall, settleCall, markCallUnknown, reserve, settleReservation, moveReservationToUnknown, writeStep,
+} from './store';
 import type { Transport } from './transport';
 
 export interface StageSpec {
@@ -38,6 +40,8 @@ export interface GatewayDeps {
   transport: Transport;
   stages: Record<string, StageSpec>;
   signal?: AbortSignal;
+  /** Owner for the artifacts the steps rows point at. Defaults to 'system'. */
+  owner?: string;
   /**
    * Decision 22 — the engine's per-attempt ceiling, supplied by the adapter. An arm stage may
    * override it with `options.timeout_ms`; absent both, the call runs on the SDK client default,
@@ -47,6 +51,23 @@ export interface GatewayDeps {
 }
 
 export interface StageResult { text: string; completion: unknown; actualMicrousd: number | null }
+
+/**
+ * DECISION 45 — the request hash a replay matches on.
+ *
+ * `sha256` of the CANONICAL request body sent to the transport, i.e. the `params` object the
+ * engine built, with object keys sorted at every depth (lib/lab-v2/contracts.ts `hash`). It is the
+ * prompt, the messages, the temperature, the token caps — everything that decides what the model
+ * was asked. It deliberately does NOT include the provider or the model: replaying the same
+ * request against a different model is a legitimate Slice B experiment, and the hash is there to
+ * catch a changed QUESTION, not a changed answerer.
+ *
+ * `lab_v2.calls.request_hash` is a different hash of a different thing — the (provider, model,
+ * options) triple — and is unchanged. Two hashes, two questions, both named.
+ */
+export function dependencyHash(params: unknown): string {
+  return hash(params);
+}
 
 /** invalid beats unknown beats verified — the worst outcome across a run's calls wins. */
 const RANK: Record<AttributionStatus, number> = { verified: 0, unknown: 1, invalid: 2 };
@@ -124,6 +145,21 @@ export class Gateway {
       await settleReservation(db, budgetId, max, actual);
       this.note(this.classify(requested, result.served));
     }
+
+    // DECISION 45 — the raw reply, stored as this stage's `steps` row, keyed by the hash of the
+    // request that produced it. Written HERE rather than in each adapter: the gateway is the one
+    // place every stage of every engine passes through, so all six adapters get it from one
+    // implementation and none of them can forget. A step is evidence, so a failure to store it
+    // must not fail the run — the catch is deliberate and the run continues unreplayable.
+    try {
+      await writeStep(db, itemId, stage, dependencyHash(params), {
+        stage,
+        request_hash: dependencyHash(params),
+        completion: result.completion,
+        text: result.text,
+        served: result.served,
+      }, this.deps.owner ?? 'system');
+    } catch { /* replay is a convenience; losing it must never lose the result */ }
     return { text: result.text, completion: result.completion, actualMicrousd: actual };
   }
 

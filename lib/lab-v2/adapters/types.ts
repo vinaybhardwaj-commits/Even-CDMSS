@@ -10,6 +10,8 @@
  * so `sql` and `metabaseQuery` throw beneath it and retrieval delegates to the edge the
  * worker supplied. It gets its inputs from the frozen dataset, and nowhere else.
  */
+import { createHash } from 'crypto';
+import { readFileSync } from 'fs';
 import { NextRequest } from 'next/server';
 import { withLabExecution, exitLabExecution } from '../../lab-execution-context';
 import { retrieve as productionRetrieve, type RetrieveOptions, type RetrieveResult } from '../../retrieve';
@@ -83,6 +85,8 @@ export interface RouteEngineSpec {
   engine: EngineId;
   /** The route's own path. Used only to build the synthetic URL; nothing routes on it. */
   path: string;
+  /** The route source, for decision 39's version. Repository-relative. */
+  file: string;
   post: (req: NextRequest) => Promise<Response>;
   /** A bounded projection of the engine's output for `run_result` (§8). */
   summarise: (read: RouteRead) => Record<string, unknown>;
@@ -121,6 +125,29 @@ export function assessStream(read: RouteRead): AssessmentStatus {
   const types = eventTypes(read);
   if (types.includes('error')) return 'unassessable';
   return types.includes('done') ? 'assessed' : 'unassessable';
+}
+
+/**
+ * DECISION 39 — `engine_version` for an engine that has no version constant of its own.
+ *
+ * None of the five A3 engines declares one, so the version is the route file's GIT BLOB HASH:
+ * `sha1("blob <bytes>\0" + contents)`, byte-identical to `git hash-object`. It moves when and
+ * only when the handler moves, which is exactly what an engine version is for — and it needs no
+ * new constant to keep in step with the code.
+ *
+ * ⚠️ IT IS COMPUTED FROM THE SOURCE ON DISK, so it is exact wherever the source is (a developer's
+ * tree, CI, the Vercel build container) and reports `unavailable` where the .ts is not shipped in
+ * the serverless bundle. That gap is flagged in the build report rather than papered over with a
+ * fabricated hash: a version that silently differed between environments would be worse than one
+ * that says it does not know.
+ */
+export function routeBlobHash(file: string): string {
+  try {
+    const data = readFileSync(file);
+    return createHash('sha1').update(`blob ${data.length}\0`).update(data).digest('hex');
+  } catch {
+    return 'unavailable';
+  }
 }
 
 /** Injection seam for unit tests (repo idiom). Production passes nothing. */
@@ -190,7 +217,7 @@ export function makeRouteAdapter(spec: RouteEngineSpec, deps: RouteAdapterDeps =
   return {
     engine: spec.engine,
     stages: stages.map((s) => s.name),
-    engineVersion: () => `${spec.engine}/route`,
+    engineVersion: () => `${spec.engine}/route@${routeBlobHash(spec.file).slice(0, 12)}`,
     frozenInputs: ['body'],
     // These engines run one governed leg per stage; the audit leg's ceiling is the closest
     // measured bound the platform has, and the arm may override it per stage.

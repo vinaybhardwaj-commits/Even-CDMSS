@@ -19,8 +19,15 @@ test('sources/opd.ts contains NO SQL of its own — every input comes from a liv
   assert.ok(src.includes('fetchPatientHistoryBundle'), 'complexity comes from the existing db13 reader');
   assert.ok(src.includes('getLvcRules'), 'the rule snapshot comes from the engine\'s own reader');
   assert.ok(src.includes('doctorSpecialtyFor'), 'the specialty comes from the engine\'s own reader');
-  // Not one statement-shaped literal anywhere in the file.
-  assert.ok(!/\b(SELECT|INSERT|UPDATE|DELETE)\s+[\w"*]/i.test(src), 'no SQL may be written in the lab source layer');
+  // lab-v2 decision 44 (Slice B): ONE statement now lives here — the db13 member resolution the
+  // member key is hashed from. It is the resolution fetchPatientHistoryBundle already performs,
+  // it is exported so the build report can quote it verbatim, and it is the only one.
+  const selects = [...src.matchAll(/\bSELECT\b/gi)].length;
+  assert.equal(selects, 1, 'exactly one statement, the decision 44 member resolution');
+  assert.ok(src.includes('MEMBER_RESOLVE_SQL'), 'and it is exported by name for the report');
+  // Case-SENSITIVE: every SQL keyword in this codebase is uppercase, and `createHash().update()`
+  // is a crypto method, not a statement. A case-insensitive check called the member hash a write.
+  assert.ok(!/\b(INSERT|UPDATE|DELETE)\b/.test(src), 'the lab source layer never writes');
 });
 
 test('the engine still owns the two production-Neon queries, and exports its readers', () => {

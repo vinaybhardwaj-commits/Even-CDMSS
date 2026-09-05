@@ -15,16 +15,23 @@
 import { POST } from '@/app/api/pathway/skeleton/route';
 import { makeRouteAdapter, type Adapter, type RouteAdapterDeps, type RouteRead } from './types';
 
+/**
+ * DECISION 39 — the inline summary for this engine, exported so it can be asserted on a
+ * fixture read. Every field is derived from an event the route actually emits.
+ */
+export function summarisePathway(read: RouteRead): Record<string, unknown> {
+  const j = (read.json ?? {}) as { ok?: unknown; skeleton?: unknown };
+  const skeleton = j.skeleton as { steps?: unknown[] } | undefined;
+  return { ok: j.ok === true, steps: Array.isArray(skeleton?.steps) ? skeleton!.steps!.length : null };
+}
+
 export function makePathwayAdapter(deps: RouteAdapterDeps = {}): Adapter {
   return makeRouteAdapter({
     engine: 'pathway',
     path: '/api/pathway/skeleton',
+    file: 'app/api/pathway/skeleton/route.ts',
     post: POST,
-    summarise: (read: RouteRead) => {
-      const j = (read.json ?? {}) as { ok?: unknown; skeleton?: unknown };
-      const skeleton = j.skeleton as { steps?: unknown[] } | undefined;
-      return { ok: j.ok === true, steps: Array.isArray(skeleton?.steps) ? skeleton!.steps!.length : null };
-    },
+    summarise: summarisePathway,
     assess: (read: RouteRead) => ((read.json as { ok?: unknown } | null)?.ok === true ? 'assessed' : 'unassessable'),
   }, deps);
 }
