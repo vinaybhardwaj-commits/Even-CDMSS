@@ -17,7 +17,7 @@
  */
 import type { Db } from './db';
 import {
-  LabError, RUN_DEADLINE_MS, SCOPES_BY_PRINCIPAL, SUPPORTED_ENGINES, ENGINE_SLICE, PROVIDERS,
+  LabError, RUN_DEADLINE_MS, SCOPES_BY_PRINCIPAL, SUPPORTED_ENGINES, ENGINE_SLICE, PROVIDERS, stagesFor,
   armBodySchema, datasetBodySchema, experimentBodySchema, hash, toolSchemas,
   type Principal, type Scope, type ToolName,
 } from './contracts';
@@ -28,6 +28,10 @@ import {
   getRun, getWorker, itemsOf, putObject, recordEvent, requestCancel, retryRun, setWorkerPaused, submitRun,
 } from './store';
 import { opdAdapter } from './adapters/opd';
+// Round A3 (decision 37). The multi-engine registry lives in adapters/types.ts because round 1
+// put ADAPTERS in adapters/opd.ts and §17.3 leaves that file untouched.
+import { ALL_ADAPTERS } from './adapters/types';
+import { freezeRequestCase, requestFieldsFor, requiresIdentifyingInput } from './sources/requests';
 import { OBSERVATION_HANDLERS, OBSERVATION_SCHEMAS } from './tools/observation';
 import { freezeOpdCase, validateFrozenCase } from './sources/opd';
 import { openrouterConfigured, geminiConfigured } from '../llm';
@@ -111,14 +115,25 @@ const HANDLERS: Record<ToolName, Handler> = {
 
   async engine_describe(_deps, args) {
     const engine = String(args.engine) as (typeof SUPPORTED_ENGINES)[number];
-    const supported = SUPPORTED_ENGINES.includes(engine);
+    const adapter = ALL_ADAPTERS()[engine];
+    // DECISION 34 — an engine that cannot run without an identifying field is not supported here,
+    // whatever its adapter can do. None of the six is in that position; the check is the gate,
+    // not a formality, and it fails closed if a future engine's field list gains one.
+    const identifyingBlocked = requiresIdentifyingInput(engine);
+    const supported = SUPPORTED_ENGINES.includes(engine) && !!adapter && !identifyingBlocked;
     return {
       engine,
       supported,
+      reason: supported ? null
+        : identifyingBlocked ? 'requires identifying input until Slice D'
+        : `not wired yet; arrives in slice ${ENGINE_SLICE[engine] ?? '?'}`,
       slice: ENGINE_SLICE[engine],
-      stages: supported ? [...opdAdapter.stages] : [],
-      engine_version: supported ? opdAdapter.engineVersion() : null,
-      frozen_inputs: supported ? [...opdAdapter.frozenInputs] : [],
+      // §35a — listed WITH the conditional mark, so a caller knows what it must price and what
+      // may legitimately never fire.
+      stages: supported ? stagesFor(engine).map((st) => ({ name: st.name, conditional: st.conditional })) : [],
+      engine_version: supported ? adapter.engineVersion() : null,
+      frozen_inputs: supported ? [...adapter.frozenInputs] : [],
+      request_fields: [...requestFieldsFor(engine)],
       // Slice A never freezes retrieval, so 'frozen' is not offered for any engine yet (§4.2).
       replay_exactness_available: supported ? (['mutable_source'] as const).slice() : [],
     };
@@ -191,11 +206,27 @@ const HANDLERS: Record<ToolName, Handler> = {
   async dataset_create(deps, args) {
     const engine = String(args.engine);
     if (!SUPPORTED_ENGINES.includes(engine as never)) {
-      throw new LabError('ENGINE_UNSUPPORTED', `engine '${engine}' has no round-1 adapter; it arrives in slice ${ENGINE_SLICE[engine as never] ?? '?'}`);
+      throw new LabError('ENGINE_UNSUPPORTED', `engine '${engine}' has no adapter; it arrives in slice ${ENGINE_SLICE[engine as never] ?? '?'}`);
     }
-    // Read from production OUTSIDE any lab context. freezeOpdCase throws CASE_NOT_FOUND
-    // or SOURCE_UNAVAILABLE and never a partially frozen case.
-    const frozen = await freezeOpdCase(String(args.case_key));
+    if (requiresIdentifyingInput(engine as never)) {
+      throw new LabError('CLASSIFICATION_REQUIRED', `engine '${engine}' requires identifying input until Slice D (§3.3)`);
+    }
+    // TWO SHAPES OF CASE. opd_note_audit's case is a uid whose inputs live in db13 and Neon, so
+    // freezing it is a read. The five round-A3 engines take their whole case in the request body,
+    // so freezing one is a validation and a hash — no read, and no new SQL in round A3.
+    const frozen = engine === 'opd_note_audit'
+      ? await (async () => {
+        if (!args.case_key) throw new LabError('INVALID_INPUT', 'case_key is required for opd_note_audit');
+        // Read from production OUTSIDE any lab context. freezeOpdCase throws CASE_NOT_FOUND
+        // or SOURCE_UNAVAILABLE and never a partially frozen case.
+        return freezeOpdCase(String(args.case_key));
+      })()
+      : (() => {
+        if (!args.body) throw new LabError('INVALID_INPUT', `body is required for engine '${engine}'`);
+        // Decision 34's gate lives here: an identifying key anywhere in the body is refused,
+        // never stored and marked.
+        return freezeRequestCase(engine as never, args.body);
+      })();
     const body = datasetBodySchema.parse({
       engine,
       cases: [{ case_key: frozen.case_key, member_key: frozen.member_key, frozen: frozen.frozen }],
@@ -264,7 +295,9 @@ const HANDLERS: Record<ToolName, Handler> = {
       // names one has reserved budget against work that will never run and declared a
       // variable the experiment cannot actually vary. Refuse it here, before anything is
       // queued, rather than let the run complete and quietly mean less than it claims.
-      const known = new Set<string>(opdAdapter.stages);
+      // Per engine (decision 35). A conditional stage is still listed and still must be priced
+      // (35a); it simply may not fire, in which case there is no call and no charge.
+      const known = new Set<string>(stagesFor(arm.engine).map((st) => st.name));
       for (const stage of stageNames) {
         if (!known.has(stage)) {
           throw new LabError('STAGE_UNKNOWN', `engine '${arm.engine}' has no stage '${stage}'; it lists ${[...known].join(', ')}`);

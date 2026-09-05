@@ -52,8 +52,72 @@ export const KEY_ENV_BY_PRINCIPAL: Record<Principal, string> = {
 export const ENGINE_IDS = ['opd_note_audit', 'ask', 'ddx', 'appropriateness', 'pathway', 'doc_audit', 'ipd_episode', 'ipd_discharge', 'readmission', 'preop'] as const;
 export type EngineId = (typeof ENGINE_IDS)[number];
 
-/** Round 1 supports exactly one engine end to end (§8.1). engine_describe says so. */
-export const SUPPORTED_ENGINES: readonly EngineId[] = ['opd_note_audit'];
+/**
+ * Engines wired end to end. Round 1 shipped `opd_note_audit`; round A3 adds the five that
+ * §17.3 names, each behind the same fence and each surviving decision 34 (no request field
+ * that names or resolves to a person — the evidence is in the round A3 report).
+ */
+export const SUPPORTED_ENGINES: readonly EngineId[] = [
+  'opd_note_audit', 'ask', 'ddx', 'appropriateness', 'pathway', 'doc_audit',
+];
+
+/**
+ * DECISION 35 / 35a — stages are the DISTINCT GOVERNED LABELS of the handler's whole call tree,
+ * in the order they occur, one stage per label. Read out of the source on 05 Sep 2026, not
+ * guessed; several live in a core module the route delegates to rather than in the route file,
+ * which is why the call tree and not the file is the unit.
+ *
+ * `conditional` marks a label that does not fire on every request — `investigations_parse` only
+ * when the body supplies investigations, `clinical_state_normalise` only behind its flag. Per
+ * decision 35a a conditional stage is still LISTED and still MUST BE PRICED; when it does not
+ * fire there is no call and no charge. Pricing a stage that may not run costs nothing, and
+ * refusing to price it would make the arm's cost ceiling a guess.
+ */
+export interface EngineStage { name: string; conditional: boolean }
+
+export const ENGINE_STAGES: Partial<Record<EngineId, readonly EngineStage[]>> = {
+  // lib/opd-note-audit.ts:1137 — the single governed leg.
+  opd_note_audit: [{ name: 'analysis', conditional: false }],
+  // app/api/ask/route.ts: investigations.ts:187, then 254, 296, 354, 386.
+  ask: [
+    { name: 'investigations_parse', conditional: true },
+    { name: 'draft', conditional: false },
+    { name: 'critique', conditional: false },
+    { name: 'revision', conditional: false },
+    { name: 'answer', conditional: false },
+  ],
+  // app/api/ddx/route.ts: investigations.ts:187, route:197, then 402, 424, 478.
+  ddx: [
+    { name: 'investigations_parse', conditional: true },
+    { name: 'clinical_state_normalise', conditional: true },
+    { name: 'ddx_draft', conditional: false },
+    { name: 'ddx_critique', conditional: false },
+    { name: 'ddx_revision', conditional: false },
+  ],
+  // lib/lvc-value.ts:124 and :131, then app/api/appropriateness/route.ts:111.
+  appropriateness: [
+    { name: 'lvc_value', conditional: false },
+    { name: 'lvc_value_critique', conditional: false },
+    { name: 'clinical_state_normalise', conditional: true },
+  ],
+  // lib/pathway.ts:68, then app/api/pathway/skeleton/route.ts:71.
+  pathway: [
+    { name: 'pathway_skeleton', conditional: false },
+    { name: 'clinical_state_normalise', conditional: true },
+  ],
+  // lib/doc-audit.ts:199, :309/310, :423, :433, :443.
+  doc_audit: [
+    { name: 'doc_audit_analyze', conditional: false },
+    { name: 'doc_audit_cite_gate', conditional: false },
+    { name: 'doc_audit_prognosis', conditional: false },
+    { name: 'doc_audit_prognosis_critique', conditional: false },
+    { name: 'doc_audit_prognosis_revise', conditional: false },
+  ],
+};
+
+export function stagesFor(engine: EngineId): readonly EngineStage[] {
+  return ENGINE_STAGES[engine] ?? [];
+}
 
 /** The slice that adds each engine, reported by engine_describe for unsupported ones. */
 export const ENGINE_SLICE: Record<EngineId, string> = {
@@ -229,10 +293,15 @@ export const toolSchemas = {
     output: z.object({
       engine: z.enum(ENGINE_IDS),
       supported: z.boolean(),
+      /** §34 — set only when supported is false. */
+      reason: z.string().nullable(),
       slice: z.string(),
-      stages: z.array(z.string()),
+      /** §35a — every stage is listed and must be priced; `conditional` says it may not fire. */
+      stages: z.array(z.object({ name: z.string(), conditional: z.boolean() })),
       engine_version: z.string().nullable(),
       frozen_inputs: z.array(z.string()),
+      /** §34 — the request fields the handler reads, and whether each is identifying. */
+      request_fields: z.array(z.object({ name: z.string(), identifying: z.boolean(), note: z.string().optional() })),
       replay_exactness_available: z.array(z.enum(REPLAY_EXACTNESS)),
     }),
   },
@@ -277,7 +346,10 @@ export const toolSchemas = {
   dataset_create: {
     input: z.object({
       engine: z.enum(ENGINE_IDS),
-      case_key: z.string().min(1),
+      /** opd_note_audit: the OPD note uid whose inputs are frozen from db13 and Neon. */
+      case_key: z.string().min(1).optional(),
+      /** The five round-A3 engines: the request body itself IS the case (§17.3, decision 34). */
+      body: z.record(z.unknown()).optional(),
       idempotency_key: z.string().min(1),
     }),
     output: z.object({

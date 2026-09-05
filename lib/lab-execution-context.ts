@@ -50,6 +50,7 @@ export type LabErrorCode =
   | 'BUDGET_EXHAUSTED'      // §6.3 — reservation refused at the cap
   | 'DATASET_HASH_MISMATCH' // §8.1 — experiment_create's dataset_hash does not match
   | 'ENGINE_UNSUPPORTED'    // an engine with no round-1 adapter
+  | 'CLASSIFICATION_REQUIRED'// §3.3 / decision 34 — a request body carrying an identifying field
   | 'ATTRIBUTION_UNVERIFIED'// §6.2 — served model differs from requested
   | 'LAB_IO_FORBIDDEN';     // §7 — production IO attempted inside a lab context
 

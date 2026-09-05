@@ -183,8 +183,12 @@ test('§14.2: the bridge supplies the jsonSchema half that zod 3 lacks', () => {
   const bridged = sdkSchema(zod3) as unknown as { '~standard': { jsonSchema: { input: () => Record<string, unknown> } ; validate: (v: unknown) => unknown } };
   const json = bridged['~standard'].jsonSchema.input();
   assert.equal(json.type, 'object');
-  assert.deepEqual(Object.keys(json.properties as object).sort(), ['case_key', 'engine', 'idempotency_key']);
-  assert.deepEqual((json.required as string[]).sort(), ['case_key', 'engine', 'idempotency_key']);
+  // lab-v2 round A3 (decision 34/37): dataset_create gained `body`, and `case_key` became
+  // optional — opd_note_audit freezes a uid, the five route engines freeze a request body. The
+  // bridge assertion is about the BRIDGE, so it pins what the bridge must reproduce: every
+  // declared property, and the two fields that are required whichever shape of case is used.
+  assert.deepEqual(Object.keys(json.properties as object).sort(), ['body', 'case_key', 'engine', 'idempotency_key']);
+  assert.deepEqual((json.required as string[]).sort(), ['engine', 'idempotency_key']);
 });
 
 test('§14.2: the bridge delegates validation to zod rather than reimplementing it', () => {

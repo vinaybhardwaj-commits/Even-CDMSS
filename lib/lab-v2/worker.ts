@@ -27,8 +27,8 @@ import {
   putObject, reap, recordEvent,
 } from './store';
 import type { Transport } from './transport';
-import { ADAPTERS } from './adapters/opd';
-import type { Adapter } from './adapters/types';
+// Round A3 (decision 37): the multi-engine registry, since §17.3 leaves adapters/opd.ts untouched.
+import { ALL_ADAPTERS, type Adapter } from './adapters/types';
 
 export interface TickOptions {
   db: Db;
@@ -71,7 +71,7 @@ export async function tick(opts: TickOptions): Promise<TickReport> {
     const item = await claim(db, workerId);
     if (!item) break;
     claimed += 1;
-    const ok = await runItem({ db, transport, item, workerId, adapters: opts.adapters ?? ADAPTERS });
+    const ok = await runItem({ db, transport, item, workerId, adapters: opts.adapters ?? ALL_ADAPTERS() });
     if (ok) finished += 1;
     await deriveRunState(db, item.run_id);
   }
