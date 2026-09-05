@@ -400,10 +400,12 @@ export function checkpointPlanFromEvents(a: {
   // why the checkpoint exists. The cutoff instant is unchanged either way — the earliest for the
   // day — so the BLINDING does not move, only the name.
   //
-  // `pre_discharge` is exempt: the procedure run is built to stop before it, so the two cannot
-  // collide by construction, and if they ever did the discharge decision is the thing to keep.
+  // ⚠️ ONLY THE PROCEDURE FAMILY'S PRECEDENCE CHANGES. Every other collision is decided by
+  // ANCHOR_PRIORITY exactly as before, so a day that is both the first 24 hours and the
+  // pre-discharge window is still labelled `first_24h` — decision 52 did not touch that pair, and
+  // silently reordering it would have relabelled five of the twelve episodes' day 1.
   const dedupRank = (k: AnchorKind): number =>
-    k === 'pre_discharge' ? 0 : isProcedureAnchor(k) ? 1 : 2;
+    isProcedureAnchor(k) ? -1 : ANCHOR_PRIORITY[k];
   const lastMoment = dischargedAt ?? shiftIso(admittedAt, (los + 1) * 24 * HOUR_MS);
   const byDay = new Map<number, { cutoff: string; kind: AnchorKind }>();
   for (const c of candidates.sort((x, y) =>
