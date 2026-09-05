@@ -531,7 +531,10 @@ test('every ceiling carries its derivation beside the constant', () => {
 
 test('the judge output is bounded the way the checkpoint course is', () => {
   const core = code('lib/ipd-episode/judge-core.ts');
-  assert.ok(core.includes('export const MAX_FINDINGS_PER_PASS = 30'));
+  // DECISION 47: 30 → 80. The cap trims the parsed list, so raising it costs no tokens; what it
+  // stops doing is discarding A1 findings, which decision 44 left as the only source of a divergent
+  // verdict. Round 24 dropped 18 on IP-1483, 10 on IPNO-486, 6 on IPNO-495.
+  assert.ok(core.includes('export const MAX_FINDINGS_PER_PASS = 80'));
   assert.ok(core.includes('export function capFindings('));
   const judge = code('lib/ipd-episode/judge.ts');
   assert.equal((judge.match(/capFindings\(/g) ?? []).length, 2, 'applied to both A1 and A2');

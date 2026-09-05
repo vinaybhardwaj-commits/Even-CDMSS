@@ -692,6 +692,26 @@ identically — a column that separated nothing while looking like a judgement. 
 divergent count and, beside it, the **context-dependent** count, and sorts by both. The band is still
 stored and still shown on drill-in.
 
+### 1.25 Step C — decision 47, the per-pass finding cap (V, 2026-09-05)
+
+**DECISION 47 — `MAX_FINDINGS_PER_PASS` is 80, was 30.**
+
+30 was set in round 12 against a measured 10–15 diff findings on IP-1286 and 10 on IP-1313, and
+described in the code as "comfortably above anything observed". By round 24 it was not: the A1 pass
+lost **18 findings on IP-1483, 10 on IPNO-486 and 6 on IPNO-495**, dropped tail-first and discarded.
+
+⚠️ **What made that serious is decision 44.** Since the resolver can no longer return a divergent
+verdict, **A1 is the only source of divergent findings in the engine.** A cap biting A1 was
+therefore deciding, silently and by output position, how much of an admission the audit was allowed
+to charge for.
+
+⚠️ **Raising it costs nothing, because this cap never bounded generation.** `capFindings` trims the
+PARSED list after the model has already written its answer; `JUDGE_MAX_TOKENS` (16000) bounds the
+call. At ~260 output tokens per finding the ceiling can carry roughly 61 findings, so at 80 the cap
+sits above what the ceiling can emit and should stop binding altogether. **The observable moves
+with it:** `n_findings_truncated` should now read 0, and the limiter to watch becomes each pass's
+`finish_reason`. A pass cut off at the ceiling is a truncation failure, not a cap.
+
 ### 4.2a `unassessable` must be earned (added 2026-09-02, decision 33)
 
 A finding may carry `unassessable` only if its `evidence_basis` is empty or every cited source is Tier C. Anything else is rewritten to `context_dependent` in code and counted in `n_unassessable_rejected`. Resolver findings with `resolution = 'absent_class_missing'` are exempt: that gap was established by code rather than claimed by a model.

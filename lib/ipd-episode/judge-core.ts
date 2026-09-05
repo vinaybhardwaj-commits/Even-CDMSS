@@ -502,15 +502,26 @@ export function enforceUnassessable(f: EpisodeFinding): { finding: EpisodeFindin
  * reading and not the next. The judge side had no such bound, and IPNO-416's diff pass ran to
  * 22,677 characters and was cut off mid-answer, losing the whole pass.
  *
- * 30 per pass, against a measured 10–15 diff findings on IP-1286 and 10 on IP-1313: comfortably
- * above anything observed, so the cap should never bite on a normal episode, and firmly below the
- * runaway that cost IPNO-416 its audit. `findings_truncated` records when it does bite, so a cap
- * that is too tight shows up in the data instead of quietly removing findings.
+ * ⚠️ DECISION 47 (V, 2026-09-05) — 30 BECAME 80, BECAUSE THE CAP HAD STARTED BITING ON REAL
+ * EPISODES AND WAS DISCARDING THE ONLY REMAINING SOURCE OF DIVERGENT FINDINGS. 30 was chosen
+ * against a measured 10–15 diff findings on IP-1286 and 10 on IP-1313, "comfortably above anything
+ * observed". Two rounds later that was no longer true: on round 24 the A1 pass lost 18 findings on
+ * IP-1483, 10 on IPNO-486 and 6 on IPNO-495. Decision 44 had meanwhile made A1 the ONLY pass that
+ * can produce a divergent verdict — the resolver cannot — so a cap biting A1 was silently deciding
+ * how much of an admission the audit was allowed to charge for.
+ *
+ * ⚠️ THIS CAP DOES NOT BOUND GENERATION, AND RAISING IT COSTS NO TOKENS. `capFindings` runs on the
+ * PARSED list, after the model has already written its answer; `JUDGE_MAX_TOKENS` is what bounds
+ * the call. At ~260 output tokens per finding, 16000 tokens can carry roughly 61 findings — so at
+ * 80 this cap sits ABOVE what the ceiling can emit and should stop binding altogether. The
+ * consequence is that the observable moves: `n_findings_truncated` will read 0, and the limiter to
+ * watch becomes the pass's own `finish_reason`. A pass cut off at the ceiling is a truncation
+ * failure, not a cap, and it is handled elsewhere.
  *
  * The prompt asks for most-consequential-first, so truncation drops the least consequential — the
  * same ordering contract the expected-course cap relies on.
  */
-export const MAX_FINDINGS_PER_PASS = 30;
+export const MAX_FINDINGS_PER_PASS = 80;
 
 export function capFindings(findings: EpisodeFinding[]): { kept: EpisodeFinding[]; dropped: number } {
   if (findings.length <= MAX_FINDINGS_PER_PASS) return { kept: findings, dropped: 0 };
