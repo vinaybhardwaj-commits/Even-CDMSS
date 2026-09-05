@@ -1,4 +1,7 @@
 import { neon, neonConfig } from '@neondatabase/serverless';
+// LAB-MCP-V2 §7 (decision 6): fail-closed. Production SQL is unreachable from inside a
+// lab execution context — see the trap below.
+import { labExecution, LabError } from './lab-execution-context';
 
 neonConfig.fetchConnectionCache = true;
 
@@ -49,6 +52,13 @@ function injectAppSource(query: string, params: unknown[]): { query: string; par
  */
 export const sql: ReturnType<typeof neon> = new Proxy((() => {}) as unknown as ReturnType<typeof neon>, {
   apply(_target, _thisArg, args: unknown[]) {
+    // §7 — THE fence. A research run executes production engine code, and that code
+    // reaches for `sql` in a dozen places (the LVC rules, the doctor directory, every
+    // store write). None of it may run: a research key must not be able to read an
+    // identifying production row or write ANY production row, and it must not be able
+    // to do so by accident. Throwing here is fail-closed by construction — a new call
+    // site added years from now is guarded the day it is written, with no diff.
+    if (labExecution()) throw new LabError('LAB_IO_FORBIDDEN', 'production sql inside lab execution');
     const c = client() as unknown as (...a: unknown[]) => unknown;
     // Parameterized form: (queryString, paramsArray)
     if (typeof args[0] === 'string' && Array.isArray(args[1])) {

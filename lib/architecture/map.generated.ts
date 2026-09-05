@@ -483,6 +483,10 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "unregistered"
   },
   {
+    "id": "lab-execution-context",
+    "plane": "unregistered"
+  },
+  {
     "id": "lab-override",
     "plane": "unregistered"
   },
@@ -496,6 +500,10 @@ export const MAP_MODULES: MapModule[] = [
   },
   {
     "id": "lab-source-core",
+    "plane": "unregistered"
+  },
+  {
+    "id": "lab-v2",
     "plane": "unregistered"
   },
   {
@@ -584,6 +592,10 @@ export const MAP_MODULES: MapModule[] = [
   },
   {
     "id": "mcp-tools",
+    "plane": "unregistered"
+  },
+  {
+    "id": "mcp-v2",
     "plane": "unregistered"
   },
   {
@@ -1842,6 +1854,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "app/api",
+    "to": "lab-v2",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
     "to": "learning",
     "kind": "value"
   },
@@ -1938,6 +1955,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "app/api",
     "to": "mcp-tools",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
+    "to": "mcp-v2",
     "kind": "value"
   },
   {
@@ -3056,6 +3078,11 @@ export const MAP_EDGES: MapEdge[] = [
     "kind": "value"
   },
   {
+    "from": "db",
+    "to": "lab-execution-context",
+    "kind": "value"
+  },
+  {
     "from": "ddi",
     "to": "ddi-tags",
     "kind": "value"
@@ -3781,6 +3808,61 @@ export const MAP_EDGES: MapEdge[] = [
     "kind": "value"
   },
   {
+    "from": "lab-v2",
+    "to": "audit-suppression-store",
+    "kind": "value"
+  },
+  {
+    "from": "lab-v2",
+    "to": "bedrock",
+    "kind": "value"
+  },
+  {
+    "from": "lab-v2",
+    "to": "lab-execution-context",
+    "kind": "value"
+  },
+  {
+    "from": "lab-v2",
+    "to": "llm",
+    "kind": "value"
+  },
+  {
+    "from": "lab-v2",
+    "to": "metabase",
+    "kind": "value"
+  },
+  {
+    "from": "lab-v2",
+    "to": "opd-complexity-core",
+    "kind": "value"
+  },
+  {
+    "from": "lab-v2",
+    "to": "opd-ingest-core",
+    "kind": "value"
+  },
+  {
+    "from": "lab-v2",
+    "to": "opd-note-audit",
+    "kind": "value"
+  },
+  {
+    "from": "lab-v2",
+    "to": "opd-note-audit-core",
+    "kind": "value"
+  },
+  {
+    "from": "lab-v2",
+    "to": "retrieve",
+    "kind": "value"
+  },
+  {
+    "from": "lab-v2",
+    "to": "trace",
+    "kind": "value"
+  },
+  {
     "from": "learning",
     "to": "audit-canonical",
     "kind": "value"
@@ -4156,6 +4238,16 @@ export const MAP_EDGES: MapEdge[] = [
     "kind": "value"
   },
   {
+    "from": "mcp-v2",
+    "to": "lab-v2",
+    "kind": "type"
+  },
+  {
+    "from": "mcp-v2",
+    "to": "lab-v2",
+    "kind": "value"
+  },
+  {
     "from": "member-state",
     "to": "as-of-core",
     "kind": "value"
@@ -4223,6 +4315,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "member-state-adapters",
     "to": "member-state",
+    "kind": "value"
+  },
+  {
+    "from": "metabase",
+    "to": "lab-execution-context",
     "kind": "value"
   },
   {
@@ -5317,6 +5414,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "retrieve",
+    "to": "lab-execution-context",
+    "kind": "value"
+  },
+  {
+    "from": "retrieve",
     "to": "llm",
     "kind": "value"
   },
@@ -5528,6 +5630,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "trace",
     "to": "lab-batch-core",
+    "kind": "value"
+  },
+  {
+    "from": "trace",
+    "to": "lab-execution-context",
     "kind": "value"
   },
   {
@@ -5793,6 +5900,18 @@ export const VERSION_REGISTRY: VersionRow[] = [
     "derived": false
   },
   {
+    "constName": "MCP_V2_PROTOCOL_VERSION",
+    "value": "LATEST_PROTOCOL_VERSION",
+    "file": "lib/mcp-v2/server.ts",
+    "derived": true
+  },
+  {
+    "constName": "MCP_V2_SDK_VERSION",
+    "value": "@modelcontextprotocol/server@2.0.0",
+    "file": "lib/mcp-v2/server.ts",
+    "derived": false
+  },
+  {
     "constName": "MEMBER_BANK_VERSION",
     "value": "member-bank/1.0",
     "file": "lib/member-state/validation/gold-seed.ts",
@@ -5949,6 +6068,12 @@ export const VERSION_REGISTRY: VersionRow[] = [
     "derived": false
   },
   {
+    "constName": "PRICING_VERSION",
+    "value": "lab-v2-pricing/1.0.0",
+    "file": "lib/lab-v2/pricing.ts",
+    "derived": false
+  },
+  {
     "constName": "PROM_CATALOG_VERSION",
     "value": "prom-catalog/0.1",
     "file": "lib/proms/catalog.ts",
@@ -6054,8 +6179,8 @@ export const VERSION_REGISTRY: VersionRow[] = [
 
 export const COVERAGE = {
   "registered": 23,
-  "unregistered": 43,
-  "total": 66,
+  "unregistered": 45,
+  "total": 68,
   "unregisteredIds": [
     "calculators",
     "care-call-core",
@@ -6070,7 +6195,9 @@ export const COVERAGE = {
     "dose-limits",
     "formulary-match-core",
     "ipd-episode",
+    "lab-v2",
     "mcp-server",
+    "mcp-v2",
     "ml-label-trial",
     "opd-audit",
     "opd-feedback-rollup-core",

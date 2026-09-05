@@ -11,6 +11,11 @@ import { openrouterCreateWithRetry, createWithRetry } from './openrouter-retry';
 import { promptFingerprint } from './reasoning/registry-core';
 import { billableOutputTokens } from './llm-cost-core';
 import { bedrockGenerate, bedrockFailurePayload, singleChunkStream } from './bedrock';
+// LAB-MCP-V2 §7 (decision 6). Inside a lab execution context every trace WRITE below
+// returns without touching the database, and the two model entries delegate to the
+// lab's own chat edge. Outside a context `labExecution()` is undefined and every one of
+// these functions is byte-for-byte what it was before this import existed.
+import { labExecution } from './lab-execution-context';
 
 const sqlFn = sql as unknown as (q: string, p: unknown[]) => Promise<unknown>;
 
@@ -65,6 +70,9 @@ export const ENVELOPE_UPDATE_SQL =
    WHERE trace_id = $11 AND seq = $12`;
 
 export async function startTrace(feature: string, input: unknown, userId: number = 1, meta?: unknown): Promise<string> {
+  // §7 — a lab run has no production trace. Return a well-formed id so every downstream
+  // `logEvent(traceId, ...)` stays type-correct and equally inert.
+  if (labExecution()) return 'lab-v2-untraced';
   const traceId = randomUUID();
   try {
     await sqlFn(
@@ -85,6 +93,7 @@ export async function logEvent(
   latencyMs?: number,
   envelope?: TraceEnvelope
 ): Promise<void> {
+  if (labExecution()) return;   // §7
   try {
     // app_source is set explicitly here: the lib/db stamper cannot safely inject
     // into this INSERT because the seq subquery in VALUES contains parentheses.
@@ -138,6 +147,7 @@ export async function finishTrace(
   status: 'success' | 'error' | 'partial',
   errorMessage?: string
 ): Promise<void> {
+  if (labExecution()) return;   // §7
   try {
     await sqlFn(
       `UPDATE traces SET finished_at = NOW(), status = $1, error_message = $2,
@@ -288,6 +298,11 @@ export async function tracedChat(
   opts?: { gemini?: string; openrouter?: string; bedrock?: string; promptRef?: string; timeoutMs?: number; maxTries?: number; noLocalFallback?: boolean },
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ): Promise<any> {
+  // §7 — inside a lab context there is no trace to write to and no fallback ladder to
+  // run: the lab supplies its own single-target transport, budgeted and attributed by
+  // lib/lab-v2/gateway.ts. `label` is the stage name the gateway meters against.
+  const _labTraced = labExecution();
+  if (_labTraced) return _labTraced.chat(label, params);
   const t0 = Date.now();
   const reqOpts = opts?.timeoutMs ? { timeout: opts.timeoutMs } : undefined;
 
@@ -734,6 +749,7 @@ export async function logStreamComplete(
 
 /** Write the first 160 chars of the question into traces.question_preview. */
 export async function setTraceQuestionPreview(traceId: string, question: string): Promise<void> {
+  if (labExecution()) return;   // §7
   try {
     const preview = (question || '').slice(0, 160);
     await sqlFn(`UPDATE traces SET question_preview = $1 WHERE trace_id = $2`, [preview, traceId]);
@@ -742,6 +758,7 @@ export async function setTraceQuestionPreview(traceId: string, question: string)
 
 /** Write the critique severity (none/minor/moderate/major) into traces.severity. */
 export async function setTraceSeverity(traceId: string, severity: string): Promise<void> {
+  if (labExecution()) return;   // §7
   try {
     await sqlFn(`UPDATE traces SET severity = $1 WHERE trace_id = $2`, [severity, traceId]);
   } catch {}
@@ -749,6 +766,7 @@ export async function setTraceSeverity(traceId: string, severity: string): Promi
 
 /** Write {draft, critique, revise, ...} → traces.model_summary JSONB. */
 export async function setTraceModelSummary(traceId: string, models: Record<string, string>): Promise<void> {
+  if (labExecution()) return;   // §7
   try {
     await sqlFn(`UPDATE traces SET model_summary = $1::jsonb WHERE trace_id = $2`, [JSON.stringify(models), traceId]);
   } catch {}
@@ -757,6 +775,7 @@ export async function setTraceModelSummary(traceId: string, models: Record<strin
 /** Write the assembled final answer text into traces.final_answer_text.
  *  The search_tsv GENERATED column will recompute automatically. */
 export async function setTraceFinalAnswer(traceId: string, finalAnswer: string): Promise<void> {
+  if (labExecution()) return;   // §7
   try {
     await sqlFn(`UPDATE traces SET final_answer_text = $1 WHERE trace_id = $2`, [finalAnswer, traceId]);
   } catch {}
@@ -765,6 +784,7 @@ export async function setTraceFinalAnswer(traceId: string, finalAnswer: string):
 /** Roll registry prompt ids into traces.prompt_ids (deduped append — an id already in the
  *  array is skipped). Stage 1 denormalized writer; degrades to no-op before migration 0012. */
 export async function setTracePromptIds(traceId: string, promptIds: string[]): Promise<void> {
+  if (labExecution()) return;   // §7
   try {
     for (const id of promptIds) {
       await sqlFn(
@@ -823,6 +843,12 @@ export async function governedChat(
   opts?: { gemini?: string; openrouter?: string; bedrock?: string; promptRef?: string; timeoutMs?: number; maxTries?: number; noLocalFallback?: boolean },
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ): Promise<any> {
+  // §7 — the lab edge outranks both arms below. It must be checked BEFORE the traceId
+  // branch: a lab run that happened to carry a traceId would otherwise fall into
+  // tracedChat's production ladder, which is the silent-downgrade defect F11 exists to
+  // stop, in the one direction that also spends production money.
+  const _labGoverned = labExecution();
+  if (_labGoverned) return _labGoverned.chat(label, params);
   // ⚠️ THE TRACED ARM IS THE ONE PRODUCTION USES. Both audit legs arrive here with a traceId, so
   // a budget that only reaches the traceless arm below changes nothing in production while every
   // naive test passes — which is exactly how the 110 s ceiling survived 3039c42. Both arms carry
@@ -837,6 +863,66 @@ export async function governedChat(
   return chatWithFallback(params, opts?.gemini, opts?.openrouter, opts?.timeoutMs, opts?.maxTries, opts?.noLocalFallback);
 }
 
+/**
+ * governedLabChat — the Lab v2 transport (LAB-MCP-V2-PRD-v1.0 §7, §6.1).
+ *
+ * ONE TARGET, ONE ATTEMPT, NO LADDER. An arm names exactly one (provider, model) per
+ * stage and v2 has no fallback: a stage that cannot reach its named model FAILS that
+ * stage. That is not a convenience choice — a lab result silently served by a different
+ * model than the arm declared is a measurement that reads as clean and is not, which is
+ * precisely what §6.2's attribution machinery exists to catch. Falling back would
+ * manufacture the very rows attribution is there to reject.
+ *
+ * `maxRetries: 0` / `maxTries: 1` on every branch for the same reason, plus a second:
+ * the gateway has already RESERVED budget for exactly one call before this runs. A
+ * transport-level retry would spend a second call's money against one reservation.
+ *
+ * It lives in lib/trace.ts because scripts/reasoning-governance-check.mjs hard-fails any
+ * direct model call outside the governed layer, and because attribution must be attached
+ * by the one existing mechanism (`attachTransportAttribution`) rather than a second
+ * implementation that could drift from it.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export async function governedLabChat(
+  provider: 'bedrock' | 'openrouter' | 'ollama' | 'vertex',
+  model: string,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  params: any,
+  timeoutMs?: number,
+  signal?: AbortSignal,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+): Promise<any> {
+  const reqOpts: Record<string, unknown> = { maxRetries: 0 };
+  if (timeoutMs) reqOpts.timeout = timeoutMs;
+  if (signal) reqOpts.signal = signal;
+
+  if (provider === 'bedrock') {
+    const completion = await bedrockGenerate(params, { model, timeoutMs, maxTries: 1, label: 'lab-v2' });
+    return attachTransportAttribution(completion, {
+      dispatched_provider: 'bedrock', dispatched_model: model, cloud_response_received: true,
+    });
+  }
+  if (provider === 'openrouter') {
+    const client = openrouterChatClient();
+    const result = await client.chat.completions.create(
+      buildOpenrouterParams(model, { ...params, model: undefined }) as never, reqOpts);
+    return attachTransportAttribution(result, {
+      dispatched_provider: 'openrouter', dispatched_model: model, cloud_response_received: true,
+    });
+  }
+  if (provider === 'vertex') {
+    const client = await getGeminiChatClient();
+    const result = await client.chat.completions.create({ ...params, model: vertexModelName(model) }, reqOpts);
+    return attachTransportAttribution(result, {
+      dispatched_provider: 'vertex', dispatched_model: model, cloud_response_received: true,
+    });
+  }
+  const result = await llm.chat.completions.create({ ...params, model }, reqOpts);
+  return attachTransportAttribution(result, {
+    dispatched_provider: 'ollama', dispatched_model: model, cloud_response_received: false,
+  });
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Guaranteed finalize (Stage 1) — closes the `running`-trace leak.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -848,6 +934,7 @@ export async function finishTraceIfRunning(
   status: 'success' | 'error' | 'partial',
   errorMessage?: string
 ): Promise<void> {
+  if (labExecution()) return;   // §7
   try {
     await sqlFn(
       `UPDATE traces SET finished_at = NOW(), status = $1, error_message = $2,

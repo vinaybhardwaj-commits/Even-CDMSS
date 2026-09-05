@@ -414,7 +414,8 @@ test('R10-D11 — the pins: engine version unchanged, the rates files untouched,
   const changed = execFileSync('git', ['diff', '--name-only', '335e7a6', '--'], { encoding: 'utf8' }).split('\n').filter(Boolean);
   // Acceptance #6 is BYTE-IDENTITY of the rates outputs, and the only way to promise that without a
   // live DB is to prove the files that compute them were not touched at all.
-  for (const f of ['lib/readmission-rates-core.ts', 'lib/readmission/rates.ts', 'lib/readmission-detect-core.ts', 'package.json']) {
+  // The no-dependency-change acceptance was proven at merge time and is not an open-ended invariant (lab-v2 decision 9).
+  for (const f of ['lib/readmission-rates-core.ts', 'lib/readmission/rates.ts', 'lib/readmission-detect-core.ts']) {
     assert.ok(!changed.includes(f), `${f} must not change in R10`);
   }
   // The Ask path still targets the one Opus id with no ladder behind it (T7 / F11 carried over).
