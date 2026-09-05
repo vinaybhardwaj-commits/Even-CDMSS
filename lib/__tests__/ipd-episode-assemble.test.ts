@@ -165,7 +165,9 @@ test('DECISION 43: checkpoints are anchored to EVENTS, and blinding is re-derive
   // the procedure and its follow-ups are anchored, and the late days are reachable
   const kinds = plan.map((p) => p.anchor_kind);
   assert.ok(kinds.includes('procedure'), 'the procedure day is an anchor');
-  assert.ok(kinds.includes('procedure_plus_2') || kinds.includes('procedure_plus_4'), 'and its follow-ups');
+  // DECISION 52: the follow-up grid is gone; every day after the procedure is checkpointed until
+  // the pre-discharge day, so the day AFTER the procedure day must be present by name.
+  assert.ok(kinds.includes('procedure_day_1'), 'and the day after it');
   assert.ok(kinds.includes('pre_discharge'), 'and the decision to discharge');
   assert.ok(plan.some((p) => p.day_index > 6), 'a day beyond 6 is now reachable');
 
@@ -221,9 +223,16 @@ test('DECISION 46: only an OT note or a `Surgery` order anchors a procedure chec
   // procedure day, so the checkpoint can see the procedure itself, and the day is read off the
   // cutoff. The label names the moment the checkpoint looks BACK from, not the day it looks at.
   assert.deepEqual(procDays, [5], 'one procedure anchor, cutting off at the end of the surgery day');
-  // with the spurious anchors gone there is room for the follow-up window that never existed
-  assert.ok(plan.some((p) => p.anchor_kind === 'procedure_plus_4'),
-    'and the +4 follow-up finally fits inside the cap');
+  // with the spurious anchors gone there is room for the post-procedure run (decision 52)
+  const run = plan.filter((p) => p.anchor_kind.startsWith('procedure_day_')).map((p) => p.anchor_kind);
+  assert.deepEqual(run, ['procedure_day_1', 'procedure_day_2', 'procedure_day_3', 'procedure_day_4'],
+    'consecutive days after the procedure, in order, stopping before the pre-discharge day');
+  assert.ok(plan.some((p) => p.anchor_kind === 'pre_discharge'), 'and pre_discharge survives the cap');
+  // this fixture lands exactly on the cap: first_24h + procedure + four run days + pre_discharge
+  // is seven daily checkpoints, and the episode-level one makes eight.
+  assert.equal(plan.length, MAX_CHECKPOINTS);
+  assert.deepEqual(plan.map((p) => p.anchor_kind), ['first_24h', 'procedure', 'procedure_day_1',
+    'procedure_day_2', 'procedure_day_3', 'procedure_day_4', 'pre_discharge', 'episode']);
 });
 
 test('DECISION 43: blinding — each anchor sees only what precedes its own cutoff', () => {

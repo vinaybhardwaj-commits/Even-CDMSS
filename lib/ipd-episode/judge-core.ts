@@ -809,93 +809,32 @@ export function applyBillingOnlyCap(
 }
 
 /**
- * ROUND 14 ITEM 2, SECOND HALF — THE FINDING THE ENGINE MISSED.
+ * DECISION 49 (V, 2026-09-05) — THE DISCHARGE-NOTE GAP FINDING IS WITHDRAWN.
  *
- * Day-scoping class presence (resolve-core) is right, but on its own it LOSES something: the day a
- * class went silent stops producing a divergence and starts producing an `unassessable`. On
- * IPNO-416 the most consequential documentation gap in the episode — no progress note at all on
- * the discharge day — was never reported by anything, because no expectation happened to name it
- * and the resolver had no way to raise a finding nobody expected.
+ * ⚠️ IT WAS ASKING FOR THE WRONG DOCUMENT. Round 14 raised `d-1` whenever the discharge day carried
+ * no PROGRESS NOTE, at `major`, on the reasoning that "the decision to send the patient home was
+ * taken without a same-day clinical entry". The document that must exist at discharge is the
+ * DISCHARGE SUMMARY, and it existed on every episode this ever fired on — selection requires one
+ * (§3.1). On Step C it fired on three of thirteen episodes (IP-1362, IP-1497, IPNO-629), identically
+ * worded, at major severity, against admissions whose discharge documentation was present. A
+ * finding that reliably reports a gap that is not there is worse than no finding at all.
  *
- * So code raises it directly. This is not a judgement and needs no model: either a progress note
- * exists on the discharge day or it does not, and a discharge day with none means the decision to
- * send the patient home was taken without a same-day clinical entry.
+ * ⚠️ WHAT DECISION 49 PUTS IN ITS PLACE NEEDS A TIMESTAMP THIS ENGINE CANNOT SEE. The replacement
+ * is "discharge summary finalised N hours after discharge" — context_dependent, minor, zero
+ * penalty, report only. No finalisation time exists in anything the engine reads:
  *
- * It is a `documentation` finding, so §5 attributes it to the AUTHOR — and there being no author
- * is precisely the point, so it stays unattributed. Tier A, because the absence is established
- * against the progress-note table itself, which is what lets it reach `major` under item 10.
+ *   · `kx_discharge_summary_records` yields `discharge_date_time` and `_create_time`, and
+ *     `_create_time` is the MIRROR'S INGEST TIME. The contract test "`_create_time` appears ONLY in
+ *     the discharge-summary tiebreak" exists precisely because it is not a clinical time.
+ *   · `discharge_extracted_cases.extracted_json` carries no signing, finalisation or document date
+ *     at any nesting level — 954 rows, zero occurrences of any such key.
+ *
+ * Ingest time as a proxy would measure the mirror's pipeline and read as a statement about the
+ * ward, so only the WITHDRAWAL is implemented. The id is kept reserved so a future replacement does
+ * not silently reuse `d-1` for a different claim, and so this note stays where the next reader of
+ * that id will look.
  */
 export const MISSING_DISCHARGE_NOTE_ID = 'd-1';
-
-export function missingDischargeDayNote(
-  events: readonly EpisodeEvent[], losDays: number | null, dischargeType?: string | null,
-): EpisodeFinding | null {
-  const dischargeDay = events.find(isDischargeEvent)?.day_index
-    ?? (typeof losDays === 'number' ? losDays : null);
-  if (dischargeDay == null) return null;
-  // Only PROGRESS NOTES count here. A handover is a nursing record and an OT note is a procedure
-  // record; neither is the clinical entry a discharge decision should rest on.
-  const hasNote = events.some((e) => e.event_type === 'note' && e.day_index === dischargeDay);
-  if (hasNote) return null;
-  // A same-day admission and discharge has no "discharge day" gap worth reporting: day 0 carries
-  // the admission record itself, and a LOS-0 stay is a different kind of episode.
-  if (dischargeDay === 0) return null;
-  const anyNote = events.find((e) => e.event_type === 'note');
-  const died = dischargeIndicatesDeath(dischargeType);
-  return {
-    finding_id: MISSING_DISCHARGE_NOTE_ID,
-    pass: 'divergence',
-    finding_type: 'omission',
-    verdict: 'divergent',
-    domain: 'documentation',
-    day_index: dischargeDay,
-    checkpoint_ref: null,
-    // ⚠️ ROUND 20 ITEM 2 — WHAT THIS SAYS DEPENDS ON HOW THE ADMISSION ENDED, and round 14 never
-    // asked. On IPNO-531 and IPNO-560 this finding read "The decision to discharge was recorded
-    // without a same-day clinical entry to support it" — about patients who had DIED. There was no
-    // decision to discharge. A clinician reading that learns nothing and distrusts the rest.
-    //
-    // The OBSERVATION survives unchanged, because it is worth making either way: a day with no
-    // progress note is a documentation gap, and a death day with no note is arguably the worse of
-    // the two — a death is the one event that most needs a same-day clinical record. Only the
-    // sentence changes.
-    statement: died
-      ? `No progress note was written on the day the patient died (day ${dischargeDay}). `
-        + 'The death is recorded without a same-day clinical entry describing the deterioration, '
-        + 'the response to it, or the circumstances of death.'
-      : `No progress note was written on the discharge day (day ${dischargeDay}). `
-        + 'The decision to discharge was recorded without a same-day clinical entry to support it.',
-    severity: 'major',
-    evidence_tier: 'A',
-    // The absence is established AGAINST the progress-note table. Citing a real note from another
-    // day is what makes the claim checkable: this table was in use, and it has nothing that day.
-    evidence_basis: anyNote
-      ? [{
-          source_table: anyNote.provenance.source_table,
-          source_record_id: anyNote.provenance.source_record_id,
-          source_timestamp: anyNote.provenance.source_timestamp,
-        }]
-      : [],
-    author_name: null, author_role: null, responsible_clinician_id: null,
-    lvc_category: null,
-    citation_ids: [], citation_provenance: null,
-    verdict_before_cap: 'divergent', severity_before_cap: 'major', capped: false,
-    // ⚠️ `absent_class_present`, NOT null, AND THE FIRST VERSION OF THIS WAS DELETED FOR WANT OF
-    // IT. `dropJudgedOmissions` identifies a code-owned omission by its `resolution` and drops
-    // every other divergence-pass omission as a judgement the model had no business making. With
-    // `resolution: null` this finding matched that description exactly: IP-1483, IPNO-495 and
-    // IPNO-416 all have no note on their discharge day, and all three runs reported "1 omission
-    // finding dropped" — which was this one, deleted on the way out and counted against the diff
-    // pass. The unit test passed throughout, because it tested the constructor and not the chain.
-    //
-    // The value is also the honest one: progress notes ARE represented in the episode, and there
-    // is none on this day. That is `absent_class_present` in the resolver's own vocabulary.
-    resolution: 'absent_class_present', matcher_kind: 'note', matcher_terms: null,
-    matched_term: null,
-    confound: null,
-    group_size: 1, grouped_refs: [], grouped_days: [],
-  };
-}
 
 /**
  * ROUND 23 ITEM 6 — TWO FINDINGS THAT CONTRADICT EACH OTHER ON ONE FACT MUST NOT BOTH SHIP.

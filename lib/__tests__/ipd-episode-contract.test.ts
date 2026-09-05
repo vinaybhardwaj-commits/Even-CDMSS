@@ -833,12 +833,51 @@ test('the index IS available on drill-in, labelled with its spread', () => {
   assert.ok(detail.includes('<InternalIndex'), 'and the detail page renders it');
 });
 
-test('the chip shows a band or "not scorable", never a bare number', () => {
+test('DECISION 50: no band is rendered on any surface, and the chip is gone', () => {
+  // ⚠️ THE BAND IS STILL COMPUTED AND STILL STORED — this is about RENDERING. `divergenceBandFor`
+  // and its thresholds are untouched, so stored history stays comparable across engine versions.
+  // What ended is showing a reader a label that moves with the rate it is derived from: after
+  // decision 44, 11 of 16 episodes banded identically.
+  for (const f of ['app/admin/ipd-audit/episodes/ui.tsx', 'app/admin/ipd-audit/episodes/page.tsx',
+    'app/admin/ipd-audit/episodes/[id]/page.tsx']) {
+    const src = code(f);
+    assert.ok(!src.includes('DivergenceChip'), `${f} must not render a band chip`);
+    assert.ok(!src.includes('divergence_band'), `${f} must not read this engine's band`);
+  }
+  // ⚠️ THE SIBLING'S BAND IS A DIFFERENT MEASUREMENT AND STAYS. `DischargeEngineScore` renders the
+  // DISCHARGE engine's care-value band, which decision 14 put on this surface deliberately and
+  // decision 50 does not touch. The band that is gone is this engine's own.
   const ui = code('app/admin/ipd-audit/episodes/ui.tsx');
-  const chip = ui.slice(ui.indexOf('export function DivergenceChip'), ui.indexOf('export function InternalIndex'));
-  assert.ok(!/\{index\}/.test(chip), 'the chip renders no index');
-  assert.ok(chip.includes('not scorable'), 'and still refuses to band an unscorable episode');
-  assert.ok(chip.includes('(near boundary)'));
+  const rest = ui.slice(0, ui.indexOf('export function DischargeEngineScore'))
+    + ui.slice(ui.indexOf('export function EpisodeTabs'));
+  assert.ok(!/\{\s*band\s*\}/.test(rest), 'no other component renders a band value');
+  // the engine half is deliberately untouched
+  const core = code('lib/ipd-episode/judge-core.ts');
+  assert.ok(core.includes('export function divergenceBandFor('), 'the band is still computed');
+  assert.ok(code('lib/ipd-episode/run.ts').includes('divergenceBandFor('), 'and still stored');
+});
+
+test('DECISION 50: the scoring REFUSAL survives the chip that used to carry it', () => {
+  const ui = code('app/admin/ipd-audit/episodes/ui.tsx');
+  const note = ui.slice(ui.indexOf('export function ScoringNote'), ui.indexOf('export function InternalIndex'));
+  assert.ok(!/\{index\}/.test(note), 'it renders no index');
+  assert.ok(note.includes('not scorable'), 'an unscorable episode still says so');
+  assert.ok(note.includes('part of the expected course is missing'), 'and gives the reason');
+  for (const f of ['app/admin/ipd-audit/episodes/page.tsx', 'app/admin/ipd-audit/episodes/[id]/page.tsx']) {
+    assert.ok(code(f).includes('<ScoringNote'), `${f} renders it`);
+  }
+});
+
+test('DECISION 51: both surfaces say "insufficient record" below 30 evaluated expectations', () => {
+  // Three Step C episodes scored exactly 100 on admissions the engine could barely see. A perfect
+  // number on a tiny denominator reads as an endorsement rather than an absence of evidence.
+  const ui = code('app/admin/ipd-audit/episodes/ui.tsx');
+  assert.ok(ui.includes('export const INSUFFICIENT_RECORD_BELOW = 30'));
+  assert.ok(ui.includes('insufficient record'), 'in words');
+  assert.ok(ui.includes('{evaluated} evaluated'), 'with the count it rests on');
+  for (const f of ['app/admin/ipd-audit/episodes/page.tsx', 'app/admin/ipd-audit/episodes/[id]/page.tsx']) {
+    assert.ok(code(f).includes('<InsufficientRecord'), `${f} renders it`);
+  }
 });
 
 // ── round 8: the ceiling, the hole, and the bound ───────────────────────────────────────────
@@ -874,6 +913,7 @@ test('a hole in the expected course cannot be scored over', () => {
   assert.ok(core.includes("if (status === 'no_expectations' || status === 'incomplete_checkpoints' || status === 'nothing_evaluable') return null;"),
     'and the index is stored NULL — including when nothing was evaluable (round 23 item 8)');
   const ui = code('app/admin/ipd-audit/episodes/ui.tsx');
+  // the reason moved from DivergenceChip to ScoringNote with decision 50; the words did not change
   assert.ok(ui.includes('part of the expected course is missing'), 'the UI gives the reason');
 });
 
@@ -1169,12 +1209,14 @@ test('scoring_status is stored and the UI refuses to render a number without one
   assert.ok(sqlText.includes("scoring_status        TEXT NOT NULL DEFAULT 'ok'"));
   assert.ok(route.includes("ADD COLUMN IF NOT EXISTS scoring_status TEXT NOT NULL DEFAULT 'ok'"));
   const ui = code('app/admin/ipd-audit/episodes/ui.tsx');
-  assert.ok(ui.includes('not scorable'), 'the chip says so in words');
-  assert.ok(/if \(st !== 'ok' \|\| !band\)/.test(ui), 'any status but ok suppresses the band too');
-  // ⚠️ ONE surface passes the status in, not two. Round 24 item 3 removed the band chip from the
-  // LIST; the detail page still renders it and still must refuse to band an unscorable episode.
-  assert.ok(read('app/admin/ipd-audit/episodes/[id]/page.tsx').includes('scoring_status'),
-    'the detail page passes scoring_status to the chip');
+  assert.ok(ui.includes('not scorable'), 'the UI says so in words');
+  // ⚠️ DECISION 50 removed the band, not the refusal. `ScoringNote` returns null only for 'ok', so
+  // every other status is surfaced — and BOTH surfaces pass it in now, because the list no longer
+  // has a band chip to have carried it implicitly.
+  assert.ok(/if \(st === 'ok'\) return null;/.test(ui), 'any status but ok is rendered');
+  for (const f of ['app/admin/ipd-audit/episodes/page.tsx', 'app/admin/ipd-audit/episodes/[id]/page.tsx']) {
+    assert.ok(read(f).includes('scoring_status'), `${f} passes scoring_status in`);
+  }
 });
 
 // ── V's 2026-09-02 widening: cite anything, but price it ─────────────────────────────────────
@@ -1768,7 +1810,7 @@ test('ROUND 15: the UI copy states no fixed index window, because there no longe
     assert.ok(!/±\s*5|within 5 (points|of)/.test(rendered(src)),
       `${name} must not quote a fixed index window against a rate`);
   }
-  // and it says what the flag now MEANS
+  // and it says what the flag now MEANS — on InternalIndex since decision 50 retired the chip
   assert.match(ui, /would put it in a different band/, 'the tooltip states the actual test');
   assert.match(ui, /moved by the repeat-run spread measured on identical input/);
   assert.match(ui, /the same wobble matters less on an admission with more expectations/i,

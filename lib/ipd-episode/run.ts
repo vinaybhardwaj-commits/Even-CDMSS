@@ -31,7 +31,6 @@ import { checkpointModel, normativeSourcesForProvenance, runCheckpoint, type Che
 import { judgeModel, runDiffPass, runFidelityPass, JUDGE_TEMPERATURE } from './judge';
 import {
   buildExpectationDigest, evidenceTiersOf, finalizeFindings, completenessPct, resolveFindingCitations,
-  missingDischargeDayNote,
   scoringStatusFor, storedDivergenceIndex, findingsFromResolved, domainForSection,
   divergenceBandFor, bandIsUncertain,
   type EpisodeFinding,
@@ -485,16 +484,14 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
     // ── code-enforced rules, then the score ──
     // Ordinals → real chunk ids FIRST, per referencing checkpoint, so everything downstream (the
     // uncited cap, the stored findings, the UI) speaks one vocabulary.
-    // ROUND 14 ITEM 2, SECOND HALF. Raised by code, not by an expectation: day-scoping class
-    // presence turns a silent day into `unassessable`, and the discharge day going silent is
-    // exactly the gap worth reporting rather than excusing. Nothing expected it, so nothing else
-    // could have found it.
-    const dischargeNoteGap = missingDischargeDayNote(events, envelope.losDays, envelope.dischargeType);
+    // DECISION 49: the discharge-note gap finding is withdrawn. It asked whether a PROGRESS NOTE
+    // existed on the discharge day; the document that must exist at discharge is the discharge
+    // SUMMARY, which selection already requires. Nothing replaces it here — the replacement needs a
+    // finalisation timestamp that no source this engine reads carries (see judge-core).
     const raw: EpisodeFinding[] = [
       // the deterministic half: already carries its entry's citations, so it bypasses the
       // ordinal resolution the judged findings need
       ...resolverFindings,
-      ...(dischargeNoteGap ? [dischargeNoteGap] : []),
       ...resolveFindingCitations([...a1.findings, ...a2.findings], checkpointChunkIds, entryRefs),
     ];
 

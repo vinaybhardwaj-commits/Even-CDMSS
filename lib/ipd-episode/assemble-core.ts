@@ -248,16 +248,37 @@ export const MAX_DAILY_CHECKPOINT_DAY = 6;
 export const MAX_CHECKPOINTS = 8;
 
 /** What a checkpoint is anchored to. Recorded on the row so a reader knows why it exists. */
-export const ANCHOR_KINDS = ['first_24h', 'procedure', 'procedure_plus_2', 'procedure_plus_4',
+/**
+ * DECISION 52 (V, 2026-09-05) — AFTER A PROCEDURE, EVERY DAY IS CHECKPOINTED UNTIL DISCHARGE.
+ * `procedure_plus_2` and `procedure_plus_4` are RETIRED: sampling day 2 and day 4 was an arbitrary
+ * grid laid over a post-operative course, and it left the days between them unexamined. The run is
+ * `procedure_day_1`, `procedure_day_2`, … one per day, and it stops at the pre-discharge day.
+ *
+ * The list is finite because the plan is: at most MAX_CHECKPOINTS − 1 daily checkpoints exist, and
+ * `first_24h` and `pre_discharge` take two of them, so a post-procedure run can never be longer
+ * than five days before the cap bites.
+ */
+export const ANCHOR_KINDS = ['first_24h', 'procedure',
+  'procedure_day_1', 'procedure_day_2', 'procedure_day_3', 'procedure_day_4', 'procedure_day_5',
   'pre_discharge', 'episode'] as const;
 export type AnchorKind = (typeof ANCHOR_KINDS)[number];
+
+/** How many days a post-procedure run can cover before the cap must bite. */
+export const MAX_PROCEDURE_RUN_DAYS = 5;
+
+/** Is this anchor part of the procedure family — the procedure day or its daily run? */
+export function isProcedureAnchor(k: AnchorKind): boolean {
+  return k === 'procedure' || k.startsWith('procedure_day_');
+}
 
 /** Hours after admission at which the first-24h checkpoint cuts off. */
 /** Which anchors survive a same-day collision and a full budget. The first window and the
  *  pre-discharge window rank above procedure follow-ups: they are the two moments an audit most
  *  wants a view of, and IPNO-495 lost pre_discharge to a follow-up before this existed. */
 export const ANCHOR_PRIORITY: Record<AnchorKind, number> = {
-  first_24h: 0, pre_discharge: 1, procedure: 2, procedure_plus_2: 3, procedure_plus_4: 4, episode: 5,
+  first_24h: 0, pre_discharge: 1, procedure: 2,
+  procedure_day_1: 3, procedure_day_2: 4, procedure_day_3: 5, procedure_day_4: 6, procedure_day_5: 7,
+  episode: 8,
 };
 
 export const FIRST_WINDOW_HOURS = 24;
@@ -310,8 +331,7 @@ export function isProcedureEvent(e: EpisodeEvent): boolean {
  *
  *   first_24h          admission + 24h — the first day as a WINDOW, not an instant
  *   procedure          the day of each procedure (an OT note, or a `Surgery` order — decision 46)
- *   procedure_plus_2   two days after each procedure
- *   procedure_plus_4   four days after each procedure
+ *   procedure_day_N    every day after a procedure, up to the pre-discharge day (decision 52)
  *   pre_discharge      24h before discharge — the decision to send the patient home
  *   episode            unchanged: the whole admission, discharge event excluded
  *
@@ -349,42 +369,59 @@ export function checkpointPlanFromEvents(a: {
   // 1. the first 24 hours, as a window
   candidates.push({ cutoff: shiftIso(admittedAt, FIRST_WINDOW_HOURS * HOUR_MS), kind: 'first_24h' });
 
-  // 2-4. each procedure, and 2 and 4 days after it
+  // 5. pre-discharge — built BEFORE the procedure run, because the run stops at its day.
+  const preCutoff = dischargedAt ? shiftIso(dischargedAt, -PRE_DISCHARGE_HOURS * HOUR_MS) : null;
+  if (preCutoff && preCutoff > admittedAt) candidates.push({ cutoff: preCutoff, kind: 'pre_discharge' });
+  const preDay = preCutoff ? dayIndexFor(admittedAt, preCutoff) : null;
+
+  // 2-4. DECISION 52: the procedure day, then EVERY day after it until pre-discharge.
   const procedureDays = [...new Set(events.filter(isProcedureEvent)
     .map((e) => e.occurred_at).filter((t): t is string => !!t))].sort();
   for (const t of procedureDays) {
     // the END of the procedure day, so the checkpoint sees the procedure itself
-    candidates.push({ cutoff: shiftIso(dayStartIso(t, 0), 24 * HOUR_MS), kind: 'procedure' });
-    candidates.push({ cutoff: shiftIso(dayStartIso(t, 0), 3 * 24 * HOUR_MS), kind: 'procedure_plus_2' });
-    candidates.push({ cutoff: shiftIso(dayStartIso(t, 0), 5 * 24 * HOUR_MS), kind: 'procedure_plus_4' });
+    const procCutoff = shiftIso(dayStartIso(t, 0), 24 * HOUR_MS);
+    candidates.push({ cutoff: procCutoff, kind: 'procedure' });
+    const procDay = dayIndexFor(admittedAt, procCutoff);
+    for (let n = 1; n <= MAX_PROCEDURE_RUN_DAYS; n++) {
+      const cutoff = shiftIso(dayStartIso(t, 0), (n + 1) * 24 * HOUR_MS);
+      const day = dayIndexFor(admittedAt, cutoff);
+      if (day == null) break;
+      // the run stops AT the pre-discharge day: that day is pre_discharge's, and a post-operative
+      // run has nothing left to say about a patient already being sent home.
+      if (preDay != null && day >= preDay) break;
+      if (procDay != null && day <= procDay) continue;
+      candidates.push({ cutoff, kind: `procedure_day_${n}` as AnchorKind });
+    }
   }
 
-  // 5. pre-discharge
-  if (dischargedAt) {
-    const pre = shiftIso(dischargedAt, -PRE_DISCHARGE_HOURS * HOUR_MS);
-    if (pre > admittedAt) candidates.push({ cutoff: pre, kind: 'pre_discharge' });
-  }
-
-  // ⚠️ PRIORITY GOVERNS THE DEDUP, NOT JUST THE CAP — and it has to, as IPNO-495 showed. Its
-  // pre-discharge anchor lands on day 10, and so does a `procedure_plus_2` from the day-7
-  // procedure. Keeping the EARLIEST cutoff per day discarded pre_discharge in favour of a follow-up
-  // anchor, so the audit lost its view of the decision to send the patient home. Within one kind
-  // the earliest cutoff still wins, because a checkpoint should see the least it can.
+  // ⚠️ DECISION 52 — ON A SAME-DAY COLLISION THE PROCEDURE FAMILY WINS THE LABEL. This inverts what
+  // round 23 did, and deliberately: a day that is both "24 hours after admission" and "the day of
+  // the operation" is, clinically, the day of the operation, and the label is what tells a reader
+  // why the checkpoint exists. The cutoff instant is unchanged either way — the earliest for the
+  // day — so the BLINDING does not move, only the name.
+  //
+  // `pre_discharge` is exempt: the procedure run is built to stop before it, so the two cannot
+  // collide by construction, and if they ever did the discharge decision is the thing to keep.
+  const dedupRank = (k: AnchorKind): number =>
+    k === 'pre_discharge' ? 0 : isProcedureAnchor(k) ? 1 : 2;
   const lastMoment = dischargedAt ?? shiftIso(admittedAt, (los + 1) * 24 * HOUR_MS);
   const byDay = new Map<number, { cutoff: string; kind: AnchorKind }>();
   for (const c of candidates.sort((x, y) =>
-    (ANCHOR_PRIORITY[x.kind] - ANCHOR_PRIORITY[y.kind]) || x.cutoff.localeCompare(y.cutoff))) {
+    (dedupRank(x.kind) - dedupRank(y.kind)) || x.cutoff.localeCompare(y.cutoff))) {
     if (c.cutoff <= admittedAt || c.cutoff > lastMoment) continue;
     const day = dayIndexFor(admittedAt, c.cutoff);
     if (day == null) continue;
-    if (!byDay.has(day)) byDay.set(day, c);
+    const held = byDay.get(day);
+    if (!held) { byDay.set(day, c); continue; }
+    // the label may be upgraded to the procedure family, but the CUTOFF stays the earliest seen
+    if (dedupRank(c.kind) < dedupRank(held.kind)) byDay.set(day, { cutoff: held.cutoff, kind: c.kind });
   }
 
-  // ⚠️ THE CAP DROPS BY PRIORITY, NOT BY DATE. Capping chronologically let a run of procedure
-  // billing lines eat the budget: IPNO-495 produced five `procedure` anchors and lost
-  // `pre_discharge` entirely — the decision to send the patient home, which is the one moment the
-  // audit most wants a view of. The first window and the pre-discharge window are kept first, then
-  // procedure days, then their follow-ups; within a tier, earliest wins.
+  // ⚠️ THE CAP DROPS FROM THE END OF THE POST-PROCEDURE RUN, AND KEEPS pre_discharge (decision 52).
+  // ANCHOR_PRIORITY orders the tiers — first window, discharge decision, procedure day, then the
+  // run in order — so slicing at the cap removes the LATEST days of the run first. That is the
+  // right end to lose: day 5 after an operation is further from the decision that produced it than
+  // day 1, and the decision to send the patient home is never the thing dropped.
   const daily = [...byDay.entries()]
     .sort((x, y) => (ANCHOR_PRIORITY[x[1].kind] - ANCHOR_PRIORITY[y[1].kind]) || (x[0] - y[0]))
     .slice(0, MAX_CHECKPOINTS - 1)

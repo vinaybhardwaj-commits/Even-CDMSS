@@ -17,7 +17,7 @@ import {
   storedDivergenceIndex, impliedFindingType, capSeverityAt, CAP_SEVERITY_CEILING,
   divergenceBandFor, bandIsUncertain, DIVERGENCE_BANDS, BAND_THRESHOLDS, PENALTY_REPEAT_SPREAD,
   dropJudgedOmissions, enforceUnassessable, findingsFromResolved, domainForSection,
-  buildExpectationDigest, buildDiffUser, applyBillingOnlyCap, notesOnDay, missingDischargeDayNote,
+  buildExpectationDigest, buildDiffUser, applyBillingOnlyCap, notesOnDay,
   subjectWords, SUBJECT_CONCEPTS, MISSING_DISCHARGE_NOTE_ID,
   enforceEscalationConditional, escalationSectionOf,
   type EpisodeFinding, type Severity, type Verdict, type Domain, type AuditPass,
@@ -1855,34 +1855,12 @@ test('ITEM 1: the billing ceiling is not lifted by a citation — order of the t
   assert.equal(res.n_billing_only_capped, 1);
 });
 
-test('ITEM 2b: no progress note on the discharge day is raised by CODE, as a major finding', () => {
-  const events = [
-    evt({ event_id: 'n0', day_index: 0 }), evt({ event_id: 'n1', day_index: 1 }),
-    evt({ event_id: 'disch', day_index: 3, event_type: 'discharge' }),
-  ];
-  const finding = missingDischargeDayNote(events, 3);
-  assert.ok(finding, 'nothing expected it, so nothing else could have found it');
-  assert.equal(finding!.severity, 'major');
-  assert.equal(finding!.domain, 'documentation');
-  assert.equal(finding!.verdict, 'divergent');
-  assert.equal(finding!.day_index, 3);
-  assert.equal(finding!.evidence_tier, 'A');
-  assert.ok(finding!.evidence_basis.length, 'it cites a real note from another day — the table was in use');
-  // and item 10 lets it keep major: Tier A evidence, no citation needed
-  assert.equal(applySeverityCap(finding!).capped, false);
-});
-
-test('ITEM 2b: a note ON the discharge day means no finding; a handover is not a progress note', () => {
-  const base = [evt({ event_id: 'n0', day_index: 0 }), evt({ event_id: 'disch', day_index: 2, event_type: 'discharge' })];
-  assert.equal(missingDischargeDayNote([...base, evt({ event_id: 'n2', day_index: 2 })], 2), null);
-  const handoverOnly = [...base, evt({ event_id: 'h2', day_index: 2, event_type: 'handover' })];
-  assert.ok(missingDischargeDayNote(handoverOnly, 2), 'a nursing handover is not the entry a discharge decision rests on');
-});
-
-test('ITEM 2b: a same-day admission and discharge raises nothing', () => {
-  const events = [evt({ event_id: 'disch', day_index: 0, event_type: 'discharge' })];
-  assert.equal(missingDischargeDayNote(events, 0), null, 'a LOS-0 stay is a different kind of episode');
-});
+// ⚠️ DECISION 49 (V, 2026-09-05) — THE THREE `ITEM 2b` TESTS ARE RETIRED WITH THE FINDING THEY
+// PINNED. `d-1` asked whether a PROGRESS NOTE existed on the discharge day and called its absence a
+// major divergence. The document that must exist at discharge is the discharge SUMMARY, which
+// selection already requires, so the finding reported a gap that was not there — three times in
+// thirteen episodes on Step C, identically worded. Its replacement needs a finalisation timestamp
+// no source this engine reads carries; `MISSING_DISCHARGE_NOTE_ID` stays reserved for it.
 
 test('ITEM 4: the six stent findings become one class — subject, not term list', () => {
   // The real IPNO-416 wordings, verbatim from the stored checkpoints.
@@ -1971,33 +1949,10 @@ test('ITEM 7: one vocabulary serves grouping and topicality — the same map, no
 });
 
 
-test('ITEM 2b: the discharge-note finding SURVIVES the whole finalise chain — the test that was missing', () => {
-  // ⚠️ THE FIRST VERSION OF THIS FINDING WAS DELETED ON EVERY EPISODE and the unit test above
-  // still passed, because it tested the constructor and not the pipeline. `dropJudgedOmissions`
-  // drops any divergence-pass omission carrying no `resolution`, which was exactly this finding's
-  // shape. IP-1483, IPNO-495 and IPNO-416 each reported "1 omission finding dropped" — this one.
-  const events = [
-    evt({ event_id: 'n0', day_index: 0 }), evt({ event_id: 'n1', day_index: 1 }),
-    evt({ event_id: 'disch', day_index: 3, event_type: 'discharge' }),
-  ];
-  const finding = missingDischargeDayNote(events, 3)!;
-  assert.ok(finding.resolution, 'it must look code-owned, because it is');
-  const res = finalizeFindings([finding], new Map(), events, 0, SOURCES, NORMATIVE);
-  assert.equal(res.counters.n_judged_omissions_dropped, 0, 'it is not a judged omission');
-  assert.equal(res.findings.length, 1, 'and it reaches the stored row');
-  const kept = res.findings[0];
-  assert.equal(kept.finding_id, MISSING_DISCHARGE_NOTE_ID);
-  assert.equal(kept.severity, 'major', 'at full weight — Tier A evidence, no citation needed (item 10)');
-  assert.equal(kept.verdict, 'divergent');
-  assert.equal(res.penalty_total, 8);
-  assert.equal(res.expectations_evaluated, 1);
-  assert.equal(res.divergence_index, 0, 'the only thing measured was missing');
-});
-
-
-// ═══════════════════════════════════════════════════════════════════════════════════════════════
-// ROUND 18 ITEM 2 — THE THIRD ESCALATION PATH
-// ═══════════════════════════════════════════════════════════════════════════════════════════════
+// ⚠️ THE DISCHARGE-NOTE PIPELINE TEST IS GONE WITH THE FINDING (decision 49). It existed because
+// the first version of `d-1` was silently deleted by `dropJudgedOmissions` on every episode while a
+// constructor-only unit test passed. That lesson is not lost — it is why `resolution` is checked on
+// every code-owned finding — but there is no longer a code-owned finding here to check.
 
 test('ITEM 2: a JUDGED divergent finding against an escalation entry cannot score', () => {
   // Round 17 closed the resolver path; dropJudgedOmissions closes judge-authored omissions. This

@@ -11,7 +11,7 @@ import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { isAdminUnlocked, adminTokenConfigured } from '@/lib/admin-cookie';
 import { episodeWorklist, dischargeEngineScores, IPD_EPISODE_ENGINE_VERSION } from '@/lib/ipd-episode/store';
-import { DischargeEngineScore, DivergenceCounts, EpisodeTabs, Locked, fmtDay } from './ui';
+import { DischargeEngineScore, DivergenceCounts, EpisodeTabs, InsufficientRecord, Locked, ScoringNote, fmtDay } from './ui';
 
 export const dynamic = 'force-dynamic';
 
@@ -115,6 +115,9 @@ export default async function EpisodeAuditList({ searchParams }: {
                         reader can act on — the counts, and the penalty and denominator behind them.
                         The band is still stored and still shown on the detail page. */}
                     <td className="px-3 py-2">
+                      {/* DECISION 51, and the scoring refusal decision 50 kept */}
+                      <ScoringNote status={r.scoring_status as string | null} />
+                      <InsufficientRecord evaluated={r.expectations_evaluated == null ? null : Number(r.expectations_evaluated)} />
                       <DivergenceCounts
                         penalty={r.penalty_total == null ? null : Number(r.penalty_total)}
                         evaluated={r.expectations_evaluated == null ? null : Number(r.expectations_evaluated)}

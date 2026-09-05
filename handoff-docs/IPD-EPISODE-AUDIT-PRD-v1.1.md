@@ -712,6 +712,47 @@ sits above what the ceiling can emit and should stop binding altogether. **The o
 with it:** `n_findings_truncated` should now read 0, and the limiter to watch becomes each pass's
 `finish_reason`. A pass cut off at the ceiling is a truncation failure, not a cap.
 
+### 1.26 Step E — decisions 49, 50, 51 and 52 (V, 2026-09-05)
+
+**DECISION 49 — the discharge-note gap finding is withdrawn.** `d-1` asked whether a PROGRESS NOTE
+existed on the discharge day and called its absence a `major` divergence. The document that must
+exist at discharge is the discharge SUMMARY, which selection already requires (§3.1) — so the
+finding reported a gap that was not there, on three of thirteen Step C episodes (IP-1362, IP-1497,
+IPNO-629), identically worded.
+
+⚠️ **The replacement decision 49 specifies — "discharge summary finalised N hours after discharge",
+context_dependent, minor, zero penalty — is NOT implemented, because no source this engine reads
+carries a finalisation time.** `kx_discharge_summary_records` gives `discharge_date_time` and
+`_create_time`, and `_create_time` is the mirror's **ingest** time (a contract test exists to keep it
+out of clinical use). `discharge_extracted_cases.extracted_json` carries no signing, finalisation or
+document date at any nesting level — **954 rows, zero occurrences**. Ingest time as a proxy would
+measure the mirror's pipeline and read as a statement about the ward. `MISSING_DISCHARGE_NOTE_ID`
+stays reserved so a future replacement cannot silently reuse `d-1` for a different claim.
+
+**DECISION 50 — no band is rendered anywhere.** `divergence_band` is still computed and stored, and
+`divergenceBandFor` and its tests are untouched, so history stays comparable. `DivergenceChip` is
+removed from both surfaces. The index stays on the detail page only, labelled `Internal index`, with
+its arithmetic shown and `band_uncertain`'s spread in words. ⚠️ **The chip carried a second job that
+had to survive it:** refusing to show a number when `scoring_status` is not `ok`. That is now
+`ScoringNote`, and both surfaces pass the status in — the list previously relied on the chip.
+
+**DECISION 51 — "insufficient record" below 30 evaluated expectations.** Three Step C episodes scored
+exactly **100** on admissions the engine could barely see. A perfect number on a tiny denominator
+reads as an endorsement rather than an absence of evidence, so both surfaces now say so in words and
+show the count the rate rests on. Nothing else changes for those rows.
+
+**DECISION 52 — after a procedure, every day is checkpointed until discharge.** `procedure_plus_2`
+and `procedure_plus_4` retire: sampling day 2 and day 4 was an arbitrary grid over a post-operative
+course and left the days between them unexamined. The run is `procedure_day_1`, `procedure_day_2`, …
+one per day, stopping at the pre-discharge day. `isProcedureEvent` is unchanged (decision 46).
+
+⚠️ **On a same-day collision the procedure family now wins the LABEL — inverting round 23.** A day
+that is both "24 hours after admission" and "the day of the operation" is clinically the latter, and
+the label is what tells a reader why the checkpoint exists. **The cutoff instant does not change**:
+the earliest for that day is kept either way, so the blinding is untouched — only the name moves.
+When the cap bites, `ANCHOR_PRIORITY` drops from the END of the post-procedure run and
+`pre_discharge` is never the thing dropped.
+
 ### 4.2a `unassessable` must be earned (added 2026-09-02, decision 33)
 
 A finding may carry `unassessable` only if its `evidence_basis` is empty or every cited source is Tier C. Anything else is rewritten to `context_dependent` in code and counted in `n_unassessable_rejected`. Resolver findings with `resolution = 'absent_class_missing'` are exempt: that gap was established by code rather than claimed by a model.
