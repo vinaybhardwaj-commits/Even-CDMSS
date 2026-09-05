@@ -270,6 +270,35 @@ export function readTransportAttribution(result: unknown): CdmssTransportAttribu
   return v && typeof v === 'object' ? (v as CdmssTransportAttribution) : undefined;
 }
 
+/**
+ * buildVertexParams — the Vertex request-body normalisation, in ONE place (decision 21).
+ *
+ * Vertex needs two things done to the engine's params, and BOTH are easy to forget:
+ *
+ *  1. STRIP the Ollama-only fields. Vertex rejects unknown fields, and `options` (num_ctx) and
+ *     `keep_alive` mean nothing to it.
+ *  2. RAISE max_tokens by 8192. Gemini 2.5 Pro is a THINKING model: max_tokens becomes
+ *     maxOutputTokens, and reasoning tokens are spent from it FIRST. The caps tuned for Ollama
+ *     (700–2200) are consumed by thinking and the JSON answer never gets written.
+ *
+ * ⚠️ THIS FUNCTION EXISTS BECAUSE FORGETTING (2) IS SILENT AND EXPENSIVE. Live lab run 1716bbe2
+ * sent the engine's raw params to Vertex: max_tokens 2200 against a 4096-token thinking budget.
+ * The model thought, ran out, and returned empty content — a 200 response, correctly attributed
+ * and duly billed at 13,904 microusd, that the engine could only report as `llmLegFailed`. Every
+ * status downstream said success because every one of them was true. The lab and production must
+ * build this body through the same function or the drift comes back.
+ */
+export function buildVertexParams(params: unknown, model: string): Record<string, unknown> {
+  const { options: _o, keep_alive: _k, ...rest } = params as Record<string, unknown>;
+  void _o; void _k;
+  const baseMax = Number((rest as { max_tokens?: number }).max_tokens) || 1024;
+  return {
+    ...rest,
+    model: vertexModelName(model),
+    max_tokens: baseMax + 8192,
+  };
+}
+
 export async function tracedChat(
   traceId: string,
   label: string,
@@ -520,24 +549,17 @@ export async function tracedChat(
         } else {
           beginProviderCall('gemini');
           try {
-            // Strip Ollama-only params (Vertex rejects unknown fields) + publisher-prefix the model.
-            const { options: _o, keep_alive: _k, ...rest } = params as Record<string, unknown>;
-            void _o; void _k;
-            // Gemini 2.5 Pro is a THINKING model: max_tokens (→ maxOutputTokens) is spent
-            // on internal reasoning tokens FIRST, so the tight caps tuned for Ollama
-            // (700–1500) leave no budget for the JSON answer and it truncates mid-string.
-            // Give the content budget PLUS a generous thinking allowance.
-            const baseMax = Number((rest as { max_tokens?: number }).max_tokens) || 1024;
-            const gParams: Record<string, unknown> = {
-              ...rest,
-              model: vertexModelName(opts!.gemini as string),
-              max_tokens: baseMax + 8192,
-            };
+            // Strip Ollama-only params, publisher-prefix the model, and add the thinking
+            // headroom — all of it in buildVertexParams, which the lab transport calls too
+            // (decision 21). The request body here is byte-identical to what this block built
+            // inline before the extraction; lib/lab-v2/__tests__/params-fidelity.test.ts holds
+            // the two paths equal.
+            const gParams: Record<string, unknown> = buildVertexParams(params, opts!.gemini as string);
             // Streaming calls otherwise carry NO token usage, so their spend is invisible to the LLM
             // cost tracker (this is why every /ask + /ddx pass was uncounted). Ask Vertex to emit a
             // final usage chunk. Off switch: LLM_STREAM_USAGE=0. Self-healing: if the endpoint rejects
             // the field we retry WITHOUT it (keep Gemini) rather than cascading to the Ollama fallback.
-            const wantUsage = Boolean((rest as { stream?: boolean }).stream) && process.env.LLM_STREAM_USAGE !== '0';
+            const wantUsage = Boolean((gParams as { stream?: boolean }).stream) && process.env.LLM_STREAM_USAGE !== '0';
             if (wantUsage) gParams.stream_options = { include_usage: true };
             // Study arm only — absent on the shipped uncapped default.
             if (thinkingBudget) gParams.google = { thinking_config: { thinking_budget: thinkingBudget } };
@@ -903,16 +925,23 @@ export async function governedLabChat(
     });
   }
   if (provider === 'openrouter') {
+    // The Ollama-only fields are stripped BEFORE buildOpenrouterParams, exactly as the traced
+    // path does it. buildOpenrouterParams adds the thinking headroom but does not remove these
+    // two, so calling it on raw params leaked `options` and `keep_alive` onto the wire —
+    // measured by the fidelity test, not assumed.
+    const { options: _o, keep_alive: _k, ...rest } = params as Record<string, unknown>;
+    void _o; void _k;
     const client = openrouterChatClient();
     const result = await client.chat.completions.create(
-      buildOpenrouterParams(model, { ...params, model: undefined }) as never, reqOpts);
+      buildOpenrouterParams(model, rest) as never, reqOpts);
     return attachTransportAttribution(result, {
       dispatched_provider: 'openrouter', dispatched_model: model, cloud_response_received: true,
     });
   }
   if (provider === 'vertex') {
     const client = await getGeminiChatClient();
-    const result = await client.chat.completions.create({ ...params, model: vertexModelName(model) }, reqOpts);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result = await client.chat.completions.create(buildVertexParams(params, model) as any, reqOpts);
     return attachTransportAttribution(result, {
       dispatched_provider: 'vertex', dispatched_model: model, cloud_response_received: true,
     });

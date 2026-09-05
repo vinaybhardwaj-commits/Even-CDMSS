@@ -10,7 +10,9 @@ import {
   deriveRunState, appliedMigrations,
 } from '../store';
 import { Gateway } from '../gateway';
-import { fixtureTransport } from '../transport';
+import { fixtureTransport, type Transport } from '../transport';
+import { opdAdapter } from '../adapters/opd';
+import { opdAuditPerAttemptMs } from '../../opd-note-audit';
 import { tick } from '../worker';
 import type { Adapter } from '../adapters/types';
 import { LabError, MAX_ATTEMPTS } from '../contracts';
@@ -33,6 +35,7 @@ const stubAdapter = (behaviour: 'ok' | 'fail' | 'hang' = 'ok'): Adapter => ({
   stages: ['analysis'],
   engineVersion: () => 'stub/1.0',
   frozenInputs: [],
+  perAttemptTimeoutMs: 1_000,
   async run(ctx) {
     if (behaviour === 'fail') throw new LabError('STORE_UNAVAILABLE', 'stub failure');
     if (behaviour === 'hang') await new Promise((r) => setTimeout(r, 50));
@@ -279,6 +282,35 @@ test('decision 16: the cap is enforced at RESERVATION, which is what still bound
   const row = await getBudget(db, budget.id);
   assert.equal(Number(row!.spent_microusd), 0);
   assert.equal(Number(row!.reserved_microusd), 0);
+  await db.close();
+});
+
+// ── decision 22 — every stage call carries a ceiling ─────────────────────────────────
+test('decision 22: the gateway applies the engine ceiling, and a stage override outranks it', async () => {
+  const db = await freshDb();
+  const { run, budget } = await seedRun(db, 1);
+  const item = (await itemsOf(db, run.id))[0];
+
+  const seen: (number | undefined)[] = [];
+  const spy: Transport = async (req) => { seen.push(req.timeoutMs); return fixtureTransport()(req); };
+
+  // No stage override → the engine's own per-attempt ceiling, supplied by the adapter.
+  await new Gateway({
+    db, itemId: item.id, leaseToken: 0, budgetId: budget.id, transport: spy,
+    stages: { analysis: { provider: 'ollama', model: 'local-model', max_cost_microusd: 5_000 } },
+    defaultTimeoutMs: opdAdapter.perAttemptTimeoutMs,
+  }).call('analysis', { messages: [] });
+
+  // A stage that names its own timeout_ms wins.
+  await new Gateway({
+    db, itemId: item.id, leaseToken: 0, budgetId: budget.id, transport: spy,
+    stages: { analysis: { provider: 'ollama', model: 'local-model', max_cost_microusd: 5_000, options: { timeout_ms: 12_345 } } },
+    defaultTimeoutMs: opdAdapter.perAttemptTimeoutMs,
+  }).call('analysis', { messages: [] });
+
+  assert.deepEqual(seen, [380_000, 12_345]);
+  // The ceiling is the engine's, read from PROVIDER_BUDGETS — not a number the lab invented.
+  assert.equal(opdAdapter.perAttemptTimeoutMs, opdAuditPerAttemptMs());
   await db.close();
 });
 

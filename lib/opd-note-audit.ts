@@ -1054,6 +1054,23 @@ function opdAuditBudget(provider: 'openrouter' | 'bedrock' = 'openrouter'): { pe
   return b;
 }
 
+/**
+ * LAB-MCP-V2 decision 22 — the OPD audit's PER-ATTEMPT transport ceiling, for the lab.
+ *
+ * The same number `defaultGenerate` passes as `timeoutMs` (its `budget.perAttemptMs`), read from
+ * the same PROVIDER_BUDGETS row rather than restated, so the two can never drift. It exists
+ * because the lab's gateway had NO ceiling: a stage call inherited the OpenAI client default and
+ * a slow note could sit far past the point where the tick's own 500 s budget had given up.
+ *
+ * ⚠️ NOT A NEW NUMBER, and it must not become one. `opdAuditBudget()` and its call site inside
+ * defaultGenerate are unchanged — three existing guards (route-budget-guard, llm-call-bounds,
+ * provider-switch-unit-d) assert that call site's exact source text, and the box arithmetic
+ * (perAttemptMs x maxTries x legs <= maxDuration) is computed from it.
+ */
+export function opdAuditPerAttemptMs(): number {
+  return opdAuditBudget().perAttemptMs;
+}
+
 async function defaultGenerate(traceId: string | undefined, system: string, user: string, mini = false, evalModel?: string, onEnvelope?: (e: LlmEnvelope) => void, deadlineAt?: number, bedrockModel?: string): Promise<string> {
   // EVAL-ONLY (lab): route to OpenRouter when an eval model is named. evalModel unset ⇒ the Gemini/mini
   // path below is byte-identical to today (no production audit ever passes evalModel).

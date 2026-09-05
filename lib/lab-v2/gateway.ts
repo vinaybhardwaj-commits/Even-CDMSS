@@ -38,6 +38,12 @@ export interface GatewayDeps {
   transport: Transport;
   stages: Record<string, StageSpec>;
   signal?: AbortSignal;
+  /**
+   * Decision 22 — the engine's per-attempt ceiling, supplied by the adapter. An arm stage may
+   * override it with `options.timeout_ms`; absent both, the call runs on the SDK client default,
+   * which is the state the live run was in.
+   */
+  defaultTimeoutMs?: number;
 }
 
 export interface StageResult { text: string; completion: unknown; actualMicrousd: number | null }
@@ -87,8 +93,11 @@ export class Gateway {
 
     // 3. Dispatch.
     let result;
+    // Decision 22 — the arm's own ceiling when it names one, else the engine's.
+    const stageTimeout = Number(spec.options?.timeout_ms);
+    const timeoutMs = Number.isFinite(stageTimeout) && stageTimeout > 0 ? stageTimeout : this.deps.defaultTimeoutMs;
     try {
-      result = await transport({ provider: spec.provider, model: spec.model, params, signal: this.deps.signal });
+      result = await transport({ provider: spec.provider, model: spec.model, params, timeoutMs, signal: this.deps.signal });
     } catch (e) {
       // A transport error with no usage: we cannot know whether the money was spent, so
       // it stays against the cap in `unknown` until an operator reconciles it (§6.3).

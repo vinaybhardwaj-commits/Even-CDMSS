@@ -114,7 +114,14 @@ async function runItem({ db, transport, item, workerId, adapters }: RunItemArgs)
 
   const stages = (payload.arm?.stages ?? {}) as Record<string, StageSpec>;
   const budgetId = String(payload.budget_id ?? '');
-  const gateway = new Gateway({ db, itemId: item.id, leaseToken, budgetId, transport, stages, signal: controller.signal });
+  // Resolved BEFORE the gateway, because decision 22 makes the gateway's default ceiling the
+  // adapter's. A missing adapter is still handled below, as an ENGINE_UNSUPPORTED failure.
+  const adapter = adapters[String(payload.engine ?? '')];
+  const gateway = new Gateway({
+    db, itemId: item.id, leaseToken, budgetId, transport, stages,
+    signal: controller.signal,
+    defaultTimeoutMs: adapter?.perAttemptTimeoutMs,
+  });
 
   let state: ItemState = 'failed';
   let execution: ExecutionStatus = 'failed';
@@ -124,7 +131,6 @@ async function runItem({ db, transport, item, workerId, adapters }: RunItemArgs)
   let outcome = 'failed';
 
   try {
-    const adapter = adapters[String(payload.engine ?? '')];
     if (!adapter) throw new LabError('ENGINE_UNSUPPORTED', `no round-1 adapter for engine '${payload.engine}'`);
 
     const outcomeOfRun = await adapter.run({

@@ -50,5 +50,12 @@ export interface Adapter {
   engineVersion(): string;
   /** The frozen inputs this engine needs, reported by `engine_describe`. */
   frozenInputs: readonly string[];
+  /**
+   * Decision 22 — the per-attempt transport ceiling for this engine's model calls, in ms.
+   * The gateway applies it to every stage call unless the arm's stage overrides it with
+   * `options.timeout_ms`. Without it a stage call inherits the SDK client default, which is
+   * unrelated to the engine's own budget and to the tick's 500 s elapsed bound.
+   */
+  perAttemptTimeoutMs: number;
   run(ctx: AdapterContext): Promise<AdapterOutcome>;
 }

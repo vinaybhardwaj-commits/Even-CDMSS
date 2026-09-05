@@ -20,7 +20,7 @@
  *   · getLvcRules, doctorSpecialtyFor, the db13 complexity fetch → frozen. (§8.1)
  */
 import { withLabExecution, exitLabExecution } from '../../lab-execution-context';
-import { auditOpdNote, type OpdLabDependencies } from '../../opd-note-audit';
+import { auditOpdNote, opdAuditPerAttemptMs, type OpdLabDependencies } from '../../opd-note-audit';
 import { OPD_ENGINE_VERSION } from '../../opd-note-audit-core';
 import { retrieve as productionRetrieve, type RetrieveOptions, type RetrieveResult } from '../../retrieve';
 import { hash, opdFrozenSchema, OPD_STAGES, type OpdFrozen } from '../contracts';
@@ -59,6 +59,9 @@ export function makeOpdAdapter(deps: OpdAdapterDeps = {}): Adapter {
   stages: OPD_STAGES,
   engineVersion: () => OPD_ENGINE_VERSION,
   frozenInputs: ['note', 'specialty', 'complexity', 'lvc_rules', 'suppressions', 'quieting_config'],
+  // Decision 22 — the engine's own per-attempt ceiling, read from PROVIDER_BUDGETS through
+  // lib/opd-note-audit.ts. Not restated here: one number, one source.
+  perAttemptTimeoutMs: opdAuditPerAttemptMs(),
 
   async run(ctx: AdapterContext): Promise<AdapterOutcome> {
     const parsed = opdFrozenSchema.safeParse(ctx.frozen);
