@@ -12,7 +12,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
-  buildOrderEvents, checkpointPlanFromEvents, eventsBeforeCutoff, MAX_CHECKPOINTS, collapseSpaces, dayIndexFor, dayStartIso, diffPassEvents,
+  buildOrderEvents, checkpointPlanFromEvents, eventsBeforeCutoff, isProcedureEvent, MAX_CHECKPOINTS, collapseSpaces, dayIndexFor, dayStartIso, diffPassEvents,
   episodeLevelEvents, eventsBeforeDayStart, fidelityPassEvents, isoFromEpochMs, losDaysFor,
   noteSummaryFrom, normalizeAuthorName, parseComponentJson, componentValue, tierForTable,
   queryNarrativeFrom, QUERY_FALLBACK_CAP, stripMarkup,
@@ -174,6 +174,56 @@ test('DECISION 43: checkpoints are anchored to EVENTS, and blinding is re-derive
   assert.equal(plan.filter((p) => p.checkpoint_type === 'episode').length, 1);
   assert.equal(plan[plan.length - 1].checkpoint_type, 'episode');
   assert.equal(new Set(plan.map((p) => p.day_index)).size >= plan.length - 1, true, 'days deduplicated');
+});
+
+test('DECISION 46: only an OT note or a `Surgery` order anchors a procedure checkpoint', () => {
+  // ⚠️ WHAT THE LOOSE TEST DID, MEASURED. `Procedure` is the billing category this mirror files
+  // GRBS, nebulisation, IV cannulation, dressings, crossmatch and dialysis under, and the first
+  // version matched it as a substring: 16 of the 20 procedure anchors across the twelve episodes
+  // were set by lines like these, six by GRBS alone. They also ate the budget — with the plan
+  // capped at MAX_CHECKPOINTS, no `procedure_plus_4` checkpoint existed anywhere in the cohort.
+  const admit = '2026-08-01T06:00:00.000Z';
+  const order = (id: string, iso: string, service: string, name: string): EpisodeEvent => ({
+    event_id: id, occurred_at: iso, day_index: 0, event_type: 'order', summary: name,
+    detail: { service_type: service, ordered_item_name: name },
+    author_name: null, author_role: null, responsible_clinician_id: null,
+    provenance: { source_table: 'billing', source_record_id: id, source_timestamp: iso }, evidence_tier: 'B',
+  });
+  const glucose = order('b1', '2026-08-02T09:00:00.000Z', 'Procedure', 'GRBS');
+  const neb = order('b2', '2026-08-03T09:00:00.000Z', 'Procedure', 'NEBULISATION');
+  const otCharge = order('b3', '2026-08-04T09:00:00.000Z', 'OT Charge', 'OT CHARGES');
+  const surgery = order('b4', '2026-08-05T09:00:00.000Z', 'Surgery', 'DJ STENTING');
+
+  assert.equal(isProcedureEvent(glucose), false, 'a finger-prick glucose is not a procedure anchor');
+  assert.equal(isProcedureEvent(neb), false);
+  assert.equal(isProcedureEvent(otCharge), false, 'nor is a theatre CHARGE — the OT note is the event');
+  assert.equal(isProcedureEvent(surgery), true, 'a Surgery order is');
+  assert.equal(isProcedureEvent({ ...glucose, event_type: 'ot_note' }), true, 'and an OT note always is');
+
+  // exact match, not substring: `Procedure` must not slip back in through a looser test
+  assert.equal(isProcedureEvent(order('b5', '2026-08-06T09:00:00.000Z', 'Day Care Surgery Procedure', 'X')), false,
+    'a compound service type containing the word is not `Surgery`');
+  assert.equal(isProcedureEvent(order('b6', '2026-08-06T09:00:00.000Z', ' surgery ', 'X')), true,
+    'but whitespace and case do not matter');
+
+  // and the plan follows: the glucose and nebulisation days are no longer checkpoints
+  const mk = (id: string, iso: string, type: EpisodeEvent['event_type'] = 'note'): EpisodeEvent => ({
+    event_id: id, occurred_at: iso, day_index: 0, event_type: type, summary: '', detail: {},
+    author_name: null, author_role: null, responsible_clinician_id: null,
+    provenance: { source_table: 't', source_record_id: id, source_timestamp: iso }, evidence_tier: 'A',
+  });
+  const plan = checkpointPlanFromEvents({
+    admittedAt: admit, dischargedAt: '2026-08-12T10:00:00.000Z', losDays: 11,
+    events: [mk('adm', admit, 'admission'), glucose, neb, otCharge, surgery],
+  });
+  const procDays = plan.filter((p) => p.anchor_kind === 'procedure').map((p) => p.day_index);
+  // ⚠️ ONE anchor, and its day_index is 5 for a surgery on day 4: the cutoff is the END of the
+  // procedure day, so the checkpoint can see the procedure itself, and the day is read off the
+  // cutoff. The label names the moment the checkpoint looks BACK from, not the day it looks at.
+  assert.deepEqual(procDays, [5], 'one procedure anchor, cutting off at the end of the surgery day');
+  // with the spurious anchors gone there is room for the follow-up window that never existed
+  assert.ok(plan.some((p) => p.anchor_kind === 'procedure_plus_4'),
+    'and the +4 follow-up finally fits inside the cap');
 });
 
 test('DECISION 43: blinding — each anchor sees only what precedes its own cutoff', () => {

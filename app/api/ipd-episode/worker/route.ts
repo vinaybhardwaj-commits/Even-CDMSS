@@ -29,7 +29,11 @@ export const runtime = 'nodejs';
  *     and the resolver still see every event.
  *
  * THE CEILING, STATED IN THE UNITS THAT ACTUALLY BIND:
- *   · checkpoints: 8 is the maximum the plan can produce (7 daily + 1 episode, decision 24).
+ *   · checkpoints: 8 is the maximum the plan can produce, but NOT as "7 daily + 1 episode".
+ *     Decision 43 replaced the calendar plan with event anchors — the first 24 hours, each
+ *     procedure day and its follow-ups, the pre-discharge window, and the episode — so the count
+ *     now varies with what happened rather than with length of stay, and a long admission can
+ *     produce fewer checkpoints than a short one with more surgery. MAX_CHECKPOINTS caps it at 8.
  *     At 3-way concurrency that is 3 waves.
  *   · events: the prompt-side count, not the assembled count. `prompt_events` and
  *     `assembled_events` are both recorded on every audit row; if prompt_events climbs back above

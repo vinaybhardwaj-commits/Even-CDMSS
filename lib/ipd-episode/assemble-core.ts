@@ -267,14 +267,30 @@ export const PRE_DISCHARGE_HOURS = 24;
 const HOUR_MS = 3_600_000;
 const shiftIso = (iso: string, ms: number): string => new Date(Date.parse(iso) + ms).toISOString();
 
-/** A billing line that IS a procedure, for anchoring when there is no OT note. */
-const PROCEDURE_SERVICE = /procedure|surgery|ot charge/i;
+/**
+ * DECISION 46 (V, 2026-09-05) — A PROCEDURE ANCHOR COMES ONLY FROM AN OT NOTE OR A `Surgery` ORDER.
+ *
+ * ⚠️ WHAT THE LOOSE TEST COST, MEASURED ON THE TWELVE. The first version matched
+ * `/procedure|surgery|ot charge/` against `service_type`, and `Procedure` is the billing category
+ * this mirror puts GRBS, nebulisation, IV cannulation, dressings, crossmatch and dialysis in.
+ * SIXTEEN OF THE TWENTY procedure anchors on the cohort were set by lines like those — six by GRBS
+ * alone. A finger-prick glucose is not a moment an admission turns on.
+ *
+ * It also silently truncated the plan. Anchors are capped at MAX_CHECKPOINTS, so the spurious
+ * procedure days consumed the budget and NO `procedure_plus_4` CHECKPOINT EXISTED ANYWHERE in the
+ * cohort — the follow-up window decision 43 was written to add was crowded out by nebulisations
+ * before it could ever be scheduled.
+ *
+ * `Surgery` is matched EXACTLY (trimmed, case-insensitively), not as a substring, for the same
+ * reason decision 41 matches discharge types exactly: a substring test is how `Procedure` got in.
+ */
+const SURGERY_SERVICE_TYPE = 'surgery';
 
 export function isProcedureEvent(e: EpisodeEvent): boolean {
   if (e.event_type === 'ot_note') return true;
   if (e.event_type !== 'order') return false;
   const d = e.detail as Record<string, unknown>;
-  return PROCEDURE_SERVICE.test(String(d?.service_type ?? ''));
+  return String(d?.service_type ?? '').trim().toLowerCase() === SURGERY_SERVICE_TYPE;
 }
 
 /**
@@ -293,14 +309,16 @@ export function isProcedureEvent(e: EpisodeEvent): boolean {
  * The anchors are the moments an admission actually turns on:
  *
  *   first_24h          admission + 24h — the first day as a WINDOW, not an instant
- *   procedure          the day of each procedure (OT note, or a procedure/surgery billing line)
+ *   procedure          the day of each procedure (an OT note, or a `Surgery` order — decision 46)
  *   procedure_plus_2   two days after each procedure
  *   procedure_plus_4   four days after each procedure
  *   pre_discharge      24h before discharge — the decision to send the patient home
  *   episode            unchanged: the whole admission, discharge event excluded
  *
- * Anchors falling on the same DAY collapse to one (the earliest cutoff wins, so the checkpoint sees
- * least), and the total is capped at MAX_CHECKPOINTS with the episode-level one always kept.
+ * Anchors falling on the same DAY collapse to one, and ANCHOR_PRIORITY decides which survives — not
+ * the earlier cutoff, which is what the first version did and how IPNO-495 lost its pre-discharge
+ * view of day 10 to a procedure follow-up. The total is capped at MAX_CHECKPOINTS by the same
+ * priority, with the episode-level checkpoint always kept.
  *
  * ⚠️ BLINDING IS UNCHANGED IN PRINCIPLE AND RE-DERIVED PER ANCHOR: each checkpoint sees only events
  * strictly BEFORE its own cutoff, always the admission event, never the discharge event. The

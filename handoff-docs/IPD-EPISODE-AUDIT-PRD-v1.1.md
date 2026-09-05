@@ -653,6 +653,45 @@ verified.
 | 7 | **Paper artefacts and unestablished antecedents are unassessable.** Informed consent and preoperative clearance sit outside every data class this engine reads; and a treponemal confirmatory test was scored absent with no evidence the VDRL was ever positive. |
 | 8 | **Two scoring bugs.** `expectations_evaluated = 0` produced `divergence_index 0` with status `ok` — zero is the WORST value on this scale, so the arithmetic reported the most alarming reading of an episode nothing had been measured on. It is now `nothing_evaluable`, a hard failure with a null index. ⚠️ **The band was NOT inherited**: IPNO-495 read `substantial` on all three runs because 0 and 75 are substantial under the thresholds in force then (90/70/45, 97/90/80) and 78 is under today's 95/88/80. Pinned by test rather than assumed. |
 
+### 1.24 Round 24 — decisions 45 and 46, and the band leaves the worklist (V, 2026-09-05)
+
+Verified on the round-23 re-run from Neon: 36 of 39 divergent findings are supported by a quotable
+event, none is contradicted outright, and the checkpoint plans matched the prediction 12 of 12. Two
+defects remained, and both make a finding **say something false**. Both hid findings V had named.
+
+**DECISION 45 — grouping never merges members with different resolutions.** The key returns to
+round 12's `section | subject | resolution`, and round 23's matcher-term-overlap second pass is
+removed entirely. Round 23 took `resolution` out of the key so a standing expectation raised at six
+checkpoints would be one finding rather than six — correct, and it stays, keyed on the subject. What
+it also allowed:
+
+- **IPNO-495 r-16**, `group_size` 8, read *"The record shows it: lab_order on day 5 matching cbc"* —
+  ⚠️ **two blood-culture divergences merged into a CBC match**, and the CBC was then reported as the
+  evidence that the cultures were drawn. A culture never sent was recorded as done.
+- **IPNO-495 r-29**, `group_size` 5, let one day-5 note (*"peripheral pulses present"*) speak for
+  days 5, 6, 7, 8 and 10 — four days on which nothing was checked.
+
+Both are round 12's concordant-erasure returning by a new route. Two expectations are one class when
+their **subjects** canonicalise alike, never because their term lists resemble each other: this
+engine does not infer identity from resemblance, and the citation guard says so in the same words.
+The best-evidenced-member rank stays but is no longer load-bearing — every member of a group now
+shares a resolution.
+
+**DECISION 46 — a procedure anchor comes only from an `ot_note` event or an order whose
+`service_type` is `Surgery`**, matched exactly (trimmed, case-insensitive), as decision 41 matches
+discharge types. `Procedure` is the billing category this mirror files GRBS, nebulisation, IV
+cannulation, dressings, crossmatch and dialysis under. ⚠️ **16 of the 20 procedure anchors across the
+twelve episodes were set by lines like those — six by GRBS alone.** They also truncated the plan:
+anchors are capped at `MAX_CHECKPOINTS`, so the spurious days consumed the budget and **no
+`procedure_plus_4` checkpoint existed anywhere in the cohort** — the follow-up window decision 43 was
+written to add was crowded out by nebulisations before it could be scheduled.
+
+**The band leaves the worklist.** It is a function of the index, so it moves with it, and after
+decision 44 removed every unverified absence from the score, eight of twelve episodes banded
+identically — a column that separated nothing while looking like a judgement. The list now shows the
+divergent count and, beside it, the **context-dependent** count, and sorts by both. The band is still
+stored and still shown on drill-in.
+
 ### 4.2a `unassessable` must be earned (added 2026-09-02, decision 33)
 
 A finding may carry `unassessable` only if its `evidence_basis` is empty or every cited source is Tier C. Anything else is rewritten to `context_dependent` in code and counted in `n_unassessable_rejected`. Resolver findings with `resolution = 'absent_class_missing'` are exempt: that gap was established by code rather than claimed by a model.

@@ -517,7 +517,7 @@ export async function episodeWorklist(a: { limit?: number; sort?: 'divergence' |
             los_days, discharge_type, divergence_index, divergence_band, band_uncertain,
             scoring_status, completeness_pct,
             n_findings, n_divergent, n_unassessable, n_low_value, n_divergence_pass, n_fidelity_pass,
-            n_concordant, capped_count, run_seq,
+            n_concordant, n_context_dependent, capped_count, run_seq,
             penalty_total, expectations_evaluated,
             checkpoint_count, audited_at
      FROM ipd_episode_audits

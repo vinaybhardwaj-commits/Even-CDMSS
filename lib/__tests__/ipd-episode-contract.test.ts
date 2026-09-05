@@ -804,13 +804,22 @@ test('the band is stored, and the reason is recorded in the code where the next 
   assert.ok(sqlText.includes('±5 repeat-run spread'), 'the DDL says why the band exists');
 });
 
-test('the raw index never appears on the list, and the list cannot be sorted by it', () => {
+test('ROUND 24 ITEM 3: neither the index nor the band appears on the list, and it sorts by counts', () => {
   const list = code('app/admin/ipd-audit/episodes/page.tsx');
   assert.ok(!list.includes('divergence_index'), 'the number is not rendered on the list at all');
   assert.ok(!/sort === 'divergence'/.test(list), 'and there is no index sort');
-  assert.ok(list.includes("sp.sort === 'band'"), 'sorting is by band');
+  // ⚠️ THE BAND LEFT THIS SURFACE IN ROUND 24. It is a function of the index, so it moves with it,
+  // and once decision 44 removed every unverified absence from the score, eight of twelve episodes
+  // banded identically — a column that separates nothing while looking like a judgement.
+  assert.ok(!list.includes('DivergenceChip'), 'the list renders no band chip');
+  assert.ok(!list.includes('divergence_band'), 'and reads no band field');
+  assert.ok(!/sp\.sort === 'band'/.test(list), 'and cannot be sorted by one');
   assert.ok(list.includes('(num(b.n_divergent) ?? 0) - (num(a.n_divergent) ?? 0)'),
-    'then by divergent COUNT within band — a count does not move the way the index does');
+    'it sorts by divergent COUNT — a count does not move the way a rate does');
+  assert.ok(list.includes('(num(b.n_context_dependent) ?? 0) - (num(a.n_context_dependent) ?? 0)'),
+    'then by the count of findings it could not settle either way');
+  assert.ok(list.includes('n_context_dependent'), 'which is also a column of its own');
+  assert.ok(list.includes("'findings'"), 'and that is the default sort');
 });
 
 test('the index IS available on drill-in, labelled with its spread', () => {
@@ -1159,10 +1168,10 @@ test('scoring_status is stored and the UI refuses to render a number without one
   const ui = code('app/admin/ipd-audit/episodes/ui.tsx');
   assert.ok(ui.includes('not scorable'), 'the chip says so in words');
   assert.ok(/if \(st !== 'ok' \|\| !band\)/.test(ui), 'any status but ok suppresses the band too');
-  // both surfaces pass the status in
-  for (const f of ['app/admin/ipd-audit/episodes/page.tsx', 'app/admin/ipd-audit/episodes/[id]/page.tsx']) {
-    assert.ok(read(f).includes('scoring_status'), `${f} passes scoring_status to the chip`);
-  }
+  // ⚠️ ONE surface passes the status in, not two. Round 24 item 3 removed the band chip from the
+  // LIST; the detail page still renders it and still must refuse to band an unscorable episode.
+  assert.ok(read('app/admin/ipd-audit/episodes/[id]/page.tsx').includes('scoring_status'),
+    'the detail page passes scoring_status to the chip');
 });
 
 // ── V's 2026-09-02 widening: cite anything, but price it ─────────────────────────────────────
@@ -1255,18 +1264,18 @@ test('an uncited entry is never repaired by guessing — the count is the whole 
   // ⚠️ THE EXCLUSIONS ARE THE POINT OF THIS TEST, AND THEY ARE NARROW ON PURPOSE. The rule is that
   // no citation is ever inferred from text resemblance; it is enforced by forbidding the vocabulary
   // of resemblance anywhere near the citation path. `similarity` was excluded in round 5 because
-  // retrieval's floor decides which excerpts are SHOWN, never which a finding used. Round 23 adds
-  // `termsOverlap` — the expectation GROUPING helper, which compares two matchers' terms to decide
-  // whether they are one clinical concern. It touches no citation and no excerpt, and its name is
-  // stripped rather than the whole word, so a genuine `overlap` elsewhere in the citation path
-  // still fails this test.
+  // retrieval's floor decides which excerpts are SHOWN, never which a finding used.
+  //
+  // Round 23 added a second exclusion, `termsOverlap`, for a grouping helper that decided whether
+  // two expectations were one clinical concern by comparing their term lists. DECISION 45 DELETED
+  // THAT HELPER — it merged blood cultures into a CBC on IPNO-495 and reported the CBC as the
+  // evidence the cultures were drawn, which is the exact failure this test's rule exists to
+  // prevent, one field over. The exclusion is removed with it: the list is back to one.
   for (const f of ENGINE_FILES) {
     const src = code(f)
       .replace(/citation_ids/g, '')
       .replace(/[Ss]imilarity/g, '')
-      .replace(/MIN_SIMILARITY/g, '')
-      .replace(/termsOverlap/g, '')
-      .replace(/share at least half of the smaller term set/g, '');
+      .replace(/MIN_SIMILARITY/g, '');
     assert.ok(!/overlap|fuzzy/i.test(src), `${f} must not infer a citation from text similarity`);
   }
   // and the count is never repaired into a citation
@@ -1684,11 +1693,16 @@ test('ROUND 15: every column the worklist PAGE reads is named in the worklist QU
     assert.ok(new RegExp(`\\b${field}\\b`).test(select),
       `the page reads r.${field}, so the worklist SELECT must name it`);
   }
-  // and the three that were missing are explicitly among them now
+  // ⚠️ THE THREE THAT WERE MISSING STAY IN THE SELECT EVEN THOUGH ROUND 24 STOPPED THE LIST FROM
+  // READING THEM. They are still stored, still shown on drill-in, and a future surface that puts a
+  // band back on this list must not rediscover `undefined` the way round 9 did.
   for (const field of ['divergence_band', 'band_uncertain', 'scoring_status']) {
-    assert.ok(readFields.has(field), `${field} is read by the page`);
     assert.ok(new RegExp(`\\b${field}\\b`).test(select), `${field} is selected`);
   }
+  assert.ok(!readFields.has('divergence_band'), 'and the list itself no longer reads the band');
+  // the count round 24 added is read AND selected — the same pairing, checked the same way
+  assert.ok(readFields.has('n_context_dependent') && /\bn_context_dependent\b/.test(select),
+    'n_context_dependent is both read by the page and named in the query');
 });
 
 test('ROUND 15 ITEM 1: the absolutes are stored, selected and rendered beside the band', () => {

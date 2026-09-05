@@ -278,23 +278,23 @@ test('GROUPING: term order and case do not split a class, but a different drug d
   assert.equal(out.find((f) => f.group_size === 2)?.grouped_days.length, 2);
 });
 
-test('ROUND 23 ITEM 5: one class may now hold a done day and a missed one — and the DONE day wins', () => {
-  // ⚠️ THIS REPLACES "grouping never merges a done day into a missed one". Resolution and verdict
-  // have LEFT the key, because on IPNO-495 they were splitting one standing concern into several
-  // findings — "monitor renal function" raised on four days, found on two and not on two, became
-  // two findings and was charged twice. 41% of that episode's penalty was duplication.
+test('GROUPING NEVER MERGES A DONE DAY INTO A MISSED ONE — that is concordant-erasure', () => {
+  // ⚠️ RESTORED BY DECISION 45, AFTER ROUND 23 REMOVED IT AND THE DEFECT CAME STRAIGHT BACK.
+  // Round 23 took `resolution` out of the key so that a standing expectation raised on six days
+  // would be one finding rather than six. It was — and IPNO-495 r-29 then let a single day-5 note
+  // ("peripheral pulses present") speak for days 5, 6, 7, 8 and 10, four of which nothing was
+  // checked on. One finding, five days, one observation, and a statement that read as though the
+  // whole group had been verified.
   //
-  // The concordant-erasure lesson still holds, from the other direction: the group takes the
-  // BEST-EVIDENCED member, so if the thing happened once the episode cannot carry a finding saying
-  // it never did. What round 12 prevented by splitting, this prevents by ranking.
+  // Deduplication across checkpoints survives; it is keyed on section and SUBJECT. What may never
+  // merge is two different ANSWERS to the same question.
   const e = dayEntry(0, ['enoxaparin']);
   const done = { resolution: 'present' as const, verdict: 'concordant' as const };
   const missed = { resolution: 'absent_class_present' as const, verdict: 'context_dependent' as const };
   const key = (o: { resolution: 'present' | 'absent_class_present'; verdict: 'concordant' | 'context_dependent' }) =>
     resolverGroupKey(e, { ...o, severity: 'major', statement: 's', matchedEvent: null, matchedTerm: null, confound: null });
-  assert.equal(key(done), key(missed), 'one expectation is one class, however each day resolved');
+  assert.notEqual(key(done), key(missed), 'the same expectation with two different answers is two findings');
 
-  // and the found day speaks for it
   const ev0 = drugOrder('ENOXAPARIN 40MG', 0);
   const found = { entry: dayEntry(0, ['enoxaparin']), outcome: {
     resolution: 'present' as const, verdict: 'concordant' as const, severity: 'major' as const,
@@ -304,10 +304,41 @@ test('ROUND 23 ITEM 5: one class may now hold a done day and a missed one — an
     statement: 'not detected', matchedEvent: null, matchedTerm: null, confound: null } };
   for (const order of [[found, notFound], [notFound, found]]) {
     const out = findingsFromResolved(order, domainForSection);
-    assert.equal(out.length, 1, 'one finding');
-    assert.equal(out[0].verdict, 'concordant', 'the day it was found speaks for the class');
-    assert.equal(out[0].group_size, 2);
+    assert.equal(out.length, 2, 'the found day and the unfound day are separate findings');
+    assert.ok(out.every((f) => f.group_size === 1), 'and neither absorbed the other');
+    const concordant = out.find((f) => f.verdict === 'concordant')!;
+    assert.ok(concordant.evidence_basis.length > 0, 'the found day carries its event');
+    assert.equal(out.find((f) => f.verdict === 'context_dependent')!.evidence_basis.length, 0,
+      'and the unfound day claims no evidence it does not have');
   }
+});
+
+test('DECISION 45: two expectations are one class by SUBJECT, never by term resemblance', () => {
+  // ⚠️ IPNO-495 r-16, `group_size` 8, said: "The record shows it: lab_order on day 5 matching cbc"
+  // — and two of its eight members were BLOOD CULTURE expectations. Round 23's second pass merged
+  // any two classes sharing half the smaller term set, so "blood cultures" and "repeat CBC" became
+  // one class and the CBC's match was then reported as the evidence that the cultures were drawn.
+  // A culture that was never sent was recorded as done, in a finding a reader would have believed.
+  const cultures = entry({ ref: 'cp-d1/diagnostics/1', checkpointId: 'cp-d1', dayIndex: 1, section: 'diagnostics',
+    item: 'Blood cultures drawn before the first antibiotic dose',
+    matcher: { kind: 'lab', terms: ['blood culture', 'culture', 'cbc differential'] } });
+  const cbc = entry({ ref: 'cp-d1/diagnostics/2', checkpointId: 'cp-d1', dayIndex: 1, section: 'diagnostics',
+    item: 'Repeat CBC to follow the white cell count',
+    matcher: { kind: 'lab', terms: ['cbc', 'complete blood count'] } });
+  assert.notEqual(resolverGroupKey(cultures, {
+    resolution: 'present', verdict: 'concordant', severity: 'moderate', statement: 's',
+    matchedEvent: null, matchedTerm: null, confound: null }),
+    resolverGroupKey(cbc, {
+      resolution: 'present', verdict: 'concordant', severity: 'moderate', statement: 's',
+      matchedEvent: null, matchedTerm: null, confound: null }),
+    'blood cultures and a repeat CBC are two clinical questions, however their term lists overlap');
+
+  // and end to end: a CBC on the record answers the CBC, never the cultures
+  const out = resolvedFor([cultures, cbc], [labOrder('CBC', 1)]);
+  assert.equal(out.length, 2, 'two findings');
+  const culturesFinding = out.find((f) => /culture/i.test(f.statement))!;
+  assert.ok(!/cbc/i.test(culturesFinding.statement.replace(/cbc differential/ig, '')),
+    'the cultures finding does not cite a CBC as its evidence');
 });
 
 test('GROUPING: sections never merge, and severity takes the WORST member', () => {

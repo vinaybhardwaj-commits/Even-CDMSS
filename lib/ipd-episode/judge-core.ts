@@ -1520,8 +1520,10 @@ const TIER_RANK: Record<EvidenceTier, number> = { A: 0, B: 1, C: 2 };
  * The matcher's terms are folded in as canonical words too, which is what pulls the six stent
  * findings together: whatever each day's phrasing, they all reduce to {stent}.
  *
- * `resolution` and `verdict` STAY IN THE KEY, unchanged from round 12 and for the same reason: a
- * day the thing happened must never merge into a group saying it did not.
+ * `resolution` STAYS IN THE KEY (decision 45), for round 12's reason: a day the thing happened must
+ * never merge into a group saying it did not. `verdict` does not — it is a function of the
+ * resolution and the evidence, so keying on both split classes that resolved identically without
+ * ever preventing a merge that `resolution` alone would have allowed.
  */
 export function expectationSubject(entry: ResolvableEntry): string {
   // The matcher terms are folded in ONLY when the item text yielded no concept of its own —
@@ -1541,44 +1543,35 @@ export function expectationSubject(entry: ResolvableEntry): string {
 }
 
 /**
- * ROUND 23 ITEM 5 — STANDING EXPECTATIONS DEDUPLICATE ACROSS CHECKPOINTS, NOT ONLY WITHIN A DAY.
+ * ROUND 23 ITEM 5, AS CORRECTED BY DECISION 45 — STANDING EXPECTATIONS DEDUPLICATE ACROSS
+ * CHECKPOINTS, BUT NEVER ACROSS RESOLUTIONS.
  *
- * On IPNO-495, 27 of 29 divergent findings were `group_size` 1, and r-83 and r-90 were the SAME
- * expectation raised on the SAME day with overlapping matcher terms, scored twice. About 41% of
- * that episode's penalty was duplication — one clinical concern charged repeatedly because each
- * checkpoint phrased it slightly differently.
+ * The half of round 23 that was right: on IPNO-495, 27 of 29 divergent findings were `group_size`
+ * 1, and one standing concern raised at six checkpoints was charged six times. THE DAY LEAVES THE
+ * KEY, so an expectation restated every day is one finding.
  *
- * ⚠️ THE DAY LEAVES THE KEY. Round 12 grouped by subject within a resolution; the day was never in
- * the key, but `resolution` and `verdict` were, and those differ between checkpoints for the same
- * standing concern — so "monitor renal function", raised on four days and resolving `present` on
- * two and `absent_class_present` on two, became two findings rather than one.
+ * ⚠️ DECISION 45 (V, 2026-09-05) — RESOLUTION COMES BACK INTO THE KEY, AND THE TERM-OVERLAP MERGE
+ * IS GONE. Round 23 took both out together and the result was findings that said something false:
  *
- * The subject and section still bound the group, and MATCHER-TERM OVERLAP now merges classes whose
- * subjects differ only in wording: two entries sharing half their canonical terms are the same
- * expectation however each day chose to word it.
+ *   · IPNO-495 r-16, `group_size` 8, read "The record shows it: lab_order on day 5 matching cbc" —
+ *     TWO BLOOD-CULTURE DIVERGENCES merged into a CBC match, because their matcher terms overlapped
+ *     enough for the second pass to call them one class. The finding then reported the CBC as the
+ *     evidence for the cultures.
+ *   · IPNO-495 r-29, `group_size` 5, let ONE day-5 note ("peripheral pulses present") speak for
+ *     days 5, 6, 7, 8 and 10 — four days on which nothing was checked at all.
  *
- * ⚠️ RESOLUTION AND VERDICT STAY OUT OF THE KEY BUT NOT OUT OF THE FINDING. The group takes the
- * BEST-EVIDENCED member's outcome — a day it was found beats a day it was not — because round 12's
- * concordant-erasure lesson runs in this direction too: if the thing happened once, the episode
- * should not carry a finding saying it never did.
+ * Both are the round-12 defect returning by a new route: a day the thing happened absorbing days it
+ * did not. Round 12 called that concordant-erasure and fixed it by putting `resolution` in the key.
+ * The key is `section | subject | resolution` again, and there is no second pass: two expectations
+ * are one class when their SUBJECTS canonicalise alike, never because their term lists resemble
+ * each other. Wording similarity is not identity, and this engine does not infer from resemblance.
+ *
+ * The best-evidenced-member rank stays. It is no longer load-bearing for correctness — every member
+ * of a group now shares a resolution — but it still picks the member carrying an actual matched
+ * event to speak for the group, which is the one whose statement can be checked.
  */
 export function resolverGroupKey(entry: ResolvableEntry, outcome: ResolvedOutcome): string {
-  return `${entry.section}|${expectationSubject(entry)}`;
-}
-
-/** The canonical matcher terms of an entry, for the overlap test. */
-function canonicalTerms(entry: ResolvableEntry): Set<string> {
-  const out = new Set<string>();
-  for (const t of entry.matcher?.terms ?? []) for (const w of subjectWords(t)) out.add(w);
-  return out;
-}
-
-/** Two expectation classes are the same when they share at least half of the smaller term set. */
-export function termsOverlap(a: Set<string>, b: Set<string>): boolean {
-  if (!a.size || !b.size) return false;
-  let shared = 0;
-  for (const t of a) if (b.has(t)) shared++;
-  return shared * 2 >= Math.min(a.size, b.size);
+  return `${entry.section}|${expectationSubject(entry)}|${outcome.resolution}`;
 }
 
 /**
@@ -1596,35 +1589,10 @@ export function findingsFromResolved(
     if (g) g.push(r); else groups.set(k, [r]);
   }
 
-  // ITEM 5, SECOND PASS — merge classes whose SUBJECTS differ only in wording but whose matcher
-  // terms plainly describe one thing. r-83 and r-90 on IPNO-495 were the same expectation on the
-  // same day with overlapping terms, keyed apart by a word. Merging is order-stable: a class only
-  // ever merges into an EARLIER one, so the result does not depend on map iteration order.
-  const keys = [...groups.keys()];
-  const termsFor = new Map<string, Set<string>>(
-    keys.map((k) => [k, canonicalTerms(groups.get(k)![0].entry)] as const),
-  );
-  const mergedInto = new Map<string, string>();
-  for (let i = 0; i < keys.length; i++) {
-    const ki = keys[i];
-    if (mergedInto.has(ki)) continue;
-    const [sectionI] = ki.split('|');
-    for (let j = i + 1; j < keys.length; j++) {
-      const kj = keys[j];
-      if (mergedInto.has(kj)) continue;
-      if (kj.split('|')[0] !== sectionI) continue;   // never merge across sections
-      if (!termsOverlap(termsFor.get(ki)!, termsFor.get(kj)!)) continue;
-      groups.get(ki)!.push(...groups.get(kj)!);
-      groups.delete(kj);
-      mergedInto.set(kj, ki);
-    }
-  }
-
   return [...groups.values()].map((members, i) => {
-    // ⚠️ THE BEST-EVIDENCED MEMBER SPEAKS FOR THE GROUP (item 5). With resolution and verdict out of
-    // the key, one class can hold a day it was found and a day it was not; if the thing happened
-    // once, the episode must not carry a finding saying it never did. A member with a matched event
-    // outranks one without, and `present` outranks the rest.
+    // THE BEST-EVIDENCED MEMBER SPEAKS FOR THE GROUP. Under decision 45 every member shares a
+    // resolution, so this can no longer let a found day absorb a missed one — it picks, among days
+    // that resolved alike, the one carrying a matched event, whose statement a reader can check.
     const rank = (m: { outcome: ResolvedOutcome }) =>
       (m.outcome.matchedEvent ? 4 : 0) + (m.outcome.resolution === 'present' ? 2 : 0)
       + (m.outcome.verdict === 'concordant' ? 1 : 0);
