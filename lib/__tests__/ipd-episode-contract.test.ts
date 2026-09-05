@@ -175,10 +175,18 @@ test('both UI routes 404 unless IPD_EPISODE_AUDIT_ENABLED is exactly "1"', () =>
   }
 });
 
-test('the flag gates the UI ONLY — the worker and the pipeline never read it (§9)', () => {
-  for (const f of ['app/api/ipd-episode/worker/route.ts', ...ENGINE_FILES]) {
-    assert.ok(!code(f).includes('IPD_EPISODE_AUDIT_ENABLED'), `${f} must not read the UI flag — the pipeline runs regardless`);
+test('the flag gates the UI and the CRON — the pipeline itself never reads it (§9, decision 53)', () => {
+  // ⚠️ THE ENGINE STILL MUST NOT READ IT. A pipeline that consults a UI flag mid-run would produce
+  // different audits depending on a display setting, which is the defect this test was written for.
+  for (const f of ENGINE_FILES) {
+    assert.ok(!code(f).includes('IPD_EPISODE_AUDIT_ENABLED'), `${f} must not read the flag — the pipeline runs regardless`);
   }
+  // The worker route reads it in exactly ONE place: the ?auto=1 cron guard (decision 53). A manual
+  // ?encounter= spot check is an orchestrator reading a named episode on purpose and is not gated.
+  const route = code('app/api/ipd-episode/worker/route.ts');
+  assert.equal((route.match(/IPD_EPISODE_AUDIT_ENABLED/g) ?? []).length, 1, 'one read, not a scatter');
+  assert.ok(route.includes("if (auto && process.env.IPD_EPISODE_AUDIT_ENABLED !== '1')"),
+    'and it gates the unattended sweep only');
 });
 
 test('the IPD page link is flag-gated too, so there is no half-open door', () => {
@@ -262,9 +270,15 @@ test('no new dependency, and vercel.json is untouched — there is NO cron entry
       assert.ok(pkgName in all, `${f} imports '${pkgName}', which is not a declared dependency`);
     }
   }
+  // ⚠️ DECISION 19's "no cron entry" is SUPERSEDED BY DECISION 53 (V, 2026-09-05). Decision 19 kept
+  // this engine manual until it had been read; decision 12 passed on the same day, so the reason
+  // expired rather than being overruled. What remains enforced is that the entries are the gated
+  // form and nothing else was disturbed — see the DECISION 53 window test.
   if (existsSync('vercel.json')) {
-    const vercel = read('vercel.json');
-    assert.ok(!vercel.includes('ipd-episode'), 'vercel.json must carry no cron entry for this worker (decision 19)');
+    const vercel = JSON.parse(read('vercel.json')) as { crons: { path: string }[] };
+    const ours = vercel.crons.filter((c) => c.path.includes('ipd-episode'));
+    assert.ok(ours.length > 0 && ours.every((c) => c.path === '/api/ipd-episode/worker?auto=1'),
+      'every entry for this worker is the flag-gated auto form');
   }
 });
 
@@ -1219,6 +1233,56 @@ test('scoring_status is stored and the UI refuses to render a number without one
   }
 });
 
+test('DECISION 53: the cron is flag-gated, one episode per call, and never retries a lost response', () => {
+  const route = code('app/api/ipd-episode/worker/route.ts');
+  // the guard is on ?auto=1, not on the route: a named spot check still runs with the flag off
+  assert.ok(route.includes("const auto = p.get('auto') === '1';"));
+  assert.ok(route.includes("if (auto && process.env.IPD_EPISODE_AUDIT_ENABLED !== '1')"),
+    'only the unattended sweep is flag-gated');
+  // ⚠️ 200 AND BEFORE THE LOCK. 49 firings a night into a disabled engine must be free, must not
+  // read db13, and must not look like a failure in the log.
+  const guard = route.slice(route.indexOf('const auto ='), route.indexOf('const deadlineAt ='));
+  assert.ok(guard.includes('disabled: true') && !guard.includes('status: 4'), 'it 200s');
+  // ⚠️ MEASURED INSIDE THE HANDLER, not across the file: `lockHeld` and `candidateQueue` are both
+  // DEFINED above the handler, so a whole-file indexOf would compare against their definitions and
+  // pass no matter where the guard sat.
+  const handler = route.slice(route.indexOf('export async function GET'));
+  assert.ok(handler.indexOf("if (auto && process.env") < handler.indexOf('lockHeld('), 'before the lock');
+  assert.ok(handler.indexOf("if (auto && process.env") < handler.indexOf('await candidateQueue()'), 'and before any db13 read');
+  // one episode per call
+  assert.ok(route.includes('const AUTO_MAX = 1;'));
+  assert.ok(route.includes("const max = auto ? AUTO_MAX :"));
+  // no retry path exists for a lost response — the row is the record (Step C, IPNO-531)
+  assert.ok(!/retry|retries/i.test(route.slice(route.indexOf('export async function GET'))),
+    'the handler contains no retry');
+});
+
+test('DECISION 53: the cron window is 22:00 to 06:00 IST, every ten minutes', () => {
+  const vercel = JSON.parse(read('vercel.json')) as { crons: { path: string; schedule: string }[] };
+  const ours = vercel.crons.filter((c) => c.path.startsWith('/api/ipd-episode/worker'));
+  assert.equal(ours.length, 3, 'three entries cover the window');
+  assert.ok(ours.every((c) => c.path === '/api/ipd-episode/worker?auto=1'), 'all flag-gated');
+  assert.deepEqual(ours.map((c) => c.schedule).sort(),
+    ['*/10 17-23 * * *', '0-30/10 0 * * *', '30-59/10 16 * * *']);
+  // ⚠️ VERCEL CRON IS UTC AND IST IS UTC+5:30, so the window is 16:30–00:30 UTC and cannot be
+  // written as whole hours. Expand every firing and check the IST edges rather than trusting the
+  // expressions to read correctly.
+  const fire: number[] = [];   // minutes past midnight, UTC
+  for (const m of [30, 40, 50]) fire.push(16 * 60 + m);
+  for (let h = 17; h <= 23; h++) for (const m of [0, 10, 20, 30, 40, 50]) fire.push(h * 60 + m);
+  for (const m of [0, 10, 20, 30]) fire.push(m);
+  // ⚠️ THE WINDOW CROSSES MIDNIGHT, SO A PLAIN NUMERIC SORT IS WRONG — it puts 00:00 IST first and
+  // reports the window as starting at midnight. Everything before noon belongs to the following
+  // day, so it is shifted past the evening before anything is compared.
+  const inOrder = fire.map((u) => (u + 330) % 1440).map((v) => (v < 12 * 60 ? v + 1440 : v)).sort((a, b) => a - b);
+  assert.equal(inOrder.length, 49, '49 firings a night');
+  assert.equal(inOrder[0], 22 * 60, 'first at 22:00 IST');
+  assert.equal(inOrder[inOrder.length - 1], 6 * 60 + 1440, 'last at 06:00 IST the next morning');
+  for (let i = 1; i < inOrder.length; i++) {
+    assert.equal(inOrder[i] - inOrder[i - 1], 10, `ten-minute spacing at index ${i}`);
+  }
+});
+
 // ── V's 2026-09-02 widening: cite anything, but price it ─────────────────────────────────────
 
 test('retrieval is not restricted to the normative allowlist', () => {
@@ -1490,7 +1554,9 @@ test('the lock TTL is 780 s — its own, not the 210 s helper sized for a 300 s 
 // ── engine identity ──────────────────────────────────────────────────────────────────────────
 
 test('the engine version and the closed set of skip reasons', () => {
-  assert.equal(IPD_EPISODE_ENGINE_VERSION, 'ipd-episode-audit/0.1');
+  // DECISION 56: 0.1 → 0.2 at the cron commit. Decisions 44-52 changed WHAT is measured, so the
+  // two versions are different quantities and must not share a column. 0.1 rows stay as history.
+  assert.equal(IPD_EPISODE_ENGINE_VERSION, 'ipd-episode-audit/0.2');
   // the PRD's five, plus the two lifecycle markers round 10 added so a dead invocation is visible
   assert.deepEqual([...SKIP_REASONS], [
     'no_discharge_summary', 'no_notes', 'no_extraction', 'diff_failed', 'fidelity_failed',

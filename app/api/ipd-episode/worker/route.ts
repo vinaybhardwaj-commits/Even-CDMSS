@@ -54,7 +54,8 @@ import { isAdminUnlocked } from '@/lib/admin-cookie';
 import { getSettings, setSetting } from '@/lib/mini-backfill';
 import { fetchClosedEpisodes, isEncounterId } from '@/lib/ipd-episode/db13';
 import {
-  IPD_EPISODE_ENGINE_VERSION, auditedEncounterIds, skipIsRetryable, skipRows, inProgressIsStale,
+  IPD_EPISODE_ENGINE_VERSION, IPD_EPISODE_ENGINE_VERSION_PRIOR, auditedAtByEncounter,
+  auditedEncounterIds, skipIsRetryable, skipRows, inProgressIsStale,
 } from '@/lib/ipd-episode/store';
 import { runEpisodeAudit, runEpisodeBatch, MAX_CANDIDATES_EXAMINED } from '@/lib/ipd-episode/run';
 
@@ -130,7 +131,7 @@ async function authed(req: NextRequest): Promise<boolean> {
 }
 
 /**
- * The candidate QUEUE, in ascending discharge order (§3.1). "Un-audited" is decided by the audit
+ * The candidate QUEUE. "Un-audited" is decided by the audit
  * TABLE, not by a cursor — the table is the watermark, so a missed tick self-heals and a caught-up
  * run is a cheap no-op. A skip row past its 14-day retry window is excluded here rather than
  * attempted and re-skipped.
@@ -145,10 +146,11 @@ async function authed(req: NextRequest): Promise<boolean> {
  * mostly real candidates before this filter runs at all.
  */
 async function candidateQueue(): Promise<{ encounterId: string; dischargedAt: string | null }[]> {
-  const [closed, audited, skips] = await Promise.all([
+  const [closed, audited, skips, priorAudits] = await Promise.all([
     fetchClosedEpisodes(2000),
     auditedEncounterIds(),
     skipRows(),
+    auditedAtByEncounter(IPD_EPISODE_ENGINE_VERSION_PRIOR),
   ]);
   const done = new Set(audited);
   const stale = new Set(skips.filter((s) => !skipIsRetryable(s.discharged_at)).map((s) => s.encounter_id));
@@ -162,15 +164,64 @@ async function candidateQueue(): Promise<{ encounterId: string; dischargedAt: st
     if (done.has(c.encounterId) || stale.has(c.encounterId) || running.has(c.encounterId)) continue;
     out.push({ encounterId: c.encounterId, dischargedAt: c.dischargeDateTime });
   }
-  return out;
+
+  // ⚠️ DECISION 56 — THE ALREADY-READ COHORT COMES FIRST, OLDEST READING FIRST. The version bump
+  // makes every 0.1 row non-current at 0.2, so all twenty-eight episodes V has read requalify. They
+  // are re-audited BEFORE anything new, in the order they were originally read, so the cohort under
+  // discussion is the first thing to come back comparable — including the seven rows still carrying
+  // the withdrawn `d-1`, which is how those get corrected without a hand-run.
+  //
+  // Everything else follows by discharge date DESCENDING: newest admissions first, which is the
+  // opposite of §3.1's original ascending sweep and deliberate — an audit of last week is worth more
+  // to a reader than an audit of last year, and the backlog is now large enough that the order
+  // decides what actually gets read.
+  return out.sort((a, b) => {
+    const pa = priorAudits[a.encounterId];
+    const pb = priorAudits[b.encounterId];
+    if (pa && pb) return pa.localeCompare(pb);          // both read at 0.1 — oldest reading first
+    if (pa) return -1;                                   // read at 0.1 outranks never read
+    if (pb) return 1;
+    return String(b.dischargedAt ?? '').localeCompare(String(a.dischargedAt ?? ''));
+  });
 }
+
+/**
+ * DECISION 53 (V, 2026-09-05) — THE NIGHTLY CRON, AND THE ONE THING THAT STOPS IT.
+ *
+ * `?auto=1` is the cron's entry point and the ONLY caller that is flag-gated. A manual
+ * `?encounter=` spot check still runs with the flag off, because that is an orchestrator reading a
+ * named episode on purpose; an unattended sweep is not. So the guard is on `auto`, not on the route.
+ *
+ * ⚠️ IT RETURNS 200, NOT 403, AND IT RETURNS BEFORE THE LOCK. A cron firing 49 times a night into a
+ * disabled engine must be free and must not look like a failure in the Vercel log — a 4xx every ten
+ * minutes is an alert nobody can act on. It also must not take the lock or read db13, or a disabled
+ * engine would still cost a query per tick and could block a manual run.
+ *
+ * ⚠️ THE FLAG IS NO LONGER WHAT DECIDES THIS (decision 48). The gate reading decided it. The flag is
+ * the switch that carries the decision, and this guard is where the switch is read.
+ *
+ * IDEMPOTENCE IS INHERITED, NOT ADDED. `candidateQueue` excludes every encounter that already has a
+ * row at THIS engine version, so a second call for an audited episode selects a different one or
+ * reports `caughtUp`. Nothing here retries a lost HTTP response: Step C's IPNO-531 returned an empty
+ * body after its row was written, and a retry on that shape would re-audit an episode that had
+ * already succeeded. The row is the record; the response is not.
+ */
+const AUTO_MAX = 1;
 
 export async function GET(req: NextRequest) {
   const startedAt = Date.now();
   if (!(await authed(req))) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
-  const deadlineAt = invocationDeadlineAt(startedAt);
   const p = req.nextUrl.searchParams;
-  const max = Math.max(1, Math.min(5, Number(p.get('max') || 2)));
+  const auto = p.get('auto') === '1';
+  if (auto && process.env.IPD_EPISODE_AUDIT_ENABLED !== '1') {
+    return NextResponse.json({ ok: true, mode: 'auto', disabled: true, engine: IPD_EPISODE_ENGINE_VERSION });
+  }
+  const deadlineAt = invocationDeadlineAt(startedAt);
+  // ONE episode per cron call. The window fires every ten minutes and an episode can run past six
+  // minutes, so a tick that audited two could still be inside the box when the next one starts —
+  // the lock would hold it off, but the night's throughput would come from the lock's TTL rather
+  // than from a number anyone chose.
+  const max = auto ? AUTO_MAX : Math.max(1, Math.min(5, Number(p.get('max') || 2)));
   const one = p.get('encounter');
 
   // The lock is checked BEFORE any db13 read: a held lock must cost nothing.
@@ -194,7 +245,7 @@ export async function GET(req: NextRequest) {
     const queue = await candidateQueue();
     if (!queue.length) {
       return NextResponse.json({
-        ok: true, mode: 'sweep', engine: IPD_EPISODE_ENGINE_VERSION, caughtUp: true,
+        ok: true, mode: auto ? 'auto' : 'sweep', engine: IPD_EPISODE_ENGINE_VERSION, caughtUp: true,
         queueLength: 0, candidatesExamined: 0, audited: 0, skipped: 0,
         skippedByReason: {}, errors: 0, processed: 0, results: [],
       });
@@ -212,7 +263,7 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({
       ok: true,
-      mode: 'sweep',
+      mode: auto ? 'auto' : 'sweep',
       engine: IPD_EPISODE_ENGINE_VERSION,
       // What this tick actually did, per §5 of the review: how many candidates were looked at, how
       // many were audited, how many were skipped and for exactly which reason, how many errored.

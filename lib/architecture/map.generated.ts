@@ -5746,6 +5746,12 @@ export const VERSION_REGISTRY: VersionRow[] = [
   },
   {
     "constName": "IPD_EPISODE_ENGINE_VERSION",
+    "value": "ipd-episode-audit/0.2",
+    "file": "lib/ipd-episode/store.ts",
+    "derived": false
+  },
+  {
+    "constName": "IPD_EPISODE_ENGINE_VERSION_PRIOR",
     "value": "ipd-episode-audit/0.1",
     "file": "lib/ipd-episode/store.ts",
     "derived": false
