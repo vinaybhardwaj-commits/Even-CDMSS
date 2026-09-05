@@ -355,8 +355,25 @@ export function catalogueConceptsIn(text: string): string[] {
  */
 const VALUE_CONDITIONAL = /\b(if (it is |the |they are |there is |values? |levels? )?(low|high|abnormal|elevated|raised|deranged|reduced|persistent|worsening|positive|negative|below|above|<|>)|if (hypo|hyper)[a-z]+|as (clinically )?indicated by|based on (the )?(result|value|level)|titrat\w+ to|target (of )?[<>]?\s*\d|maintain\w* (\w+ )*(above|below|between)|correct(ion)? (of )?\w* ?if|(replace|supplement)\w* if|when (values?|levels?) )/i;
 
+/**
+ * ROUND 23 ITEM 7 — PAPER ARTEFACTS THIS ENGINE CANNOT SEE AT ALL.
+ *
+ * Informed consent, preoperative anaesthetic clearance, a signed checklist: real and important, and
+ * outside every data class this pipeline reads. There is no table in which their presence or
+ * absence is recorded, so calling one missing is not a finding, it is a guess about paperwork.
+ *
+ * ⚠️ AND A CONDITIONAL WHOSE ANTECEDENT WAS NEVER ESTABLISHED. IPNO-495 was penalised for the
+ * absence of a treponemal confirmatory test with no evidence anywhere that the VDRL was ever
+ * positive. "Confirm X if the screen is positive" is unscoreable when nothing says the screen was
+ * positive — and results_available is false on every lab row, so nothing ever can.
+ */
+const PAPER_ARTEFACT = /\b(informed consent|consent form|written consent|pre[- ]?operative clearance|preop clearance|anaesthe(tic|sia) clearance|fitness (for|certificate)|surgical safety checklist|sign[- ]?off|counsell?ing documented)\b/i;
+
+const UNESTABLISHED_ANTECEDENT = /\b(confirmator\w+|confirm\w* (test|assay)|if (the )?(screen|test|result)\w* (is |was )?(positive|reactive|abnormal)|follow[- ]?up (test|assay) if)\b/i;
+
 export function premiseIsUnobservable(item: string): boolean {
-  return VALUE_CONDITIONAL.test(String(item ?? ''));
+  const t = String(item ?? '');
+  return VALUE_CONDITIONAL.test(t) || PAPER_ARTEFACT.test(t) || UNESTABLISHED_ANTECEDENT.test(t);
 }
 
 /**
@@ -413,7 +430,10 @@ export function haystackFor(e: EpisodeEvent): string {
  *  satisfied by the word appearing in a progress note. */
 export function eventTypesFor(kind: MatcherKind): readonly EpisodeEvent['event_type'][] {
   switch (kind) {
-    case 'lab': return ['lab_order'];
+    // ITEM 4: GRBS was ordered on nine days of IPNO-495 as Procedure and Pathology BILLING lines
+    // while "grbs" sat in the matcher terms, and glucose monitoring was called absent three times.
+    // A lab is ordered before it is resulted, and in this mirror the order is often a billing row.
+    case 'lab': return ['lab_order', 'order'];
     case 'drug': return ['order'];
     case 'procedure': return ['ot_note', 'order'];
     case 'imaging': return ['order'];
@@ -623,16 +643,91 @@ export function subjectWords(text: string): string[] {
 
 const norm = (s: string) => s.toLowerCase();
 
-/** A term matches when it appears in the haystack, whole-word where the term is a single word.
- *  Terms shorter than 3 characters are ignored — "iv" would match everything. */
+/**
+ * ROUND 23 ITEM 3 — TOKEN-SET MATCHING, BECAUSE A SUBSTRING TEST IS NOT A CLINICAL ONE.
+ *
+ * `h.includes(t)` required the haystack to contain the term's exact words in the term's exact
+ * order. Real catalogue strings do not oblige: "chest x-ray" never matched `X-RAY CHEST PA VIEW`,
+ * and "ct angiogram" never matched `CT Peripheral angiogram`, because the words are the same and
+ * the order is not.
+ *
+ * A multi-word term now matches when EVERY one of its tokens appears somewhere in the haystack,
+ * each on a word boundary and each after synonym folding. Order is irrelevant; extra words in the
+ * haystack are irrelevant; a missing token still fails, so "chest x-ray" does not match a plain
+ * "x-ray knee".
+ *
+ * Single-word terms keep the strict whole-word rule they had — that half was never the problem —
+ * and the 3-character floor stays, because "iv" would match everything.
+ */
+const TOKEN_SYNONYMS: Record<string, string> = (() => {
+  const groups: readonly (readonly string[])[] = [
+    ['angiogram', 'angiography', 'angio', 'cta', 'angiographic'],
+    ['doppler', 'duplex'],
+    ['ultrasound', 'usg', 'sonography', 'ultrasonography', 'sonogram'],
+    ['xray', 'x-ray', 'radiograph', 'radiography'],
+    ['ct', 'cect', 'tomography'],
+    ['mri', 'mr'],
+    ['echo', 'echocardiogram', 'echocardiography'],
+    ['ecg', 'ekg', 'electrocardiogram'],
+    ['eeg', 'electroencephalogram', 'electroencephalography'],
+    ['culture', 'c/s', 'sensitivity'],
+    ['glucose', 'grbs', 'rbs', 'sugar', 'glycaemia', 'glycemia'],
+    ['creatinine', 'creat'],
+    ['haemoglobin', 'hemoglobin', 'hb'],
+    ['electrolytes', 'electrolyte'],
+    ['abdomen', 'abdominal'],
+    ['chest', 'thorax', 'thoracic'],
+    ['brain', 'head', 'cranial'],
+    ['spine', 'spinal', 'vertebral'],
+    ['renal', 'kidney'],
+  ];
+  const m: Record<string, string> = {};
+  for (const g of groups) for (const t of g) m[t] = g[0];
+  return m;
+})();
+
+/**
+ * ⚠️ LIGHT STEMMING, ADDED AFTER MEASURING. Token-set matching lost "dj stent" against
+ * `Cystoscopy Urs With Dj Stenting Unilateral` — the words are the same and the inflection is not.
+ * Only `-ing`, `-es` and `-s` are folded, and only when at least four characters remain, so
+ * "stenting" reaches "stent" while short clinical tokens are left alone.
+ *
+ * Both the term and the haystack are folded, so the rule is symmetric and neither side has to
+ * guess which form the other used.
+ */
+const stem = (w: string): string => {
+  if (w.length > 6 && w.endsWith('ing')) return w.slice(0, -3);
+  if (w.length > 5 && w.endsWith('es')) return w.slice(0, -2);
+  if (w.length > 4 && w.endsWith('s') && !w.endsWith('ss')) return w.slice(0, -1);
+  return w;
+};
+
+const tokensOf = (text: string): Set<string> => {
+  const out = new Set<string>();
+  for (const raw of norm(text).split(/[^a-z0-9]+/)) {
+    if (!raw) continue;
+    const folded = TOKEN_SYNONYMS[raw] ?? TOKEN_SYNONYMS[stem(raw)] ?? stem(raw);
+    out.add(folded);
+  }
+  return out;
+};
+
 export function termMatches(term: string, haystack: string): boolean {
   const t = norm(term).trim();
   if (t.length < 3) return false;
   const h = norm(haystack);
   if (!/\s/.test(t)) {
+    const folded = TOKEN_SYNONYMS[t];
+    const hay = tokensOf(h);
+    if (folded && hay.has(folded)) return true;
     return new RegExp(`(^|[^a-z0-9])${t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^a-z0-9]|$)`).test(h);
   }
-  return h.includes(t);
+  // multi-word: every token must be present, in any order
+  const want = tokensOf(t);
+  if (!want.size) return false;
+  const have = tokensOf(h);
+  for (const w of want) if (!have.has(w)) return false;
+  return true;
 }
 
 export interface MatchHit { event: EpisodeEvent; term: string }
@@ -883,12 +978,24 @@ export function resolveEntry(
     };
   }
 
+  // ⚠️ DECISION 44 (V, 2026-09-04) — THE ENGINE MAY NOT ASSERT A NEGATIVE IT HAS NOT VERIFIED.
+  //
+  // On IPNO-495, 22 of 29 divergent findings had an EMPTY evidence_basis and a null matched_term,
+  // and between them they carried 141 of the episode's 167 penalty points — 84% of the score
+  // resting on assertions the engine had not checked, most of them contradicted by the episode's
+  // own event list. The statement said "no matching record exists anywhere in this admission",
+  // which is a claim about the record; what the resolver actually knows is narrower and duller:
+  // its matcher did not fire.
+  //
+  // So an unmatched expectation with nothing to point at is `context_dependent`, and it says what
+  // it did rather than what it concluded. The finding survives — a reader can still act on it —
+  // but it no longer carries a divergent verdict's weight or its certainty.
   return {
     resolution: 'absent_class_present',
-    verdict: 'divergent',
+    verdict: 'context_dependent',
     severity: entry.proposedSeverity,
-    statement: `Expected: ${entry.item}. No matching ${m.kind} record exists anywhere in this admission, and ${m.kind} data IS recorded from day ${classFromDay} onward — so the absence is real.`,
-    matchedEvent: null, matchedTerm: null, confound: null,
+    statement: `Expected: ${entry.item}. Not detected by matcher: no ${m.kind} record matched the terms this expectation was given, though ${m.kind} data IS recorded from day ${classFromDay} onward. The matcher may be wrong about what the record calls this, so the absence is not asserted.`,
+    matchedEvent: null, matchedTerm: null, confound: 'unmatched by the expectation’s own terms; the absence is not verified',
   };
 }
 

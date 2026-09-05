@@ -47,7 +47,10 @@ const ENGINE_FILES = [
 test('every checkpoint and pass input is built by FILTERING the one assembled event list', () => {
   const run = code('lib/ipd-episode/run.ts');
   // the four filters, all from assemble-core, all applied in run.ts
-  for (const filter of ['eventsBeforeDayStart(', 'episodeLevelEvents(', 'diffPassEvents(', 'fidelityPassEvents(']) {
+  // DECISION 43 renamed the per-checkpoint filter: a checkpoint's window is now an anchor's
+  // CUTOFF INSTANT rather than a calendar day boundary. The blinding rule is unchanged — filter the
+  // one list — and this still pins that every input is a filter over it.
+  for (const filter of ['eventsBeforeCutoff(', 'episodeLevelEvents(', 'diffPassEvents(', 'fidelityPassEvents(']) {
     assert.ok(run.includes(filter), `run.ts must build its inputs with ${filter}`);
   }
   // assembleEpisode is called EXACTLY ONCE — one list, built once
@@ -433,8 +436,13 @@ test('unparseable findings reach the trace, error_detail, raw_judge_error AND th
   assert.ok(/finalizeFindings\(raw, entryRefs, events, unparseable,/.test(run),
     'and the count IS passed into the counters');
   const core = code('lib/ipd-episode/judge-core.ts');
-  assert.ok(core.includes('countFindings(findings, dropped, parseFailed)'),
+  // ROUND 23 ITEM 6: the counters read `emitted` — the list after the contradiction gate — because
+  // a downgraded absence still counted as divergent would make that gate cosmetic.
+  assert.ok(core.includes('countFindings(emitted, dropped, parseFailed)'),
     'n_dropped_invalid is fed both causes; n_parse_failed isolates the second');
+  for (const call of ['divergenceIndex(emitted)', 'penaltyTotal(emitted)', 'expectationsEvaluated(emitted)']) {
+    assert.ok(core.includes(call), `the score reads the emitted list: ${call}`);
+  }
 });
 
 // ── round 4 items 1–5: the retrieval query, and refusing to invent a score ───────────────────
@@ -851,8 +859,8 @@ test('a hole in the expected course cannot be scored over', () => {
   // tested FIRST, so it outranks no_expectations and all_capped
   const fn = core.slice(core.indexOf('export function scoringStatusFor'), core.indexOf('export function storedDivergenceIndex'));
   assert.ok(fn.indexOf('incomplete_checkpoints') < fn.indexOf('no_expectations'));
-  assert.ok(core.includes("if (status === 'no_expectations' || status === 'incomplete_checkpoints') return null;"),
-    'and the index is stored NULL');
+  assert.ok(core.includes("if (status === 'no_expectations' || status === 'incomplete_checkpoints' || status === 'nothing_evaluable') return null;"),
+    'and the index is stored NULL — including when nothing was evaluable (round 23 item 8)');
   const ui = code('app/admin/ipd-audit/episodes/ui.tsx');
   assert.ok(ui.includes('part of the expected course is missing'), 'the UI gives the reason');
 });
@@ -1244,8 +1252,21 @@ test('an uncited entry is never repaired by guessing — the count is the whole 
   // nothing in the engine attaches a citation on a text overlap. `similarity` is excluded from the
   // pattern: round 5 item 5 gates the normative leg on retrieval's own similarity floor, which
   // decides which excerpts are SHOWN and never which of them a finding is said to have used.
+  // ⚠️ THE EXCLUSIONS ARE THE POINT OF THIS TEST, AND THEY ARE NARROW ON PURPOSE. The rule is that
+  // no citation is ever inferred from text resemblance; it is enforced by forbidding the vocabulary
+  // of resemblance anywhere near the citation path. `similarity` was excluded in round 5 because
+  // retrieval's floor decides which excerpts are SHOWN, never which a finding used. Round 23 adds
+  // `termsOverlap` — the expectation GROUPING helper, which compares two matchers' terms to decide
+  // whether they are one clinical concern. It touches no citation and no excerpt, and its name is
+  // stripped rather than the whole word, so a genuine `overlap` elsewhere in the citation path
+  // still fails this test.
   for (const f of ENGINE_FILES) {
-    const src = code(f).replace(/citation_ids/g, '').replace(/[Ss]imilarity/g, '').replace(/MIN_SIMILARITY/g, '');
+    const src = code(f)
+      .replace(/citation_ids/g, '')
+      .replace(/[Ss]imilarity/g, '')
+      .replace(/MIN_SIMILARITY/g, '')
+      .replace(/termsOverlap/g, '')
+      .replace(/share at least half of the smaller term set/g, '');
     assert.ok(!/overlap|fuzzy/i.test(src), `${f} must not infer a citation from text similarity`);
   }
   // and the count is never repaired into a citation

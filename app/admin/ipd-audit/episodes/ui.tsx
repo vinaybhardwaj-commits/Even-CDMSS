@@ -66,6 +66,7 @@ export function DivergenceChip({ band, uncertain, status }: {
   if (st !== 'ok' || !band) {
     const why = st === 'no_expectations' ? 'no checkpoint produced an expected course, so nothing could be measured'
       : st === 'incomplete_checkpoints' ? 'a checkpoint failed or produced no entries — part of the expected course is missing, so there is nothing to score against'
+      : st === 'nothing_evaluable' ? 'every finding was unassessable — nothing in this episode could be measured, so there is no rate to report'
       : st === 'all_capped' ? 'every finding was capped — nothing survived at full weight'
       : 'no band was stored for this episode';
     return (

@@ -12,7 +12,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
-  buildOrderEvents, checkpointPlan, collapseSpaces, dayIndexFor, dayStartIso, diffPassEvents,
+  buildOrderEvents, checkpointPlanFromEvents, eventsBeforeCutoff, MAX_CHECKPOINTS, collapseSpaces, dayIndexFor, dayStartIso, diffPassEvents,
   episodeLevelEvents, eventsBeforeDayStart, fidelityPassEvents, isoFromEpochMs, losDaysFor,
   noteSummaryFrom, normalizeAuthorName, parseComponentJson, componentValue, tierForTable,
   queryNarrativeFrom, QUERY_FALLBACK_CAP, stripMarkup,
@@ -132,29 +132,71 @@ test('pass A1 sees every event except the discharge; pass A2 sees every event in
 
 // ── 4. checkpoint budget ─────────────────────────────────────────────────────────────────────
 
-test('checkpoint budget: los 0,1,2,5,6,7,30 → 1,2,3,6,7,7,7 daily plus exactly one episode-level', () => {
-  const expected: [number, number][] = [[0, 1], [1, 2], [2, 3], [5, 6], [6, 7], [7, 7], [30, 7]];
-  for (const [los, daily] of expected) {
-    const plan = checkpointPlan(los);
-    assert.equal(plan.filter((p) => p.checkpoint_type === 'daily').length, daily, `los ${los} daily count`);
-    assert.equal(plan.filter((p) => p.checkpoint_type === 'episode').length, 1, `los ${los} episode count`);
-    assert.deepEqual(
-      plan.filter((p) => p.checkpoint_type === 'daily').map((p) => p.day_index),
-      Array.from({ length: daily }, (_, i) => i),
-      `los ${los} day indices are 0..${daily - 1} inclusive`,
-    );
-  }
+test('DECISION 43: checkpoints are anchored to EVENTS, and blinding is re-derived per anchor', () => {
+  // ⚠️ THIS REPLACES the calendar plan (day 0..min(los,6)). Two failures at opposite ends drove it:
+  // cp-d0's cutoff was the ADMISSION INSTANT, so it saw the admission event and nothing else —
+  // retrieval skipped on 10 of 12 episodes, every expectation uncited. And days beyond 6 were never
+  // checkpointed: on IPNO-495 days 7-11 held 115 of 414 events, 28% of the admission, and produced
+  // no expectations at all.
+  const admit = '2026-08-01T06:00:00.000Z';
+  const ev = (id: string, iso: string | null, type: EpisodeEvent['event_type'] = 'note', detail: Record<string, unknown> = {}) => ({
+    event_id: id, occurred_at: iso, day_index: 0, event_type: type, summary: '', detail,
+    author_name: null, author_role: null, responsible_clinician_id: null,
+    provenance: { source_table: 't', source_record_id: id, source_timestamp: iso }, evidence_tier: 'A' as const,
+  });
+  const events = [
+    ev('adm', admit, 'admission'),
+    ev('n1', '2026-08-01T10:00:00.000Z'),
+    ev('ot', '2026-08-03T09:00:00.000Z', 'ot_note'),
+    ev('n2', '2026-08-06T09:00:00.000Z'),
+    ev('n3', '2026-08-10T09:00:00.000Z'),
+  ];
+  const plan = checkpointPlanFromEvents({
+    admittedAt: admit, dischargedAt: '2026-08-11T10:00:00.000Z', losDays: 10, events,
+  });
+
+  // the first anchor is a 24-hour WINDOW, not the admission instant
+  const first = plan[0];
+  assert.equal(first.anchor_kind, 'first_24h');
+  assert.ok(first.cutoff_at > admit, 'its cutoff is after the door, so it can see the first day');
+  assert.ok(eventsBeforeCutoff(events, first.cutoff_at).some((e) => e.event_id === 'n1'),
+    'and it does see the first day’s note — the whole point');
+
+  // the procedure and its follow-ups are anchored, and the late days are reachable
+  const kinds = plan.map((p) => p.anchor_kind);
+  assert.ok(kinds.includes('procedure'), 'the procedure day is an anchor');
+  assert.ok(kinds.includes('procedure_plus_2') || kinds.includes('procedure_plus_4'), 'and its follow-ups');
+  assert.ok(kinds.includes('pre_discharge'), 'and the decision to discharge');
+  assert.ok(plan.some((p) => p.day_index > 6), 'a day beyond 6 is now reachable');
+
+  // capped, deduplicated by day, and exactly one episode-level checkpoint, always last
+  assert.ok(plan.length <= MAX_CHECKPOINTS, `at most ${MAX_CHECKPOINTS}`);
+  assert.equal(plan.filter((p) => p.checkpoint_type === 'episode').length, 1);
+  assert.equal(plan[plan.length - 1].checkpoint_type, 'episode');
+  assert.equal(new Set(plan.map((p) => p.day_index)).size >= plan.length - 1, true, 'days deduplicated');
 });
 
-test('checkpoint budget: a null or negative length of stay still gets the day 0 checkpoint', () => {
-  for (const los of [null, -3]) {
-    const plan = checkpointPlan(los);
-    assert.equal(plan.filter((p) => p.checkpoint_type === 'daily').length, 1);
-    assert.equal(plan[0].day_index, 0);
-  }
+test('DECISION 43: blinding — each anchor sees only what precedes its own cutoff', () => {
+  const admit = '2026-08-01T06:00:00.000Z';
+  const mk = (id: string, iso: string | null, type: EpisodeEvent['event_type'] = 'note') => ({
+    event_id: id, occurred_at: iso, day_index: 0, event_type: type, summary: '', detail: {},
+    author_name: null, author_role: null, responsible_clinician_id: null,
+    provenance: { source_table: 't', source_record_id: id, source_timestamp: iso }, evidence_tier: 'A' as const,
+  });
+  const events = [
+    mk('adm', admit, 'admission'),
+    mk('early', '2026-08-01T09:00:00.000Z'),
+    mk('late', '2026-08-09T09:00:00.000Z'),
+    mk('untimed', null),
+    mk('disch', '2026-08-11T10:00:00.000Z', 'discharge'),
+  ];
+  const seen = eventsBeforeCutoff(events, '2026-08-02T06:00:00.000Z').map((e) => e.event_id);
+  assert.ok(seen.includes('adm'), 'the admission event is always visible');
+  assert.ok(seen.includes('early'));
+  assert.ok(!seen.includes('late'), 'nothing after the cutoff');
+  assert.ok(!seen.includes('untimed'), 'an untimestamped event reaches no checkpoint (§3.2.2)');
+  assert.ok(!seen.includes('disch'), 'the discharge event reaches no checkpoint, ever');
 });
-
-// ── 14. timestamp preference ─────────────────────────────────────────────────────────────────
 
 test('timestamp: progressnote_date_time from the {name, valueString} array beats g_creation_time', () => {
   const pn = Date.parse('2026-08-02T04:00:00.000Z');

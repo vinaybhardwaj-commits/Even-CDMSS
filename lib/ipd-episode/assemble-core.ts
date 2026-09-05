@@ -242,28 +242,159 @@ export function fidelityPassEvents(events: EpisodeEvent[]): EpisodeEvent[] {
 
 // ── checkpoint budget (decision 24) ──────────────────────────────────────────────────────────
 
+export const EPISODE_CHECKPOINT_ID = 'cp-episode';
+export const MAX_DAILY_CHECKPOINT_DAY = 6;
+/** DECISION 43: the hard ceiling on checkpoints per episode, anchors and episode-level together. */
+export const MAX_CHECKPOINTS = 8;
+
+/** What a checkpoint is anchored to. Recorded on the row so a reader knows why it exists. */
+export const ANCHOR_KINDS = ['first_24h', 'procedure', 'procedure_plus_2', 'procedure_plus_4',
+  'pre_discharge', 'episode'] as const;
+export type AnchorKind = (typeof ANCHOR_KINDS)[number];
+
+/** Hours after admission at which the first-24h checkpoint cuts off. */
+/** Which anchors survive a same-day collision and a full budget. The first window and the
+ *  pre-discharge window rank above procedure follow-ups: they are the two moments an audit most
+ *  wants a view of, and IPNO-495 lost pre_discharge to a follow-up before this existed. */
+export const ANCHOR_PRIORITY: Record<AnchorKind, number> = {
+  first_24h: 0, pre_discharge: 1, procedure: 2, procedure_plus_2: 3, procedure_plus_4: 4, episode: 5,
+};
+
+export const FIRST_WINDOW_HOURS = 24;
+/** Hours before discharge at which the pre-discharge checkpoint cuts off. */
+export const PRE_DISCHARGE_HOURS = 24;
+
+const HOUR_MS = 3_600_000;
+const shiftIso = (iso: string, ms: number): string => new Date(Date.parse(iso) + ms).toISOString();
+
+/** A billing line that IS a procedure, for anchoring when there is no OT note. */
+const PROCEDURE_SERVICE = /procedure|surgery|ot charge/i;
+
+export function isProcedureEvent(e: EpisodeEvent): boolean {
+  if (e.event_type === 'ot_note') return true;
+  if (e.event_type !== 'order') return false;
+  const d = e.detail as Record<string, unknown>;
+  return PROCEDURE_SERVICE.test(String(d?.service_type ?? ''));
+}
+
+/**
+ * DECISION 43 (V, 2026-09-04) — CHECKPOINTS ARE ANCHORED TO EVENTS, NOT CALENDAR DAYS.
+ *
+ * ⚠️ WHAT THE CALENDAR PLAN COST, AT BOTH ENDS.
+ *
+ *   · `cp-d0`'s cutoff was `dayStartIso(admission, 0)` — the ADMISSION INSTANT. Nothing precedes an
+ *     admission, so day 0 saw the admission event and nothing else: retrieval was skipped on 10 of
+ *     12 episodes and every expectation it produced was uncited. A checkpoint that cannot see the
+ *     first day of an admission cannot say anything about it.
+ *   · Days beyond 6 were never checkpointed at all. On IPNO-495 days 7–11 held 115 of 414 events —
+ *     28% of the admission — and produced ZERO expectations; days 7, 8 and 9 generated no findings
+ *     of any kind. The longest stays were the least audited.
+ *
+ * The anchors are the moments an admission actually turns on:
+ *
+ *   first_24h          admission + 24h — the first day as a WINDOW, not an instant
+ *   procedure          the day of each procedure (OT note, or a procedure/surgery billing line)
+ *   procedure_plus_2   two days after each procedure
+ *   procedure_plus_4   four days after each procedure
+ *   pre_discharge      24h before discharge — the decision to send the patient home
+ *   episode            unchanged: the whole admission, discharge event excluded
+ *
+ * Anchors falling on the same DAY collapse to one (the earliest cutoff wins, so the checkpoint sees
+ * least), and the total is capped at MAX_CHECKPOINTS with the episode-level one always kept.
+ *
+ * ⚠️ BLINDING IS UNCHANGED IN PRINCIPLE AND RE-DERIVED PER ANCHOR: each checkpoint sees only events
+ * strictly BEFORE its own cutoff, always the admission event, never the discharge event. The
+ * cutoff is now a timestamp rather than a day boundary, which makes the rule easier to hold, not
+ * harder: `eventsBeforeCutoff` takes the instant directly.
+ */
 export interface CheckpointPlanEntry {
   /** `cp-d<N>` for a daily checkpoint, `cp-episode` for the episode-level one. */
   checkpoint_id: string;
   day_index: number;
   checkpoint_type: 'daily' | 'episode';
+  /** DECISION 43: what this checkpoint is anchored to. */
+  anchor_kind: AnchorKind;
+  /** The exact instant this checkpoint may see events before. */
+  cutoff_at: string;
 }
 
-export const EPISODE_CHECKPOINT_ID = 'cp-episode';
-export const MAX_DAILY_CHECKPOINT_DAY = 6;
+export function checkpointPlanFromEvents(a: {
+  admittedAt: string;
+  dischargedAt: string | null;
+  losDays: number | null;
+  events: EpisodeEvent[];
+}): CheckpointPlanEntry[] {
+  const { admittedAt, dischargedAt, events } = a;
+  const los = Number.isFinite(a.losDays as number) && (a.losDays as number) > 0 ? Math.floor(a.losDays as number) : 0;
+  const candidates: { cutoff: string; kind: AnchorKind }[] = [];
 
-/**
- * Daily checkpoints for day_index 0 … min(los_days, 6) INCLUSIVE, plus exactly one episode-level
- * checkpoint. LOS 0 → 1 daily. LOS 1 → 2. LOS 6 or more → 7. A null or negative LOS still gets
- * day 0, because an admission always has a moment at the door.
- */
-export function checkpointPlan(losDays: number | null): CheckpointPlanEntry[] {
-  const los = Number.isFinite(losDays as number) && (losDays as number) > 0 ? Math.floor(losDays as number) : 0;
-  const last = Math.min(los, MAX_DAILY_CHECKPOINT_DAY);
-  const plan: CheckpointPlanEntry[] = [];
-  for (let d = 0; d <= last; d++) plan.push({ checkpoint_id: `cp-d${d}`, day_index: d, checkpoint_type: 'daily' });
-  plan.push({ checkpoint_id: EPISODE_CHECKPOINT_ID, day_index: last, checkpoint_type: 'episode' });
-  return plan;
+  // 1. the first 24 hours, as a window
+  candidates.push({ cutoff: shiftIso(admittedAt, FIRST_WINDOW_HOURS * HOUR_MS), kind: 'first_24h' });
+
+  // 2-4. each procedure, and 2 and 4 days after it
+  const procedureDays = [...new Set(events.filter(isProcedureEvent)
+    .map((e) => e.occurred_at).filter((t): t is string => !!t))].sort();
+  for (const t of procedureDays) {
+    // the END of the procedure day, so the checkpoint sees the procedure itself
+    candidates.push({ cutoff: shiftIso(dayStartIso(t, 0), 24 * HOUR_MS), kind: 'procedure' });
+    candidates.push({ cutoff: shiftIso(dayStartIso(t, 0), 3 * 24 * HOUR_MS), kind: 'procedure_plus_2' });
+    candidates.push({ cutoff: shiftIso(dayStartIso(t, 0), 5 * 24 * HOUR_MS), kind: 'procedure_plus_4' });
+  }
+
+  // 5. pre-discharge
+  if (dischargedAt) {
+    const pre = shiftIso(dischargedAt, -PRE_DISCHARGE_HOURS * HOUR_MS);
+    if (pre > admittedAt) candidates.push({ cutoff: pre, kind: 'pre_discharge' });
+  }
+
+  // ⚠️ PRIORITY GOVERNS THE DEDUP, NOT JUST THE CAP — and it has to, as IPNO-495 showed. Its
+  // pre-discharge anchor lands on day 10, and so does a `procedure_plus_2` from the day-7
+  // procedure. Keeping the EARLIEST cutoff per day discarded pre_discharge in favour of a follow-up
+  // anchor, so the audit lost its view of the decision to send the patient home. Within one kind
+  // the earliest cutoff still wins, because a checkpoint should see the least it can.
+  const lastMoment = dischargedAt ?? shiftIso(admittedAt, (los + 1) * 24 * HOUR_MS);
+  const byDay = new Map<number, { cutoff: string; kind: AnchorKind }>();
+  for (const c of candidates.sort((x, y) =>
+    (ANCHOR_PRIORITY[x.kind] - ANCHOR_PRIORITY[y.kind]) || x.cutoff.localeCompare(y.cutoff))) {
+    if (c.cutoff <= admittedAt || c.cutoff > lastMoment) continue;
+    const day = dayIndexFor(admittedAt, c.cutoff);
+    if (day == null) continue;
+    if (!byDay.has(day)) byDay.set(day, c);
+  }
+
+  // ⚠️ THE CAP DROPS BY PRIORITY, NOT BY DATE. Capping chronologically let a run of procedure
+  // billing lines eat the budget: IPNO-495 produced five `procedure` anchors and lost
+  // `pre_discharge` entirely — the decision to send the patient home, which is the one moment the
+  // audit most wants a view of. The first window and the pre-discharge window are kept first, then
+  // procedure days, then their follow-ups; within a tier, earliest wins.
+  const daily = [...byDay.entries()]
+    .sort((x, y) => (ANCHOR_PRIORITY[x[1].kind] - ANCHOR_PRIORITY[y[1].kind]) || (x[0] - y[0]))
+    .slice(0, MAX_CHECKPOINTS - 1)
+    .sort((x, y) => x[0] - y[0])
+    .map(([day, c]) => ({
+      checkpoint_id: `cp-d${day}`, day_index: day, checkpoint_type: 'daily' as const,
+      anchor_kind: c.kind, cutoff_at: c.cutoff,
+    }));
+
+  // The episode-level checkpoint is always kept, and always last.
+  return [...daily, {
+    checkpoint_id: EPISODE_CHECKPOINT_ID,
+    day_index: daily.length ? daily[daily.length - 1].day_index : los,
+    checkpoint_type: 'episode' as const,
+    anchor_kind: 'episode' as const,
+    cutoff_at: lastMoment,
+  }];
+}
+
+/** Events strictly before an arbitrary cutoff INSTANT. The blinding rule, unchanged in principle:
+ *  the admission event always, the discharge event never, untimestamped events excluded. */
+export function eventsBeforeCutoff(events: EpisodeEvent[], cutoffIso: string): EpisodeEvent[] {
+  return sortEvents(events).filter((e) => {
+    if (isDischargeEvent(e)) return false;
+    if (isAdmissionEvent(e)) return true;
+    if (!e.occurred_at) return false;
+    return e.occurred_at < cutoffIso;
+  });
 }
 
 // ── component_json ({name, valueString}) ─────────────────────────────────────────────────────

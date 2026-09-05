@@ -2077,3 +2077,38 @@ test('ROUND 19 ITEM 3: the escalation exemption covers a MODEL-asserted unassess
   assert.equal(elsewhere.rejected, true, '“I would rather not say” is still rejected');
   assert.equal(elsewhere.finding.verdict, 'context_dependent');
 });
+
+
+test('ROUND 23 ITEM 8: an empty denominator is a FAILURE, never a zero', () => {
+  // IPNO-495's first run stored divergence_index 0 with scoring_status ok on
+  // expectations_evaluated = 0. Zero is the WORST value on this scale, so the arithmetic reported
+  // the most alarming possible reading of an episode nothing had been measured on.
+  const allUnassessable = [
+    f({ finding_id: 'a', verdict: 'unassessable' }),
+    f({ finding_id: 'b', verdict: 'unassessable' }),
+  ];
+  assert.equal(expectationsEvaluated(allUnassessable), 0);
+  assert.equal(divergenceIndex(allUnassessable), null, 'no rate exists');
+  const st = scoringStatusFor({ totalExpectedEntries: 6, findings: allUnassessable, cappedFindingIds: new Set() });
+  assert.equal(st, 'nothing_evaluable');
+  assert.equal(storedDivergenceIndex(0, st), null, 'and a 0 can never be stored under it');
+  assert.equal(divergenceBandFor(storedDivergenceIndex(0, st)), null, 'so it acquires no band either');
+});
+
+test('ROUND 23 ITEM 8: the band is recomputed from the CURRENT index, never inherited', () => {
+  // IPNO-495 read "substantial" on all three runs while penalty fell 237 → 167, which looked like
+  // an inherited band. It was not: 0 and 75 are substantial under the thresholds in force at those
+  // runs (90/70/45 and 97/90/80), and 78 is substantial under today's 95/88/80. The band is a pure
+  // function of the index it is handed, and this pins that.
+  for (const [index, band] of [[100, 'no divergence found'], [95, 'no divergence found'],
+                               [94, 'minor divergence'], [88, 'minor divergence'],
+                               [87, 'moderate divergence'], [80, 'moderate divergence'],
+                               [79, 'substantial divergence'], [0, 'substantial divergence']] as const) {
+    assert.equal(divergenceBandFor(index), band, `index ${index}`);
+  }
+  // the same index always yields the same band, whatever preceded it
+  assert.equal(divergenceBandFor(78), divergenceBandFor(78));
+  const run = readFileSync('lib/ipd-episode/run.ts', 'utf8');
+  assert.match(run, /divergenceBand: divergenceBandFor\(storedIndex\)/,
+    'the row derives its band from THIS run’s index, with no read of any previous row');
+});

@@ -92,6 +92,8 @@ export interface RunCheckpointInput {
   traceId: string | undefined;
   checkpointId: string;
   checkpointType: 'daily' | 'episode';
+  /** DECISION 43: what this checkpoint is anchored to, recorded on the row. */
+  anchorKind?: string;
   dayIndex: number;
   cutoffAt: string;
   admissionContext: string;
@@ -107,6 +109,7 @@ export interface CheckpointResult {
   checkpointId: string;
   dayIndex: number;
   checkpointType: 'daily' | 'episode';
+  anchorKind: string;
   cutoffAt: string;
   inputEventCount: number;
   retrievalQuery: string;
@@ -279,6 +282,7 @@ export async function runCheckpoint(input: RunCheckpointInput): Promise<Checkpoi
     checkpointId: input.checkpointId,
     dayIndex: input.dayIndex,
     checkpointType: input.checkpointType,
+    anchorKind: input.anchorKind ?? 'episode',
     cutoffAt: input.cutoffAt,
     inputEventCount: input.events.length,
     retrievalQuery: query,

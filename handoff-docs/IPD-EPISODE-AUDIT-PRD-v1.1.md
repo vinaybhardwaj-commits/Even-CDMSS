@@ -619,6 +619,40 @@ penalty −32 and index 105 as the proof. They are excluded from the projection 
 re-run. (V's instruction said four stale and eight recent; the stored `audited_at` timestamps say
 **five and seven**.)
 
+### 1.23 Round 23 — decisions 43 and 44, and seven fixes (V, 2026-09-04)
+
+Evidence: IPNO-495, the cohort's only `substantial` at 78. **22 of its 29 divergent findings had an
+empty `evidence_basis`, carrying 141 of 167 penalty points — 84%** — and most were contradicted by
+the episode's own event list.
+
+**DECISION 43 — checkpoints are anchored to events, not calendar days.** `first_24h` (admission +
+24h), the day of each procedure, +2 and +4 days after each, `pre_discharge` (24h before discharge),
+and the episode-level checkpoint. Capped at 8, deduplicated per day. The old plan failed at both
+ends: `cp-d0`'s cutoff was the **admission instant**, so it saw the admission event and nothing else
+— retrieval skipped on 10 of 12 episodes, every expectation uncited; and days beyond 6 were never
+checkpointed, so IPNO-495's days 7–11 held 115 of 414 events (28%) and produced no expectations at
+all. ⚠️ **Priority governs the dedup, not only the cap** — IPNO-495's pre-discharge anchor collides
+with a `procedure_plus_2` on day 10, and keeping the earliest cutoff discarded the view of the
+discharge decision. Blinding is unchanged in principle and re-derived per anchor: strictly before
+the cutoff instant, admission always, discharge never. `anchor_kind` is recorded on every row.
+
+**DECISION 44 — a resolver finding with no evidence cannot be divergent.** Where `matched_term` is
+null and `evidence_basis` is empty, the verdict is `context_dependent` and the statement says *"not
+detected by matcher"* rather than *"no matching record exists anywhere in this admission"*. ⚠️ **The
+consequence is large and deliberate: every `absent_class_present` resolver finding has no matched
+event, so the resolver no longer produces a divergent verdict at all.** All remaining penalty comes
+from the judged passes, which cite evidence. The engine may not assert a negative it has not
+verified.
+
+| # | Fix |
+|---|---|
+| 3 | **Token-set matching.** A literal substring test never matched "chest x-ray" against `X-RAY CHEST PA VIEW`. Multi-word terms now match when every token appears in any order, after synonym folding (angiogram ≡ angiography ≡ CTA, doppler ≡ duplex) and light stemming. **Coverage: 88 of 833 matchers gained a match (10.6%), 3 lost** — and 2 of the 3 are corrections: `dvt` had been matching *DVT STOCKINGS*, `ecg` matching *ECG LEADS*. |
+| 4 | **`lab` searches orders as well as results.** GRBS was ordered on nine days as Procedure and Pathology billing lines while "grbs" sat in the matcher terms and glucose monitoring was called absent three times. |
+| 5 | **Standing expectations deduplicate across checkpoints.** 27 of 29 divergent findings were `group_size` 1; r-83 and r-90 were one expectation scored twice. Resolution and verdict LEAVE the key; matcher-term overlap merges reworded classes; the **best-evidenced member speaks for the group**, so a day it was found outranks a day it was not. |
+| 6 | **Cross-pass contradiction check before emission.** The same report said "chest X-ray does not exist anywhere in this admission" and "chest X-ray was ordered on day 3". An asserted absence contradicted by an evidenced finding on the same subject is downgraded and marked, never dropped — and **every counter reads the post-gate list**, or the gate would be cosmetic. |
+| 7 | **Paper artefacts and unestablished antecedents are unassessable.** Informed consent and preoperative clearance sit outside every data class this engine reads; and a treponemal confirmatory test was scored absent with no evidence the VDRL was ever positive. |
+| 8 | **Two scoring bugs.** `expectations_evaluated = 0` produced `divergence_index 0` with status `ok` — zero is the WORST value on this scale, so the arithmetic reported the most alarming reading of an episode nothing had been measured on. It is now `nothing_evaluable`, a hard failure with a null index. ⚠️ **The band was NOT inherited**: IPNO-495 read `substantial` on all three runs because 0 and 75 are substantial under the thresholds in force then (90/70/45, 97/90/80) and 78 is under today's 95/88/80. Pinned by test rather than assumed. |
+
 ### 4.2a `unassessable` must be earned (added 2026-09-02, decision 33)
 
 A finding may carry `unassessable` only if its `evidence_basis` is empty or every cited source is Tier C. Anything else is rewritten to `context_dependent` in code and counted in `n_unassessable_rejected`. Resolver findings with `resolution = 'absent_class_missing'` are exempt: that gap was established by code rather than claimed by a model.

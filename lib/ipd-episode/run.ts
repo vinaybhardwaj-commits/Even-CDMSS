@@ -21,7 +21,7 @@
 import { assertKnownBedrockModel } from '../bedrock-core';
 import { startTrace, finishTraceIfRunning, logEvent } from '../trace';
 import {
-  checkpointPlan, dayStartIso, diffPassEvents, episodeLevelEvents, eventsBeforeDayStart,
+  checkpointPlanFromEvents, dayStartIso, diffPassEvents, episodeLevelEvents, eventsBeforeCutoff,
   fidelityPassEvents, isDischargeEvent, summariseEventsForPrompt, dischargeIndicatesDeath,
   type EpisodeEvent,
 } from './assemble-core';
@@ -283,8 +283,11 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
       events.map((e) => e.author_name).filter((n): n is string => !!n && n.trim().length >= 3),
     ));
 
-    const plan = checkpointPlan(envelope.losDays);
     const admittedAt = envelope.admittedAt as string;
+    // DECISION 43: anchors, not calendar days.
+    const plan = checkpointPlanFromEvents({
+      admittedAt, dischargedAt: envelope.dischargedAt, losDays: envelope.losDays, events,
+    });
     // ── item 1: CHECKPOINTS RUN CONCURRENTLY, 3 AT A TIME ────────────────────────────────────
     // They are independent BY CONSTRUCTION: each is handed a list produced by filtering the single
     // assembled course to its own cut-off, and none reads another's output. There is no ordering
@@ -299,16 +302,17 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
       // produce an event the other pass would not have had.
       const input_events = entry.checkpoint_type === 'episode'
         ? episodeLevelEvents(events)
-        : eventsBeforeDayStart(events, admittedAt, entry.day_index);
+        : eventsBeforeCutoff(events, entry.cutoff_at);
       const cutoffAt = entry.checkpoint_type === 'episode'
         ? (input_events.filter((e) => e.occurred_at).slice(-1)[0]?.occurred_at ?? admittedAt)
-        : dayStartIso(admittedAt, entry.day_index);
+        : entry.cutoff_at;
 
       return runCheckpoint({
         traceId,
         deadlineAt,
         checkpointId: entry.checkpoint_id,
         checkpointType: entry.checkpoint_type,
+        anchorKind: entry.anchor_kind,
         dayIndex: entry.day_index,
         cutoffAt,
         admissionContext,
@@ -617,6 +621,7 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
       offTopicExcerptCount: c.offTopicExcerptCount,
       day0QueryFromOt: c.day0QueryFromOt,
       queryUnderspecified: c.queryUnderspecified,
+      anchorKind: c.anchorKind,
       temperature: c.temperature,
       seed: c.seed,
       maxTokens: c.maxTokens,
@@ -735,6 +740,7 @@ export async function runEpisodeAudit(input: RunEpisodeInput): Promise<RunEpisod
         ...(final.n_uncited_entries ? [`${final.n_uncited_entries} finding(s) measured against an uncited expectation (no longer a cap)`] : []),
         ...(final.n_billing_only_capped ? [`${final.n_billing_only_capped} commission finding(s) held to minor — billing-only evidence on an uncorroborated day (item 1)`] : []),
         ...(final.n_escalation_unassessable ? [`${final.n_escalation_unassessable} judged finding(s) rewritten to unassessable — measured against an escalation trigger, whose antecedent this pipeline cannot evaluate`] : []),
+        ...(final.n_contradictions_downgraded ? [`${final.n_contradictions_downgraded} asserted absence(s) downgraded — another finding in this same audit reports the thing on the record (item 6)`] : []),
         ...(final.n_fidelity_normalized ? [`${final.n_fidelity_normalized} fidelity finding(s) normalised to commission / no checkpoint`] : []),
         ...(final.n_literature_capped ? [`${final.n_literature_capped} finding(s) stand on literature only, no normative citation (counted, not capped)`] : []),
         ...(scoringStatus !== 'ok' ? [`scoring_status ${scoringStatus} — this episode is not presented as scored`] : []),

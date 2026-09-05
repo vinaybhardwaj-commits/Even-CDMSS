@@ -886,6 +886,61 @@ export function missingDischargeDayNote(
   };
 }
 
+/**
+ * ROUND 23 ITEM 6 — TWO FINDINGS THAT CONTRADICT EACH OTHER ON ONE FACT MUST NOT BOTH SHIP.
+ *
+ * IPNO-495's report contained, in the same list, "chest X-ray does not exist anywhere in this
+ * admission" and "chest X-ray was ordered on day 3". Both were produced by this engine, from the
+ * same event list, and both went to the same reader. Whichever is right, shipping the pair costs
+ * more than shipping neither: it tells a clinician the audit does not know what is in the record.
+ *
+ * The check is deliberately narrow, because a broad one would start adjudicating clinical
+ * disagreement. It fires only on the case above: one finding SAYS SOMETHING WAS FOUND (it carries a
+ * matched event or a non-empty evidence_basis) while another ASSERTS THE SAME SUBJECT IS ABSENT.
+ * The subject comparison reuses the item-4 vocabulary, so it is the same notion of "same thing"
+ * that grouping uses.
+ *
+ * ⚠️ THE EVIDENCED FINDING WINS AND THE ASSERTION IS DOWNGRADED, never the reverse, and never
+ * dropped. A finding standing on a real event outranks one standing on a matcher that did not fire
+ * — that is decision 44's principle applied between passes rather than within one. The downgraded
+ * finding stays in the report, marked, because a reader who disagrees needs to see it.
+ */
+export function findingSubject(f: EpisodeFinding): string {
+  const words = subjectWords(f.statement.split('.')[0] ?? f.statement);
+  return words.join('+');
+}
+
+export interface ContradictionResult { findings: EpisodeFinding[]; downgraded: number }
+
+export function resolveContradictions(findings: EpisodeFinding[]): ContradictionResult {
+  const evidenced = new Map<string, EpisodeFinding>();
+  for (const f of findings) {
+    const hasEvidence = f.evidence_basis.length > 0 || !!f.matched_term;
+    if (!hasEvidence) continue;
+    const subj = findingSubject(f);
+    if (subj && !evidenced.has(subj)) evidenced.set(subj, f);
+  }
+
+  let downgraded = 0;
+  const out = findings.map((f) => {
+    // only an ASSERTED absence can be contradicted: it claims something is not there
+    const assertsAbsence = f.resolution === 'absent_class_present'
+      || /\b(no matching|not detected|does not exist|was not (ordered|done|performed)|never (ordered|done))\b/i.test(f.statement);
+    if (!assertsAbsence) return f;
+    if (f.evidence_basis.length > 0 || f.matched_term) return f;
+    const subj = findingSubject(f);
+    const other = subj ? evidenced.get(subj) : undefined;
+    if (!other || other.finding_id === f.finding_id) return f;
+    downgraded++;
+    return {
+      ...f,
+      verdict: 'context_dependent' as Verdict,
+      statement: `${f.statement} ⚠️ Another finding in this same audit (${other.finding_id}) reports this on the record, so this absence is contradicted by the engine's own evidence and is not asserted.`,
+    };
+  });
+  return { findings: out, downgraded };
+}
+
 // ── attribution (PRD §5) ─────────────────────────────────────────────────────────────────────
 
 /**
@@ -1116,6 +1171,8 @@ export interface FinalizeResult {
   n_billing_only_capped: number;
   /** Judged findings rewritten to `unassessable` for naming an escalation entry (round 18 item 2). */
   n_escalation_unassessable: number;
+  /** Asserted absences another finding in the same audit contradicted (round 23 item 6). */
+  n_contradictions_downgraded: number;
   n_fidelity_normalized: number;
   /** Findings whose severity was cut from major because only literature backed them. */
   n_literature_capped: number;
@@ -1191,16 +1248,23 @@ export function finalizeFindings(
     };
     return attachAttribution(stamped, events);
   });
+
+  // ITEM 6: the last gate before emission, and the only one that reads findings against EACH OTHER.
+  const contradiction = resolveContradictions(findings);
+  const emitted = contradiction.findings;
+  // ⚠️ EVERY NUMBER BELOW READS `emitted`, NOT `findings`. A contradiction that is downgraded in the
+  // report but still counted as divergent in the score would make item 6 cosmetic — the reader
+  // would see the caveat and the arithmetic would ignore it.
   return {
-    findings,
+    findings: emitted,
     counters: {
-      ...countFindings(findings, dropped, parseFailed),
+      ...countFindings(emitted, dropped, parseFailed),
       n_unassessable_rejected: unassessableRejected,
       n_judged_omissions_dropped: omissionDrop.dropped,
     },
-    divergence_index: divergenceIndex(findings),
-    penalty_total: penaltyTotal(findings),
-    expectations_evaluated: expectationsEvaluated(findings),
+    divergence_index: divergenceIndex(emitted),
+    penalty_total: penaltyTotal(emitted),
+    expectations_evaluated: expectationsEvaluated(emitted),
     n_tier_c_rewritten: rewritten,
     n_uncited_capped: capped,
     n_fidelity_normalized: normalized,
@@ -1211,6 +1275,8 @@ export function finalizeFindings(
     n_uncited_entries: uncitedEntries,
     n_billing_only_capped: billingCapped,
     n_escalation_unassessable: escalationRewritten,
+    /** ROUND 23 ITEM 6: absences the engine's own evidence contradicted. */
+    n_contradictions_downgraded: contradiction.downgraded,
     n_unassessable_rejected: unassessableRejected,
     n_judged_omissions_dropped: omissionDrop.dropped,
     capped_finding_ids,
@@ -1346,7 +1412,7 @@ export function bandIsUncertain(
 
 // ── scoring status (item 5) ──────────────────────────────────────────────────────────────────
 
-export const SCORING_STATUSES = ['ok', 'no_expectations', 'all_capped', 'incomplete_checkpoints'] as const;
+export const SCORING_STATUSES = ['ok', 'no_expectations', 'nothing_evaluable', 'all_capped', 'incomplete_checkpoints'] as const;
 export type ScoringStatus = (typeof SCORING_STATUSES)[number];
 
 /**
@@ -1382,6 +1448,16 @@ export function scoringStatusFor(a: {
   // is missing a whole day is not a low score or a high score, it is not a score, and presenting
   // one is the most dangerous thing this engine has done.
   if ((a.incompleteCheckpoints ?? 0) > 0) return 'incomplete_checkpoints';
+  // ⚠️ ROUND 23 ITEM 8 — NOTHING EVALUABLE IS A FAILURE, NOT A ZERO.
+  //
+  // IPNO-495's first run stored `divergence_index 0` with `scoring_status ok` on
+  // `expectations_evaluated = 0`. A rate with an empty denominator is not a score of zero; it is
+  // the absence of a score, and zero is the WORST value on this scale — the arithmetic silently
+  // reported the most alarming possible reading of an episode nothing had been measured on.
+  //
+  // Every finding unassessable means the denominator is empty. `divergenceIndex` already returns
+  // null there; this makes the row SAY so rather than leaving a null beside an `ok`.
+  if (a.findings.length > 0 && a.findings.every((f) => f.verdict === 'unassessable')) return 'nothing_evaluable';
   if (a.totalExpectedEntries === 0) return 'no_expectations';
   if (a.findings.length > 0 && a.findings.every((f) => a.cappedFindingIds.has(f.finding_id))) return 'all_capped';
   return 'ok';
@@ -1393,7 +1469,7 @@ export function storedDivergenceIndex(index: number | null, status: ScoringStatu
   // Both of these mean "there is no number here": no expectation was formed at all, or part of the
   // expected course is missing. `all_capped` keeps its number — that arithmetic is real, it is just
   // weakly evidenced, and the status says so.
-  if (status === 'no_expectations' || status === 'incomplete_checkpoints') return null;
+  if (status === 'no_expectations' || status === 'incomplete_checkpoints' || status === 'nothing_evaluable') return null;
   // Round 15: the rate is itself null when nothing assessable was measured, and that null means
   // the same thing — there is no number here — so it passes straight through.
   return index;
@@ -1464,8 +1540,45 @@ export function expectationSubject(entry: ResolvableEntry): string {
   return sorted.length ? sorted.join('+') : `text:${entry.item.trim().toLowerCase()}`;
 }
 
+/**
+ * ROUND 23 ITEM 5 — STANDING EXPECTATIONS DEDUPLICATE ACROSS CHECKPOINTS, NOT ONLY WITHIN A DAY.
+ *
+ * On IPNO-495, 27 of 29 divergent findings were `group_size` 1, and r-83 and r-90 were the SAME
+ * expectation raised on the SAME day with overlapping matcher terms, scored twice. About 41% of
+ * that episode's penalty was duplication — one clinical concern charged repeatedly because each
+ * checkpoint phrased it slightly differently.
+ *
+ * ⚠️ THE DAY LEAVES THE KEY. Round 12 grouped by subject within a resolution; the day was never in
+ * the key, but `resolution` and `verdict` were, and those differ between checkpoints for the same
+ * standing concern — so "monitor renal function", raised on four days and resolving `present` on
+ * two and `absent_class_present` on two, became two findings rather than one.
+ *
+ * The subject and section still bound the group, and MATCHER-TERM OVERLAP now merges classes whose
+ * subjects differ only in wording: two entries sharing half their canonical terms are the same
+ * expectation however each day chose to word it.
+ *
+ * ⚠️ RESOLUTION AND VERDICT STAY OUT OF THE KEY BUT NOT OUT OF THE FINDING. The group takes the
+ * BEST-EVIDENCED member's outcome — a day it was found beats a day it was not — because round 12's
+ * concordant-erasure lesson runs in this direction too: if the thing happened once, the episode
+ * should not carry a finding saying it never did.
+ */
 export function resolverGroupKey(entry: ResolvableEntry, outcome: ResolvedOutcome): string {
-  return `${entry.section}|${expectationSubject(entry)}|${outcome.resolution}|${outcome.verdict}`;
+  return `${entry.section}|${expectationSubject(entry)}`;
+}
+
+/** The canonical matcher terms of an entry, for the overlap test. */
+function canonicalTerms(entry: ResolvableEntry): Set<string> {
+  const out = new Set<string>();
+  for (const t of entry.matcher?.terms ?? []) for (const w of subjectWords(t)) out.add(w);
+  return out;
+}
+
+/** Two expectation classes are the same when they share at least half of the smaller term set. */
+export function termsOverlap(a: Set<string>, b: Set<string>): boolean {
+  if (!a.size || !b.size) return false;
+  let shared = 0;
+  for (const t of a) if (b.has(t)) shared++;
+  return shared * 2 >= Math.min(a.size, b.size);
 }
 
 /**
@@ -1483,10 +1596,39 @@ export function findingsFromResolved(
     if (g) g.push(r); else groups.set(k, [r]);
   }
 
+  // ITEM 5, SECOND PASS — merge classes whose SUBJECTS differ only in wording but whose matcher
+  // terms plainly describe one thing. r-83 and r-90 on IPNO-495 were the same expectation on the
+  // same day with overlapping terms, keyed apart by a word. Merging is order-stable: a class only
+  // ever merges into an EARLIER one, so the result does not depend on map iteration order.
+  const keys = [...groups.keys()];
+  const termsFor = new Map<string, Set<string>>(
+    keys.map((k) => [k, canonicalTerms(groups.get(k)![0].entry)] as const),
+  );
+  const mergedInto = new Map<string, string>();
+  for (let i = 0; i < keys.length; i++) {
+    const ki = keys[i];
+    if (mergedInto.has(ki)) continue;
+    const [sectionI] = ki.split('|');
+    for (let j = i + 1; j < keys.length; j++) {
+      const kj = keys[j];
+      if (mergedInto.has(kj)) continue;
+      if (kj.split('|')[0] !== sectionI) continue;   // never merge across sections
+      if (!termsOverlap(termsFor.get(ki)!, termsFor.get(kj)!)) continue;
+      groups.get(ki)!.push(...groups.get(kj)!);
+      groups.delete(kj);
+      mergedInto.set(kj, ki);
+    }
+  }
+
   return [...groups.values()].map((members, i) => {
-    // The member that carries the evidence: the first one that actually matched an event. A group
-    // of absences has none, and its basis is empty — the same as before grouping.
-    const withEvent = members.find((m) => m.outcome.matchedEvent) ?? members[0];
+    // ⚠️ THE BEST-EVIDENCED MEMBER SPEAKS FOR THE GROUP (item 5). With resolution and verdict out of
+    // the key, one class can hold a day it was found and a day it was not; if the thing happened
+    // once, the episode must not carry a finding saying it never did. A member with a matched event
+    // outranks one without, and `present` outranks the rest.
+    const rank = (m: { outcome: ResolvedOutcome }) =>
+      (m.outcome.matchedEvent ? 4 : 0) + (m.outcome.resolution === 'present' ? 2 : 0)
+      + (m.outcome.verdict === 'concordant' ? 1 : 0);
+    const withEvent = [...members].sort((a, b) => rank(b) - rank(a))[0];
     const { entry, outcome } = withEvent;
     const days = [...new Set(members.map((m) => m.entry.dayIndex))].sort((a, b) => a - b);
     const refs = members.map((m) => m.entry.ref);
