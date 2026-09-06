@@ -35,6 +35,9 @@ import { CORPUS_SCHEMAS } from './tools/corpus';
 import { RELEASE_SCHEMAS } from './tools/release';
 // Slice C round C2 (§17.7, decisions 82, 89, 90). Same pattern: schemas beside their handlers.
 import { RULES_SCHEMAS } from './tools/rules';
+// Slice C round C3 (§17.7, decisions 96, 97). Same pattern: schemas beside their handlers.
+import { CLUSTER_SCHEMAS } from './tools/cluster';
+import { QUEUE_SCHEMAS } from './tools/queue';
 
 export interface ToolAnnotations { readOnlyHint: boolean; destructiveHint: boolean; idempotentHint: boolean }
 
@@ -195,6 +198,30 @@ const c2 = (
   slice: 'C-2',
 });
 
+/**
+ * Slice C round C3 entries (§17.7, decisions 96 and 97). Both read `lab_v2` and nothing else — no
+ * production table, no model — so both are `read` and both are free.
+ *
+ * ⚠️ THE SCOPES DIFFER AND THAT IS THE POINT. `failure_cluster` is `research_read`: it describes the
+ * platform's own failures and every principal that can read research can see them. `review_queue` is
+ * `review` ALONE — it is the reviewer key's work list, and putting it behind that scope is what stops
+ * it from becoming a second, wider window onto what is pending.
+ */
+const C3 = { ...CLUSTER_SCHEMAS, ...QUEUE_SCHEMAS } as unknown as Record<string, { input: ZodTypeAny; output: ZodTypeAny }>;
+const c3 = (
+  name: string, description: string, scopes: readonly Scope[],
+): ToolSpec => ({
+  name: name as ToolName,
+  description,
+  inputSchema: C3[name].input,
+  outputSchema: C3[name].output,
+  scopes,
+  effect: 'read',
+  classification: 'deidentified',
+  cost_class: 'free',
+  slice: 'C-3',
+});
+
 export const REGISTRY: readonly ToolSpec[] = [
   // ── capability discovery ──────────────────────────────────────────────────────────
   t('system_capabilities', 'List the tools this principal can see, the negotiated MCP protocol version, the SDK version, whether LAB_V2_ENABLED is set, and the pricing table version.', ANY, 'read'),
@@ -269,6 +296,10 @@ export const REGISTRY: readonly ToolSpec[] = [
   // ── Slice C round C2 (§17.7, decisions 82, 89, 90) ────────────────────────────────
   c2('rule_propose', 'Stage an LVC rule through v1\u2019s own lvc_propose path \u2014 its citation gate and its mandatory duplicate check, refusals passed through in v1\u2019s words \u2014 and record the proposal id and a hash over the statement and its citation as the staged set a release is prepared against. lvc_recommendations is never touched.', ['research_write'], 'research_write'),
   c2('rule_simulate', 'Replay a frozen OPD cohort\u2019s baseline run against its stored model replies with the proposed rule added to the frozen lvc_rules, and report per case which findings\u2019 rule_ref or lvc_category moved. Zero model calls: decision 82 measured that a rule cannot reach the prompt, so this is the same computation, not an approximation. Names its denominator and says in words that it measures stamps and never a score.', ['research_read'], 'read'),
+
+  // ── Slice C round C3 (§17.7, decisions 96, 97) ────────────────────────────────────
+  c3('failure_cluster', 'Group the window\u2019s failed, unassessable and unattributable items by engine, the stage of their last model call, their error category and the first line of their error message. Reports item and run counts, first and last seen, three examples per group, and counts the items that carry NO error object rather than dropping them. Reads lab_v2 only; zero model calls.', ['research_read']),
+  c3('review_queue', 'The reviewer\u2019s two lists: releases prepared and not applied, each with its impact reference and release_status\u2019s own word for why it waits; and the cases whose band moved in a stored experiment_compare, with both arm hashes. The band rows are re-derived from the run items each compare was computed over and each compare reports whether that matched its stored count. Cases are listed, never scored.', ['review']),
 ];
 
 export const BY_NAME: Record<string, ToolSpec> = Object.fromEntries(REGISTRY.map((s) => [s.name, s]));

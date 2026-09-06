@@ -60,7 +60,23 @@ export const RETRIEVAL_COMPARE_SCHEMAS = {
       config_b: z.record(z.unknown()),
       totals: z.object({
         queries: z.number().int(),
+        /**
+         * DECISION 96 — TWO TOTALS, BECAUSE THERE WERE ALWAYS TWO UNITS.
+         *
+         * ⚠️ `mean_overlap_at_k` USED TO CARRY A PERCENT. Decision 76 reported it as an arithmetic
+         * fault; decision 96 measured that it was a UNITS fault: the field was the mean of
+         * `per_query.overlap_pct` under the name of a count. On the live three-query verification
+         * that read 6.67 — a plausible-looking number that a reader would take as "0.67 of ten
+         * results shared, roughly", when the per-query counts were 0, 0 and 2 and the mean count is
+         * 0.67. The percent was never wrong; its name was.
+         *
+         * ⚠️ AND NOTHING IS RE-MEANED UNDER AN OLD NAME. `mean_overlap_pct` is the SAME computation
+         * this field always performed, moved to the name that describes it. `mean_overlap_at_k` is a
+         * new mean over `per_query.overlap_at_k`. A reader who had pinned the old field to a number
+         * finds that number under `mean_overlap_pct`, unchanged.
+         */
         mean_overlap_at_k: z.number().nullable(),
+        mean_overlap_pct: z.number().nullable(),
         mean_rank_correlation: z.number().nullable(),
         ms_a: z.number().int(),
         ms_b: z.number().int(),
@@ -211,6 +227,8 @@ export async function retrievalCompare(
   let msA = 0;
   let msB = 0;
   const overlaps: number[] = [];
+  /** DECISION 96 — the counts, kept alongside the percents rather than derived from them. */
+  const overlapCounts: number[] = [];
   const correlations: number[] = [];
 
   for (const query of args.queries) {
@@ -246,7 +264,11 @@ export async function retrievalCompare(
     const denom = Math.max(ra.ids.length, rb.ids.length);
     const overlapPct = denom > 0 ? Math.round((100 * shared.length) / denom) : null;
     const rho = rankCorrelation(ra.ids, rb.ids);
-    if (overlapPct != null) overlaps.push(overlapPct);
+    // DECISION 96 — both accumulators are gated on the SAME condition, so the two totals are means
+    // over the same set of queries. A query with no candidates on either side has no denominator and
+    // therefore no overlap to report in either unit; counting a 0 for it in one total and not the
+    // other would make the two numbers describe different things.
+    if (overlapPct != null) { overlaps.push(overlapPct); overlapCounts.push(shared.length); }
     if (rho != null) correlations.push(rho);
     per_query.push({
       // The query TEXT is not returned: a caller supplied it and knows it, and a clinical query is
@@ -276,7 +298,10 @@ export async function retrievalCompare(
     config_b: { ...args.b } as Record<string, unknown>,
     totals: {
       queries: args.queries.length,
-      mean_overlap_at_k: mean(overlaps),
+      // DECISION 96. `mean` already rounds to two decimals and returns null on an empty list, which
+      // is exactly "null when no query produced a denominator".
+      mean_overlap_at_k: mean(overlapCounts),
+      mean_overlap_pct: mean(overlaps),
       mean_rank_correlation: mean(correlations),
       ms_a: Math.round(msA),
       ms_b: Math.round(msB),

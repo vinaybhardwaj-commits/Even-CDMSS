@@ -52,6 +52,9 @@ import { CORPUS_SCHEMAS, corpusDiff, corpusStage, corpusValidate } from './tools
 import { RELEASE_SCHEMAS, RELEASE_HANDLERS } from './tools/release';
 // Slice C round C2 (§17.7, decisions 82, 89, 90).
 import { RULES_SCHEMAS, rulePropose, ruleSimulate } from './tools/rules';
+// Slice C round C3 (§17.7, decisions 96, 97).
+import { CLUSTER_SCHEMAS, failureCluster } from './tools/cluster';
+import { QUEUE_SCHEMAS, reviewQueue } from './tools/queue';
 import { freezeCohort } from './sources/cohort';
 import { freezeOpdCase, validateFrozenCase } from './sources/opd';
 import { openrouterConfigured, geminiConfigured } from '../llm';
@@ -118,6 +121,8 @@ const SCHEMAS: Record<string, SchemaPair> = {
   ...(CORPUS_SCHEMAS as unknown as Record<string, SchemaPair>),
   ...(RELEASE_SCHEMAS as unknown as Record<string, SchemaPair>),
   ...(RULES_SCHEMAS as unknown as Record<string, SchemaPair>),
+  ...(CLUSTER_SCHEMAS as unknown as Record<string, SchemaPair>),
+  ...(QUEUE_SCHEMAS as unknown as Record<string, SchemaPair>),
   // §17.6 item 6 — report_export goes FULL. Its schema is widened here rather than in
   // tools/observation.ts because §17.6's file contract leaves that file untouched, and this
   // table is where both rounds' schemas already meet. A later spread wins, so this entry
@@ -742,6 +747,10 @@ const B3_HANDLERS: Record<string, Handler> = {
       body.drift = await driftReport({ engine, weeks: 8 });
       sections.push('drift');
     }
+    // §17.7 C3 item 3 — observation.ts adds these two to the body when they exist; `sections` must
+    // name what the body actually carries or it is a list that lies about its own document.
+    if (body.releases !== undefined) sections.push('releases');
+    if (body.reviews !== undefined) sections.push('reviews');
     body.sections = sections;
 
     const { object } = await putObject(deps.db, deps.principal, 'report', body, 'deidentified', null);
@@ -779,6 +788,16 @@ const C2_HANDLERS: Record<string, Handler> = {
   },
 };
 
+/** Slice C round C3 (§17.7, decisions 96, 97). */
+const C3_HANDLERS: Record<string, Handler> = {
+  async failure_cluster(deps, args) {
+    return failureCluster(deps.db, args as never);
+  },
+  async review_queue(deps, args) {
+    return reviewQueue(deps.db, deps.principal, args as never);
+  },
+};
+
 const ALL_HANDLERS: Record<string, Handler> = {
   ...HANDLERS,
   ...(OBSERVATION_HANDLERS as unknown as Record<string, Handler>),
@@ -787,4 +806,5 @@ const ALL_HANDLERS: Record<string, Handler> = {
   ...B3_HANDLERS,
   ...C1_HANDLERS,
   ...C2_HANDLERS,
+  ...C3_HANDLERS,
 };

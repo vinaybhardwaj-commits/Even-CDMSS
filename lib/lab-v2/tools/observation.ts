@@ -192,6 +192,98 @@ const shapeAuditRow = (r: Awaited<ReturnType<typeof oneAudit>>) => (r ? {
   finding_subjects: (r.finding_subjects ?? []).filter((s): s is string => typeof s === 'string'),
 } : null);
 
+/**
+ * §17.7 C3 item 3 — the release and review sections of a run report.
+ *
+ * ⚠️ ABSENT SECTIONS ARE ABSENT KEYS, NEVER EMPTY ARRAYS. A run with no release must produce
+ * byte-identically the report body it produced before C3, because `putObject` is content-addressed:
+ * an empty `releases: []` would change the hash of every stored `run_report` in the platform and
+ * every reference to one would then name an object that no longer exists at that hash. So this
+ * returns `{}` when there is nothing to say, and the spread adds nothing.
+ *
+ * ⚠️ WHAT LINKS A RELEASE TO A RUN IS ITS `impact_ref`, AND ONLY ONE OF THE TWO TARGETS CAN BE
+ * LINKED TODAY. Measured on `4224e152`: a rules release's `impact_ref` is a `rule_simulate`
+ * artifact, which carries `baseline_run_id` and resolves precisely. A corpus release's `impact_ref`
+ * is documented as "a corpus_diff artifact id" — but `corpus_diff` PERSISTS NOTHING (`tools/corpus.ts`
+ * writes exactly one object, the staged set), so that id resolves to nothing and no corpus release
+ * can appear in this section yet. The resolution below is written for both and finds what exists;
+ * the day `corpus_diff` stores its artifact with a dataset id, corpus releases join with no change
+ * here. Reported rather than papered over.
+ */
+async function releaseSections(db: Db, runId: string, datasetId: string | null): Promise<Record<string, unknown>> {
+  const releases = await db.query<{ id: string; owner: string; hash: string; body: unknown; created_at: string }>(
+    RELEASE_OBJECTS_SQL,
+  ).catch(() => []);
+  if (!releases.length) return {};
+
+  const matched: { id: string; hash: string; body: Record<string, unknown> }[] = [];
+  for (const r of releases) {
+    const body = (r.body ?? {}) as Record<string, unknown>;
+    const ref = body.impact_ref == null ? '' : String(body.impact_ref);
+    if (!ref) continue;
+    const impact = await getObject(db, ref).catch(() => null);
+    const ib = (impact?.body ?? {}) as { kind?: string; baseline_run_id?: string; dataset_id?: string };
+    const onThisRun = ib.baseline_run_id != null && String(ib.baseline_run_id) === runId;
+    const onThisDataset = datasetId != null && ib.dataset_id != null && String(ib.dataset_id) === datasetId;
+    if (!onThisRun && !onThisDataset) continue;
+    matched.push({ id: r.id, hash: r.hash, body: { ...body, __owner: r.owner, __created_at: r.created_at } });
+  }
+  if (!matched.length) return {};
+
+  const out: Record<string, unknown> = {};
+  const releaseRows = [];
+  const reviewRows = [];
+  for (const m of matched) {
+    const receipts = await db.query<{ id: string; kind: string; revision: string | number; body: unknown; created_at: string }>(
+      RECEIPTS_FOR_RELEASE_SQL, [m.id],
+    ).catch(() => []);
+    releaseRows.push({
+      release_id: m.id,
+      target: m.body.target == null ? null : String(m.body.target),
+      label: m.body.label == null ? null : String(m.body.label),
+      artifact_hash: m.hash,
+      impact_ref: m.body.impact_ref == null ? null : String(m.body.impact_ref),
+      prepared_by: String(m.body.__owner),
+      prepared_at: String(m.body.__created_at),
+      // The state a reader cares about is what actually happened to it, which is on the receipts.
+      state: receipts.some((x) => x.kind === 'rollback') ? 'rolled_back'
+        : receipts.some((x) => x.kind === 'apply') ? 'applied'
+        : 'prepared',
+      receipts: receipts.map((x) => ({
+        receipt_id: x.id, kind: x.kind, revision: Number(x.revision),
+        outcome: String((x.body as { outcome?: unknown } | null)?.outcome ?? x.kind),
+        created_at: String(x.created_at),
+      })),
+    });
+    for (const rev of await db.query<{ id: string; reviewer: string; artifact_hash: string; decision: string; rationale: string; created_at: string; expires_at: string }>(
+      REVIEWS_FOR_RELEASE_SQL, [m.id],
+    ).catch(() => [])) {
+      reviewRows.push({
+        release_id: m.id, review_id: rev.id, reviewer: rev.reviewer,
+        decision: rev.decision, rationale: rev.rationale,
+        // The hash the approval BOUND, which is the whole of decision 81 — a review of a different
+        // artifact is not a review of this one, and the report must let a reader see that.
+        artifact_hash: rev.artifact_hash,
+        bound_to_current: rev.artifact_hash === m.hash,
+        created_at: String(rev.created_at), expires_at: String(rev.expires_at),
+      });
+    }
+  }
+  out.releases = releaseRows;
+  // Reviews are their own section, and an unreviewed release simply has none — again a missing key
+  // rather than an empty list, for the same hash reason.
+  if (reviewRows.length) out.reviews = reviewRows;
+  return out;
+}
+
+/** §17.7 C3 — the three lab_v2 reads report_export's new sections make. */
+export const RELEASE_OBJECTS_SQL = `SELECT id::text AS id, owner, hash, body, created_at
+FROM lab_v2.objects WHERE kind = 'release' ORDER BY created_at DESC LIMIT 200`;
+export const RECEIPTS_FOR_RELEASE_SQL = `SELECT id::text AS id, kind, revision, body, created_at
+FROM lab_v2.receipts WHERE release_id = $1 ORDER BY created_at`;
+export const REVIEWS_FOR_RELEASE_SQL = `SELECT id::text AS id, reviewer, artifact_hash, decision, rationale, created_at, expires_at
+FROM lab_v2.reviews WHERE release_id = $1 ORDER BY created_at`;
+
 export const OBSERVATION_HANDLERS: Record<ObservationToolName, Handler> = {
   async source_freshness({ db }) {
     return { sources: await sourceFreshness(db) };
@@ -415,6 +507,8 @@ export const OBSERVATION_HANDLERS: Record<ObservationToolName, Handler> = {
       })),
       calls,
       replay_exactness: dsBody.replay_exactness ?? null,
+      // §17.7 C3 item 3 — release and review provenance, present only when it exists.
+      ...(await releaseSections(db, run.id, expBody.dataset_id ?? null)),
       caveat: REPORT_CAVEAT,
     };
 
