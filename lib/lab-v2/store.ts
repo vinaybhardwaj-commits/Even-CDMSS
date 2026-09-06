@@ -484,6 +484,124 @@ export async function appliedMigrations(db: Db): Promise<string[]> {
   return rows.map((r) => r.name);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────────────
+// Slice C, §11 — the release ledger: targets, reviews, receipts (0002_releases.sql)
+// ─────────────────────────────────────────────────────────────────────────────────────
+
+export interface TargetRow {
+  name: string; revision: string | number;
+  artifact_id: string | null; predecessor_id: string | null; release_id: string | null;
+  updated_at: string;
+}
+
+export interface ReviewRow {
+  id: string; release_id: string; reviewer: string; artifact_hash: string;
+  decision: string; rationale: string; created_at: string; expires_at: string;
+  idempotency_key: string | null;
+}
+
+export interface ReceiptRow {
+  id: string; release_id: string; target: string; revision: string | number;
+  kind: string; body: unknown; created_at: string;
+}
+
+/**
+ * ⚠️ `revision` IS bigint AND THE DRIVER RETURNS IT AS A STRING (decision 72, again). Every read
+ * of it goes through this, so a compare-and-swap can never compare a string with a number and
+ * conclude the revision moved when it did not.
+ */
+export const asRevision = (v: unknown): number => {
+  const n = v == null || v === '' ? NaN : Number(v);
+  if (!Number.isSafeInteger(n)) throw new LabError('STORE_UNAVAILABLE', `targets.revision is not an integer: ${JSON.stringify(v)}`);
+  return n;
+};
+
+export async function getTarget(db: Db, name: string): Promise<{ name: string; revision: number; artifact_id: string | null; predecessor_id: string | null; release_id: string | null } | null> {
+  const rows = await db.query<TargetRow>(`SELECT * FROM lab_v2.targets WHERE name = $1`, [name]);
+  const r = rows[0];
+  return r ? { name: r.name, revision: asRevision(r.revision), artifact_id: r.artifact_id, predecessor_id: r.predecessor_id, release_id: r.release_id } : null;
+}
+
+export async function listTargets(db: Db): Promise<{ name: string; revision: number; artifact_id: string | null; predecessor_id: string | null; release_id: string | null }[]> {
+  const rows = await db.query<TargetRow>(`SELECT * FROM lab_v2.targets ORDER BY name`);
+  return rows.map((r) => ({ name: r.name, revision: asRevision(r.revision), artifact_id: r.artifact_id, predecessor_id: r.predecessor_id, release_id: r.release_id }));
+}
+
+/**
+ * §11 — THE COMPARE-AND-SWAP. Zero rows updated is the refusal, atomically: two releases prepared
+ * against the same revision cannot both land, and the loser is told `REVISION_MISMATCH` rather
+ * than silently overwriting the winner. The revision is bumped in the SAME statement that checks
+ * it, so nothing can slip between the read and the write.
+ */
+export async function advanceTarget(
+  db: Db, name: string, expectedRevision: number,
+  next: { artifact_id: string | null; predecessor_id: string | null; release_id: string | null },
+): Promise<number | null> {
+  const rows = await db.query<{ revision: string | number }>(
+    `UPDATE lab_v2.targets
+        SET revision = revision + 1, artifact_id = $3, predecessor_id = $4, release_id = $5, updated_at = now()
+      WHERE name = $1 AND revision = $2
+      RETURNING revision`,
+    [name, expectedRevision, next.artifact_id, next.predecessor_id, next.release_id],
+  );
+  return rows.length ? asRevision(rows[0].revision) : null;
+}
+
+export async function putReview(db: Db, r: {
+  release_id: string; reviewer: string; artifact_hash: string; decision: string;
+  rationale: string; expires_at: string; idempotency_key: string | null;
+}): Promise<ReviewRow> {
+  const existing = r.idempotency_key
+    ? await db.query<ReviewRow>(`SELECT * FROM lab_v2.reviews WHERE reviewer = $1 AND idempotency_key = $2`, [r.reviewer, r.idempotency_key])
+    : [];
+  if (existing.length) return existing[0];
+  const rows = await db.query<ReviewRow>(
+    `INSERT INTO lab_v2.reviews (release_id, reviewer, artifact_hash, decision, rationale, expires_at, idempotency_key)
+     VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+    [r.release_id, r.reviewer, r.artifact_hash, r.decision, r.rationale, r.expires_at, r.idempotency_key],
+  );
+  return rows[0];
+}
+
+/** Every review of one release, newest first. The caller decides which of them still binds. */
+export async function reviewsOf(db: Db, releaseId: string): Promise<ReviewRow[]> {
+  return db.query<ReviewRow>(
+    `SELECT * FROM lab_v2.reviews WHERE release_id = $1 ORDER BY created_at DESC`, [releaseId]);
+}
+
+export async function getReceipt(db: Db, releaseId: string, kind: string): Promise<ReceiptRow | null> {
+  const rows = await db.query<ReceiptRow>(
+    `SELECT * FROM lab_v2.receipts WHERE release_id = $1 AND kind = $2`, [releaseId, kind]);
+  return rows[0] ?? null;
+}
+
+/**
+ * ⚠️ THE UNIQUE INDEX IS THE IDEMPOTENCE, NOT THIS FUNCTION. `ON CONFLICT DO NOTHING` plus a read
+ * back means a concurrent second apply cannot slip between the check and the insert: whichever
+ * transaction loses reads the winner's receipt and returns it, which is exactly what §11 asks for.
+ */
+export async function putReceipt(db: Db, r: {
+  release_id: string; target: string; revision: number; kind: string; body: unknown;
+}): Promise<ReceiptRow> {
+  const rows = await db.query<ReceiptRow>(
+    `INSERT INTO lab_v2.receipts (release_id, target, revision, kind, body)
+     VALUES ($1, $2, $3, $4, $5::jsonb)
+     ON CONFLICT (release_id, kind) DO NOTHING
+     RETURNING *`,
+    [r.release_id, r.target, r.revision, r.kind, JSON.stringify(r.body)],
+  );
+  if (rows.length) return rows[0];
+  const existing = await getReceipt(db, r.release_id, r.kind);
+  if (!existing) throw new LabError('STORE_UNAVAILABLE', `receipt for release ${r.release_id} could neither be written nor read back`);
+  return existing;
+}
+
+/** The last N receipts across every target, newest first — `release_status`'s history. */
+export async function recentReceipts(db: Db, limit = 5): Promise<ReceiptRow[]> {
+  return db.query<ReceiptRow>(
+    `SELECT * FROM lab_v2.receipts ORDER BY created_at DESC LIMIT $1`, [Math.max(1, Math.min(50, limit))]);
+}
+
 export const newId = randomUUID;
 
 // ── steps: the exact-replay ledger (§4.1, decision 45) ───────────────────────────────

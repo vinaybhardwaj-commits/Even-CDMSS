@@ -47,6 +47,9 @@ import { DRIFT_SCHEMAS, driftReport } from './tools/drift';
 import { RETRIEVAL_COMPARE_SCHEMAS, retrievalCompare } from './tools/retrieval-compare';
 import { REPAIR_SCHEMAS, reauditExecute, reauditPlan } from './tools/repair';
 import { GENERATED_ROUTE_VERSIONS, bakedEngineVersion } from './engine-versions.generated';
+// Slice C round C1 (§17.7).
+import { CORPUS_SCHEMAS, corpusDiff, corpusStage, corpusValidate } from './tools/corpus';
+import { RELEASE_SCHEMAS, RELEASE_HANDLERS } from './tools/release';
 import { freezeCohort } from './sources/cohort';
 import { freezeOpdCase, validateFrozenCase } from './sources/opd';
 import { openrouterConfigured, geminiConfigured } from '../llm';
@@ -110,6 +113,8 @@ const SCHEMAS: Record<string, SchemaPair> = {
   ...(DRIFT_SCHEMAS as unknown as Record<string, SchemaPair>),
   ...(RETRIEVAL_COMPARE_SCHEMAS as unknown as Record<string, SchemaPair>),
   ...(REPAIR_SCHEMAS as unknown as Record<string, SchemaPair>),
+  ...(CORPUS_SCHEMAS as unknown as Record<string, SchemaPair>),
+  ...(RELEASE_SCHEMAS as unknown as Record<string, SchemaPair>),
   // §17.6 item 6 — report_export goes FULL. Its schema is widened here rather than in
   // tools/observation.ts because §17.6's file contract leaves that file untouched, and this
   // table is where both rounds' schemas already meet. A later spread wins, so this entry
@@ -741,10 +746,31 @@ const B3_HANDLERS: Record<string, Handler> = {
   },
 };
 
+/** Slice C round C1 (§17.7, decisions 77-83). */
+const C1_HANDLERS: Record<string, Handler> = {
+  async corpus_stage(deps, args) {
+    return corpusStage(deps.db, deps.principal, args as never);
+  },
+  async corpus_validate(deps, args) {
+    return corpusValidate(deps.db, args as never);
+  },
+  async corpus_diff(deps, args) {
+    return corpusDiff(deps.db, args as never);
+  },
+  ...Object.fromEntries(Object.entries(RELEASE_HANDLERS).map(([name, fn]) => [
+    name,
+    ((deps: ServiceDeps, args: Record<string, unknown>) =>
+      (fn as (d: { db: Db; principal: string }, a: Record<string, unknown>) => Promise<unknown>)(
+        { db: deps.db, principal: deps.principal }, args,
+      )) as Handler,
+  ])),
+};
+
 const ALL_HANDLERS: Record<string, Handler> = {
   ...HANDLERS,
   ...(OBSERVATION_HANDLERS as unknown as Record<string, Handler>),
   ...B1_HANDLERS,
   ...B2_HANDLERS,
   ...B3_HANDLERS,
+  ...C1_HANDLERS,
 };

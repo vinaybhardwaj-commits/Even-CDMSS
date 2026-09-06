@@ -30,6 +30,9 @@ import { COVERAGE_SCHEMAS } from './tools/coverage';
 import { DRIFT_SCHEMAS } from './tools/drift';
 import { RETRIEVAL_COMPARE_SCHEMAS } from './tools/retrieval-compare';
 import { REPAIR_SCHEMAS } from './tools/repair';
+// Slice C round C1 (§17.7). Same pattern: schemas beside their handlers.
+import { CORPUS_SCHEMAS } from './tools/corpus';
+import { RELEASE_SCHEMAS } from './tools/release';
 
 export interface ToolAnnotations { readOnlyHint: boolean; destructiveHint: boolean; idempotentHint: boolean }
 
@@ -144,6 +147,30 @@ const b3 = (
   slice: 'B-3',
 });
 
+/**
+ * Slice C round C1 entries (§17.7). All free: staging goes through v1's own ingest, the two reads
+ * are reads, and an activation is an UPDATE — none of them calls a model.
+ *
+ * ⚠️ `release_apply` AND `release_rollback` ARE THE FIRST TOOLS IN THIS PLATFORM THAT CHANGE WHAT A
+ * CLINICIAN'S RETRIEVAL RETURNS. They carry effect `release`, not `production_write`, because §3.2's
+ * scope table gives the release key `release` alone — the separation from `production_write` is
+ * what stops the operator key from shipping a corpus.
+ */
+const C1 = { ...CORPUS_SCHEMAS, ...RELEASE_SCHEMAS } as unknown as Record<string, { input: ZodTypeAny; output: ZodTypeAny }>;
+const c1 = (
+  name: string, description: string, scopes: readonly Scope[], effect: Effect,
+): ToolSpec => ({
+  name: name as ToolName,
+  description,
+  inputSchema: C1[name].input,
+  outputSchema: C1[name].output,
+  scopes,
+  effect,
+  classification: 'deidentified',
+  cost_class: 'free',
+  slice: 'C-1',
+});
+
 export const REGISTRY: readonly ToolSpec[] = [
   // ── capability discovery ──────────────────────────────────────────────────────────
   t('system_capabilities', 'List the tools this principal can see, the negotiated MCP protocol version, the SDK version, whether LAB_V2_ENABLED is set, and the pricing table version.', ANY, 'read'),
@@ -204,6 +231,16 @@ export const REGISTRY: readonly ToolSpec[] = [
   b3('retrieval_compare', 'Two candidate configurations (k, bm25 on or off, embedding on or off) or two corpus snapshots (by maximum chunk id) over the same queries: overlap at k, Spearman rank correlation and timings. No reranker, no chat model, one embedding per query shared by both sides.', ['research_read'], 'read'),
   b3('reaudit_plan', 'Plan a repair: the exact case keys, each one\u2019s current engine version and why it qualifies, the expected writes, an estimated budget, the writer the repair will call, and a source_snapshot_hash that makes the plan refusable once its rows move.', ['production_read'], 'read'),
   b3('reaudit_execute', 'Run the first N cases of a plan (default 5, max 20) through the engine and write each result with the ENGINE\u2019S OWN store writer \u2014 a new row, never an UPDATE. Stops at N; continuing needs review_passed with a reason, stored as an event. Refuses PLAN_STALE. Submits a job and returns; the cron does the work.', ['production_write'], 'production_write', 'metered'),
+
+  // ── Slice C round C1 (§17.7, decisions 77-83) ─────────────────────────────────────
+  c1('corpus_stage', 'Pin a quarantined corpus batch as a staged set: optionally add new text through v1\u2019s own corpus_add path, then record the exact chunk ids under labq:<label> at this moment. The staged set is what a release is prepared against, and the id list is what makes the later activation checkable.', ['research_write'], 'research_write'),
+  c1('corpus_validate', 'Check a staged batch before anyone reviews it: every chunk parses and is long enough, has an embedding and a tsvector, carries book, chapter and source, and is still quarantined. The near-duplicate check needs pg_trgm; where the extension is absent it reports SKIPPED with the reason and never passed.', ['research_read'], 'read'),
+  c1('corpus_diff', 'The staged batch against the servable corpus: counts, book and chapter overlap, and an impact estimate \u2014 production\u2019s own candidate legs run twice over the same pinned max_chunk_id, once without the batch and once with it admitted through retrieval\u2019s named-quarantine seam, on a frozen cohort\u2019s freeze queries. Zero model calls.', ['research_read'], 'read'),
+  c1('release_prepare', 'Produce the immutable, hashed release artifact: the target, the label, the exact chunk ids, the predecessor state and its hash, an impact reference, and the revision the target was at. Says in words what apply will do and what a rollback would undo.', ['release'], 'release'),
+  c1('review_submit', 'Approve or reject a release. The approval binds the decision, the reviewer PRINCIPAL, the artifact hash and the release id, and expires after seven days. A rationale is required. The preparer principal may not review its own release.', ['review'], 'review'),
+  c1('release_apply', 'Apply an approved release: check the approval is present, unexpired, on this exact artifact hash and not from the preparer; re-read the staged ids and refuse if they moved; compare-and-swap the target revision; then call v1\u2019s own activation and verify it moved exactly the reviewed set. Idempotent \u2014 a second apply returns the first receipt.', ['release'], 'release'),
+  c1('release_status', 'Per target: the revision in force, its artifact, and its predecessor. Plus the last receipts and every prepared release that has not been applied, each with WHY it is still waiting \u2014 unreviewed, rejected, expired, or bound to a superseded hash.', ['production_read'], 'read'),
+  c1('release_rollback', 'Return exactly the chunk ids the apply receipt recorded to quarantine and record a new activation with the predecessor as the artifact in force. It does not delete audits, rewrite findings or revoke human actions, and the receipt says so.', ['release'], 'release'),
 ];
 
 export const BY_NAME: Record<string, ToolSpec> = Object.fromEntries(REGISTRY.map((s) => [s.name, s]));

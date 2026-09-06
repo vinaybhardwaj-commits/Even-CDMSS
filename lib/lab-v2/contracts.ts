@@ -156,11 +156,39 @@ export const ENGINE_SLICE: Record<EngineId, string> = {
  */
 export const OPD_STAGES = ['analysis'] as const;
 
-export const OBJECT_KINDS = ['dataset', 'arm', 'experiment', 'artifact', 'report', 'operation_plan'] as const;
+/**
+ * §17.7 adds two: `staged_set` (a corpus batch pinned by label and id list) and `release` (the
+ * immutable, hashed artifact a review binds to). Both are OBJECTS rather than rows in the release
+ * ledger, and deliberately: `lab_v2.objects` is immutable and content-addressed, so an artifact
+ * cannot be edited after it was approved — which is the whole of decision 81.
+ */
+export const OBJECT_KINDS = ['dataset', 'arm', 'experiment', 'artifact', 'report', 'operation_plan', 'staged_set', 'release'] as const;
 export type ObjectKind = (typeof OBJECT_KINDS)[number];
 
 export const PROVIDERS = ['bedrock', 'openrouter', 'ollama', 'vertex'] as const;
 export type Provider = (typeof PROVIDERS)[number];
+
+/** §11 / decision 77 — two releasable targets. `config:opd` was withdrawn. */
+export const RELEASE_TARGETS = ['corpus', 'rules'] as const;
+export type ReleaseTarget = (typeof RELEASE_TARGETS)[number];
+
+export const REVIEW_DECISIONS = ['approved', 'rejected'] as const;
+export const RECEIPT_KINDS = ['apply', 'rollback'] as const;
+
+/** §11 / decision 81 — an approval is good for seven days and not one hour longer. */
+export const APPROVAL_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * ⚠️ ON EVERY ROLLBACK RECEIPT, VERBATIM. §11: a rollback is a new activation of the predecessor.
+ * It is not an undo of everything that happened while the release was in force, and a receipt that
+ * did not say so would let a reader assume the audits written against the new corpus had been
+ * reconsidered. They have not been.
+ */
+export const ROLLBACK_CAVEAT =
+  'This rollback returns the named chunks to quarantine and records a new activation with the '
+  + 'predecessor as the artifact in force. It does NOT delete audits written while the release was '
+  + 'live, does not rewrite any finding, and does not revoke any human action taken on them. '
+  + 'Anything produced under the rolled-back artifact stands and carries its own engine version.';
 
 export const REPLAY_EXACTNESS = ['frozen', 'mutable_source'] as const;
 

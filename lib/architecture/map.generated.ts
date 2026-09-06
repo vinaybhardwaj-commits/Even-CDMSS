@@ -3839,6 +3839,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "lab-v2",
+    "to": "lab",
+    "kind": "value"
+  },
+  {
+    "from": "lab-v2",
     "to": "lab-execution-context",
     "kind": "value"
   },

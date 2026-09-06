@@ -55,6 +55,14 @@ export type LabErrorCode =
   | 'PLAN_STALE'             // §17.6 / decision 68 — the rows a repair plan was built from have moved
   | 'REPAIR_FROZEN_CASE'     // §17.6 / decision 75 — a repair was handed a REPLAY case and refused before writing
   | 'OUTPUT_INVALID'         // §17.6 / decision 72 — a handler's output did not match its own schema
+  // ── Slice C, §11 and §17.7 decisions 79a, 80 and 81 ────────────────────────────────
+  | 'APPROVAL_MISSING'       // release_apply: no approval binds this release and this hash
+  | 'APPROVAL_STALE'         // §11 / decision 81 — the approval expired (7 days)
+  | 'APPROVAL_HASH_MISMATCH' // §11 / decision 81 — the artifact changed after it was reviewed
+  | 'REVISION_MISMATCH'      // §11 / decision 81 — targets.revision moved under the compare-and-swap
+  | 'REVIEWER_IS_PREPARER'   // §11 / decision 5 — one principal may not review its own release
+  | 'STAGED_SET_CHANGED'     // §17.7 decision 79a — the label's ids differ from the recorded set
+  | 'ACTIVATION_DRIFT'       // §17.7 decision 79a — the activation moved a set we did not record
   | 'ATTRIBUTION_UNVERIFIED'// §6.2 — served model differs from requested
   | 'LAB_IO_FORBIDDEN';     // §7 — production IO attempted inside a lab context
 
