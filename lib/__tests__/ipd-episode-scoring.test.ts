@@ -2063,7 +2063,7 @@ test('ROUND 23 ITEM 8: the band is recomputed from the CURRENT index, never inhe
   }
   // the same index always yields the same band, whatever preceded it
   assert.equal(divergenceBandFor(78), divergenceBandFor(78));
-  const run = readFileSync('lib/ipd-episode/run.ts', 'utf8');
+  const run = readFileSync('lib/ipd-episode/compute.ts', 'utf8');  // lab-v2 decision 55
   assert.match(run, /divergenceBand: divergenceBandFor\(storedIndex\)/,
     'the row derives its band from THIS run’s index, with no read of any previous row');
 });

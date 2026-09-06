@@ -39,25 +39,34 @@ const ENGINE_FILES = [
   'lib/ipd-episode/assemble-core.ts', 'lib/ipd-episode/assemble.ts', 'lib/ipd-episode/checkpoint-core.ts',
   'lib/ipd-episode/checkpoint.ts', 'lib/ipd-episode/db13.ts', 'lib/ipd-episode/judge-core.ts',
   'lib/ipd-episode/judge.ts', 'lib/ipd-episode/prompts.ts', 'lib/ipd-episode/resolve-core.ts',
+  // lab-v2 decision 55. The pipeline moved to compute.ts and the scan list follows it. Six of the
+  // structural guards below iterate THIS array — the governed-model-call rule, the flag
+  // prohibition, the frozen-module write ban, the declared-dependency check, the normative
+  // allowlist ban and the citation-similarity ban — and without this line every one of them would
+  // have gone on passing while no longer looking at the code it exists to guard.
+  'lib/ipd-episode/compute.ts',
   'lib/ipd-episode/run.ts', 'lib/ipd-episode/store.ts',
 ];
 
 // ── the blinding is structural ───────────────────────────────────────────────────────────────
 
 test('every checkpoint and pass input is built by FILTERING the one assembled event list', () => {
-  const run = code('lib/ipd-episode/run.ts');
+  const run = code('lib/ipd-episode/compute.ts');  // lab-v2 decision 55
   // the four filters, all from assemble-core, all applied in run.ts
   // DECISION 43 renamed the per-checkpoint filter: a checkpoint's window is now an anchor's
   // CUTOFF INSTANT rather than a calendar day boundary. The blinding rule is unchanged — filter the
   // one list — and this still pins that every input is a filter over it.
   for (const filter of ['eventsBeforeCutoff(', 'episodeLevelEvents(', 'diffPassEvents(', 'fidelityPassEvents(']) {
-    assert.ok(run.includes(filter), `run.ts must build its inputs with ${filter}`);
+    assert.ok(run.includes(filter), `compute.ts must build its inputs with ${filter}`);
   }
   // assembleEpisode is called EXACTLY ONCE — one list, built once
   assert.equal((run.match(/assembleEpisode\(/g) ?? []).length, 1,
     'the episode is assembled exactly once; a second assembly path is how blinding is lost');
   // and nothing else in the engine assembles events
-  for (const f of ENGINE_FILES.filter((x) => !x.endsWith('run.ts') && !x.endsWith('assemble.ts'))) {
+  // lab-v2 decision 55: compute.ts joins run.ts and assemble.ts in the exclusion, because the
+  // ONE sanctioned call site is now inside it. run.ts stays excluded because the composition
+  // names `assembleEpisode` (without parentheses) in LIVE_DEPS.
+  for (const f of ENGINE_FILES.filter((x) => !x.endsWith('run.ts') && !x.endsWith('compute.ts') && !x.endsWith('assemble.ts'))) {
     assert.ok(!code(f).includes('assembleEpisode('), `${f} must not assemble a second event list`);
   }
 });
@@ -90,9 +99,14 @@ test('the outcome line reaches pass B and NOTHING else, wherever pass B now runs
   const core = code('lib/ipd-episode/judge-core.ts');
   assert.ok(/export function outcomeLineFrom/.test(core), 'defined once, in judge-core');
 
-  const run = code('lib/ipd-episode/run.ts');
-  assert.ok(!run.includes('outcomeLineFrom'), 'the audit pipeline never builds the outcome line at all');
-  assert.ok(!run.includes('runCommentaryPass'), 'and never runs pass B');
+  // lab-v2 decision 55. A PROHIBITION asserted against one of two files is half a prohibition:
+  // after the extraction the pipeline is in compute.ts and the composition is in run.ts, and a
+  // future shortcut could be added to either. Both are read, so both are guarded.
+  for (const f of ['lib/ipd-episode/compute.ts', 'lib/ipd-episode/run.ts']) {
+    const run = code(f);
+    assert.ok(!run.includes('outcomeLineFrom'), `${f}: the audit pipeline never builds the outcome line at all`);
+    assert.ok(!run.includes('runCommentaryPass'), `${f}: and never runs pass B`);
+  }
 
   const route = code('app/api/ipd-episode/commentary/route.ts');
   const at = route.indexOf('runCommentaryPass(');
@@ -118,7 +132,7 @@ test('every model call in this engine goes through governedChat with an explicit
 });
 
 test('the models are validated BEFORE any work — not after three Opus calls have already been spent', () => {
-  const run = code('lib/ipd-episode/run.ts');
+  const run = code('lib/ipd-episode/compute.ts');  // lab-v2 decision 55
   const assertAt = run.indexOf('assertKnownBedrockModel(');
   assert.ok(assertAt > 0, 'run.ts asserts the models');
   for (const later of ['fetchDischargeSummary(', 'assembleEpisode(', 'runCheckpoint(', 'runDiffPass(', 'startTrace(']) {
@@ -387,7 +401,7 @@ test('selection requires a progress note in SQL, so a note-less episode is never
   assert.ok(src.includes('WHERE p.encounter_id = a.encounter_id)'), 'and the join is exact — no rewriting');
   assert.ok(src.includes('fetchClosedEpisodes(limit = 2000)'), 'the fetch limit is 2000');
   // run.ts still re-checks conditions 1 and 3 per episode, because the query and the attempt differ in time
-  const run = code('lib/ipd-episode/run.ts');
+  const run = code('lib/ipd-episode/compute.ts');  // lab-v2 decision 55
   assert.ok(run.includes("reason: 'no_notes'"), 'no_notes stays reachable as a per-episode skip');
 });
 
@@ -431,7 +445,7 @@ test('no read or write in the store fails silently — every catch says what bro
 test('a failed checkpoint write is counted and reported — those rows carry the blinding proof', () => {
   const store = code('lib/ipd-episode/store.ts');
   assert.ok(store.includes('failedCheckpoints'), 'saveEpisodeAudit returns how many checkpoint rows did not land');
-  const run = code('lib/ipd-episode/run.ts');
+  const run = code('lib/ipd-episode/compute.ts');  // lab-v2 decision 55
   assert.ok(run.includes('ipd_episode_checkpoint_write_failed'), 'and the pipeline raises a trace event for it');
 });
 
@@ -443,7 +457,7 @@ test('unparseable findings reach the trace, error_detail, raw_judge_error AND th
   // 15 divergence findings with every counter reading 0 and no record anywhere. Round 3 reverses
   // it on the orchestrator's instruction: no discard may leave every counter at 0. Both readings
   // survive because there are now two columns.
-  const run = code('lib/ipd-episode/run.ts');
+  const run = code('lib/ipd-episode/compute.ts');  // lab-v2 decision 55
   assert.ok(run.includes('ipd_episode_unparseable_findings'), 'a trace event carries the fragments');
   assert.ok(run.includes('errorDetail'), 'prose reaches error_detail');
   assert.ok(run.includes('rawJudgeError'), 'the raw fragments reach raw_judge_error');
@@ -473,7 +487,7 @@ test('the query builder has no administrative parameter left to misuse', () => {
   for (const gone of ['treatingDepartmentName', 'admissionType', 'admitSource', 'ward', 'facility', 'doctor']) {
     assert.ok(!iface.includes(gone), `RetrievalQueryInput must not accept '${gone}' — it retrieves staffing literature`);
   }
-  const run = code('lib/ipd-episode/run.ts');
+  const run = code('lib/ipd-episode/compute.ts');  // lab-v2 decision 55
   const call = run.slice(run.indexOf('retrievalQueryInput:'), run.indexOf('retrievalQueryInput:') + 600);
   for (const gone of ['treatingDepartmentName', 'admitSource', 'admissionType', 'facilityName']) {
     assert.ok(!call.includes(gone), `run.ts must not pass '${gone}' into the query`);
@@ -499,7 +513,7 @@ test('the extracted case is UNREACHABLE from the checkpoint retrieval path (§3.
     'the cut-off window, admission remarks, author names to strip, the day 0 OT fallback — no extraction');
 
   // and run.ts passes exactly those, nothing more
-  const run = code('lib/ipd-episode/run.ts');
+  const run = code('lib/ipd-episode/compute.ts');  // lab-v2 decision 55
   const call = run.slice(run.indexOf('retrievalQueryInput:'), run.indexOf('retrievalQueryInput:') + 600);
   assert.ok(call.includes('eventsBeforeCutoff: input_events'), 'the checkpoint gets its own filtered list');
   for (const banned of ['extractedDiagnosis', 'extractedProcedure', 'extraction.']) {
@@ -562,7 +576,7 @@ test('diagnostics survive a FAILED episode — they were only on the audit row b
   assert.ok(store.includes('diagnostics?: unknown'), 'recordSkip takes them');
   assert.ok(store.includes('COALESCE(EXCLUDED.diagnostics, ipd_episode_skips.diagnostics)'),
     'and never overwrites evidence with a null on a later upsert');
-  const run = code('lib/ipd-episode/run.ts');
+  const run = code('lib/ipd-episode/compute.ts');  // lab-v2 decision 55
   assert.ok(run.includes('const diagnosticsNow ='), 'built as a closure, so it reflects the failure point');
   // every skip after the checkpoints run carries them
   for (const marker of ["reason: 'diff_failed'", "reason: 'fidelity_failed'"]) {
@@ -581,7 +595,7 @@ test('diagnostics survive a FAILED episode — they were only on the audit row b
 // ── round 10: the timeout ───────────────────────────────────────────────────────────────────
 
 test('checkpoints run concurrently and the judge passes stay sequential', () => {
-  const run = code('lib/ipd-episode/run.ts');
+  const run = code('lib/ipd-episode/compute.ts');  // lab-v2 decision 55
   assert.ok(run.includes('export const CHECKPOINT_CONCURRENCY = 3'));
   assert.ok(run.includes('await mapWithLimit(plan, CHECKPOINT_CONCURRENCY, buildCheckpoint)'));
   // order preserved: a reordered list would scramble day indices against expected courses
@@ -593,13 +607,17 @@ test('checkpoints run concurrently and the judge passes stay sequential', () => 
   assert.ok(diffAt > 0 && diffAt < fidAt, 'A1 then A2, in order');
   // DECISION 35: the pipeline ENDS at the fidelity pass. B is not last here any more — it is
   // not here at all, and a re-added call would put a 107 s model call back on the audit path.
-  assert.ok(!run.includes('runCommentaryPass('), 'pass B does not run in the pipeline');
+  // lab-v2 decision 55: the prohibition is asserted against BOTH halves of the extraction, so a
+  // pass-B call added to the production composition is caught as well as one added to the pipeline.
+  for (const f of ['lib/ipd-episode/compute.ts', 'lib/ipd-episode/run.ts']) {
+    assert.ok(!code(f).includes('runCommentaryPass('), `${f}: pass B does not run in the pipeline`);
+  }
 });
 
 test('PROMPT shaping never touches real_course or the resolver', () => {
   const core = code('lib/ipd-episode/assemble-core.ts');
   assert.ok(core.includes('export function summariseEventsForPrompt('));
-  const run = code('lib/ipd-episode/run.ts');
+  const run = code('lib/ipd-episode/compute.ts');  // lab-v2 decision 55
   // the stored course and the resolver both get the FULL list
   assert.ok(run.includes('realCourse: events'), 'real_course is stored as assembled');
   assert.ok(run.includes('const resolverEvents = diffPassEvents(events);'),
@@ -620,7 +638,7 @@ test('PROMPT shaping never touches real_course or the resolver', () => {
 });
 
 test('a timeout is not silent: an in_progress marker is written before any model work', () => {
-  const run = code('lib/ipd-episode/run.ts');
+  const run = code('lib/ipd-episode/compute.ts');  // lab-v2 decision 55
   const markerAt = run.indexOf("reason: 'in_progress'");
   assert.ok(markerAt > 0, 'the marker exists');
   // NB: search CALL SITES, not bare names — the import line at the top of the file would match
@@ -723,7 +741,7 @@ for (const [table, insertMarker] of [
 // ── round 12 / decision 35: commentary is on demand ─────────────────────────────────────────
 
 test('the audit row is complete and scorable with commentary NULL', () => {
-  const run = code('lib/ipd-episode/run.ts');
+  const run = code('lib/ipd-episode/compute.ts');  // lab-v2 decision 55
   // The pipeline writes null and says why. Nothing downstream may treat that as a failure:
   // no skip, no error detail, no effect on scoring_status.
   assert.ok(run.includes('commentary: null'), 'the pipeline writes null by construction');
@@ -773,7 +791,7 @@ test('pass B is given the FULL finding list with the real ids it is asked to ann
 });
 
 test('stage timings are recorded so the slow stage is a fact, not a guess', () => {
-  const run = code('lib/ipd-episode/run.ts');
+  const run = code('lib/ipd-episode/compute.ts');  // lab-v2 decision 55
   for (const t of ['assemble_ms', 'retrieval_ms', 'checkpoint_ms', 'checkpoint_max_ms',
                    'checkpoint_wall_ms', 'diff_ms', 'fidelity_ms', 'commentary_ms']) {
     assert.ok(run.includes(t), `${t} is measured`);
@@ -868,7 +886,7 @@ test('DECISION 50: no band is rendered on any surface, and the chip is gone', ()
   // the engine half is deliberately untouched
   const core = code('lib/ipd-episode/judge-core.ts');
   assert.ok(core.includes('export function divergenceBandFor('), 'the band is still computed');
-  assert.ok(code('lib/ipd-episode/run.ts').includes('divergenceBandFor('), 'and still stored');
+  assert.ok(code('lib/ipd-episode/compute.ts').includes('divergenceBandFor('), 'and still stored');  // lab-v2 decision 55
 });
 
 test('DECISION 50: the scoring REFUSAL survives the chip that used to carry it', () => {
@@ -915,7 +933,7 @@ test('the checkpoint token ceiling is raised and RECORDED on every row', () => {
 });
 
 test('a hole in the expected course cannot be scored over', () => {
-  const run = code('lib/ipd-episode/run.ts');
+  const run = code('lib/ipd-episode/compute.ts');  // lab-v2 decision 55
   assert.ok(run.includes("checkpoints.filter((c) => c.status === 'error' || c.entryCount === 0).length"),
     'an errored OR empty checkpoint counts as incomplete');
   assert.ok(run.includes('incompleteCheckpoints,'), 'and reaches the status function');
@@ -955,7 +973,7 @@ test('the resolver is pure — no db, no model, no Next, nothing that could vary
 });
 
 test('the resolver is the ONLY producer of unassessable, and code owns omissions', () => {
-  const run = code('lib/ipd-episode/run.ts');
+  const run = code('lib/ipd-episode/compute.ts');  // lab-v2 decision 55
   assert.ok(run.includes('resolveAll(resolvableEntries'), 'the pipeline resolves every expectation');
   assert.ok(run.includes('findingsFromResolved('), 'and turns the outcomes into findings');
   // the diff pass's omissions are dropped
@@ -977,7 +995,7 @@ test('the Tier C rule cannot erase a code-established absence', () => {
 });
 
 test('the resolver runs against the SAME blinded event list the diff pass sees', () => {
-  const run = code('lib/ipd-episode/run.ts');
+  const run = code('lib/ipd-episode/compute.ts');  // lab-v2 decision 55
   assert.ok(run.includes('const resolverEvents = diffPassEvents(events);'),
     'no discharge event — an expectation cannot be satisfied by the discharge summary');
 });
@@ -1065,7 +1083,7 @@ test('the cap trail is persisted on every finding, and capped_count on the row',
   assert.ok(route.includes('ADD COLUMN IF NOT EXISTS capped_count INTEGER DEFAULT 0'));
   const store = code('lib/ipd-episode/store.ts');
   assert.ok(store.includes('num(row.cappedCount)'), 'the writer persists it');
-  const run = code('lib/ipd-episode/run.ts');
+  const run = code('lib/ipd-episode/compute.ts');  // lab-v2 decision 55
   assert.ok(run.includes('cappedCount: final.capped_finding_ids.size'), 'from the same set the status uses');
 });
 
@@ -1151,7 +1169,7 @@ test('NOTHING in retrieval reaches outside the cut-off — the day 0 fallback re
   const core = code('lib/ipd-episode/checkpoint-core.ts');
   assert.ok(core.includes('if (input.isDayZero) {'), 'both day-0 last resorts are gated on day 0');
   assert.ok(core.includes('input.episodeSurgeryNames?.length'), 'and the surgical one still needs OT names');
-  const run = code('lib/ipd-episode/run.ts');
+  const run = code('lib/ipd-episode/compute.ts');  // lab-v2 decision 55
   // ⚠️ the fallback used to be handed `events` (the WHOLE episode), so an OT note at 11:53 selected
   // day 0's evidence against a 03:03 cut-off. It now reads input_events, the same filtered list
   // every other rule uses.
@@ -1163,7 +1181,7 @@ test('NOTHING in retrieval reaches outside the cut-off — the day 0 fallback re
 });
 
 test('the extracted case reaches only the two places that are entitled to it', () => {
-  const run = code('lib/ipd-episode/run.ts');
+  const run = code('lib/ipd-episode/compute.ts');  // lab-v2 decision 55
   // every read of the stored extraction in the pipeline
   const reads = [...run.matchAll(/extraction\.extractedJson/g)].length;
   assert.equal(reads, 2, 'exactly two: assembly (onto the discharge event) and the fidelity pass');
@@ -1343,7 +1361,7 @@ test('citation_provenance is stored on every finding so the cohort can be measur
   const core = code('lib/ipd-episode/judge-core.ts');
   assert.ok(core.includes('citation_provenance: CitationProvenance | null'), 'it is part of the finding shape');
   assert.ok(core.includes('provenance_counts'), 'and rolled up per episode');
-  const run = code('lib/ipd-episode/run.ts');
+  const run = code('lib/ipd-episode/compute.ts');  // lab-v2 decision 55
   assert.ok(run.includes('citations by provenance:'), 'the run reports the breakdown');
   const panels = read('app/admin/ipd-audit/episodes/[id]/panels.tsx');
   assert.ok(panels.includes('citation_provenance') && panels.includes('literature only'),
@@ -1409,7 +1427,7 @@ test('discarded findings are persisted with their raw fragment, and traced', () 
   const route = read('app/api/admin/migrate-ipd-episode-audits/route.ts');
   assert.ok(sqlText.includes('raw_judge_error       JSONB'), '.sql declares raw_judge_error');
   assert.ok(route.includes('ADD COLUMN IF NOT EXISTS raw_judge_error JSONB'), 'and the route back-fills it');
-  const run = code('lib/ipd-episode/run.ts');
+  const run = code('lib/ipd-episode/compute.ts');  // lab-v2 decision 55
   assert.ok(run.includes('rawJudgeError: failures.length ? failures : null'), 'the pipeline persists the failures');
   assert.ok(run.includes('ipd_episode_unparseable_findings'), 'and raises a trace event');
   assert.ok(run.includes('failures,'), 'the trace event carries the fragments, not just a count');
@@ -1430,7 +1448,7 @@ test('n_parse_failed exists in the DDL and every discard reaches n_dropped_inval
 });
 
 test('an all-uncited episode raises its own trace event and says so on the row', () => {
-  const run = code('lib/ipd-episode/run.ts');
+  const run = code('lib/ipd-episode/compute.ts');  // lab-v2 decision 55
   assert.ok(run.includes('ipd_episode_all_entries_uncited'), 'the grounding failure is traceable');
   assert.ok(run.includes('came back uncited'), 'and stated in error_detail');
 });
@@ -1565,7 +1583,10 @@ test('the engine version and the closed set of skip reasons', () => {
 });
 
 test('every skip reason the pipeline writes is declared, and the PRD five are all reachable', () => {
-  const run = code('lib/ipd-episode/run.ts');
+  // lab-v2 decision 55. The CLOSED SET is a property of the pair, not of one file: the pipeline
+  // writes the skips today and the composition could acquire one tomorrow. Scanning the union
+  // keeps the claim true either way, and keeps it true if a reason ever moves between the two.
+  const run = code('lib/ipd-episode/compute.ts') + '\n' + code('lib/ipd-episode/run.ts');
   const written = new Set([...run.matchAll(/reason: '([a-z_]+)'/g)].map((m) => m[1]));
   for (const r of written) assert.ok((SKIP_REASONS as readonly string[]).includes(r), `'${r}' is not a declared skip reason`);
   for (const r of ['no_discharge_summary', 'no_notes', 'no_extraction', 'diff_failed', 'fidelity_failed', 'in_progress']) {
@@ -1577,7 +1598,7 @@ test('every skip reason the pipeline writes is declared, and the PRD five are al
 });
 
 test('a db13 fault writes NO audit row and NO skip row — a transport failure is not a fact about an episode', () => {
-  const run = code('lib/ipd-episode/run.ts');
+  const run = code('lib/ipd-episode/compute.ts');  // lab-v2 decision 55
   const tail = run.slice(run.lastIndexOf('} catch (e) {'));
   assert.ok(!tail.includes('recordSkip('), 'the top-level catch must not write a skip');
   assert.ok(!tail.includes('saveEpisodeAudit('), 'the top-level catch must not write an audit row');
@@ -1728,7 +1749,7 @@ test('item 11: the commentary route can now actually run pass B inside its 300 s
 test('round 13 item 1: every production model call site passes a deadline', () => {
   const judge = readFileSync('lib/ipd-episode/judge.ts', 'utf8');
   const checkpoint = readFileSync('lib/ipd-episode/checkpoint.ts', 'utf8');
-  const run = readFileSync('lib/ipd-episode/run.ts', 'utf8');
+  const run = readFileSync('lib/ipd-episode/compute.ts', 'utf8');  // lab-v2 decision 55
   assert.match(checkpoint, /deadlineAt: input\.deadlineAt \?\? null/, 'checkpoints');
   assert.match(judge, /callModel\(\{[\s\S]*?deadlineAt/, 'the judge helper forwards it');
   for (const pass of ['runDiffPass', 'runFidelityPass']) {
@@ -1750,7 +1771,7 @@ test('round 13 item 1: the worker derives the deadline FROM maxDuration, and res
 });
 
 test('round 13: a refused or failed diff still writes a diff_failed SKIP — never a silent death', () => {
-  const run = readFileSync('lib/ipd-episode/run.ts', 'utf8');
+  const run = readFileSync('lib/ipd-episode/compute.ts', 'utf8');  // lab-v2 decision 55
   const afterDiff = run.slice(run.indexOf('const a1 = await runDiffPass'));
   const block = afterDiff.slice(0, afterDiff.indexOf('const a2 = await runFidelityPass'));
   assert.match(block, /if \(!a1\.ok\)/);
@@ -1849,7 +1870,7 @@ test('ROUND 15: the response reports the SAME band values it stored, from the sa
   // and the response did not — so all five re-runs reported band_uncertain TRUE in the API while
   // the stored column said FALSE for four of them. A response that disagrees with the row it just
   // wrote is the one a person reads first.
-  const run = code('lib/ipd-episode/run.ts');
+  const run = code('lib/ipd-episode/compute.ts');  // lab-v2 decision 55
   const returned = run.slice(run.lastIndexOf('return {\n      encounterId,'));
   assert.ok(returned.includes('divergenceIndex: storedIndex ?? undefined'), 'one index variable');
   assert.ok(returned.includes('divergenceBand: divergenceBandFor(storedIndex)'), 'banded from it');

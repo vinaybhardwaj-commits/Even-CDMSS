@@ -1,0 +1,772 @@
+{
+  "note": "captured from lib/ipd-episode/run.ts as it stood at 2c5d03a7, before decision 47 moved a line",
+  "result": {
+    "bandUncertain": true,
+    "checkpointCount": 3,
+    "completenessPct": 33,
+    "divergenceBand": "no divergence found",
+    "divergenceIndex": 100,
+    "encounterId": "IPFIX0000001",
+    "expectationsEvaluated": 1,
+    "nDivergent": 0,
+    "nFindings": 4,
+    "notes": [
+      "fixture episode: assembled from frozen inputs",
+      "1 finding(s) measured against an uncited expectation (no longer a cap)",
+      "3 finding(s) stand on literature only, no normative citation (counted, not capped)",
+      "0 of 4 finding(s) capped",
+      "citations by provenance: literature 3, none 1",
+      "resolver: present 3, absent_class_present 0, absent_class_missing 9, ambiguous_confounded 0",
+      "pass contribution: resolver 4, diff 0, fidelity 0",
+      "resolver findings grouped: 4 class(es) standing for 12 expected-course entr(ies)",
+      "largest group: 3 checkpoint(s) of the same expectation class",
+      "commentary: not generated in the pipeline (decision 35) — it is written on first open of the detail page",
+      "judge finish_reason: diff=stop, fidelity=stop",
+      "finish_reason by checkpoint: cp-d1=stop, cp-d2=stop, cp-episode=stop",
+      "entries by checkpoint: cp-d1=4, cp-d2=4, cp-episode=4"
+    ],
+    "penaltyTotal": 0,
+    "scoringStatus": "ok",
+    "status": "inserted"
+  },
+  "ledger": {
+    "checkpointCalls": [
+      "cp-d1",
+      "cp-d2",
+      "cp-episode"
+    ],
+    "cleared": [
+      "IPFIX0000001"
+    ],
+    "saved": [
+      {
+        "checkpoints": [
+          {
+            "anchorKind": "first_24h",
+            "attempts": 1,
+            "checkpointType": "daily",
+            "citationIds": [
+              901,
+              902
+            ],
+            "citationSources": {
+              "901": "MKSAP",
+              "902": "StatPearls"
+            },
+            "day0QueryFromOt": false,
+            "dayIndex": 1,
+            "entriesTruncated": 0,
+            "entryCount": 4,
+            "errorDetail": null,
+            "expectedCourse": {
+              "escalation_triggers": [
+                {
+                  "action": "septic screen and surgical review",
+                  "citation_ids": [
+                    901
+                  ],
+                  "matcher": {
+                    "kind": "note",
+                    "terms": [
+                      "septic screen"
+                    ]
+                  },
+                  "proposed_severity": "major",
+                  "recurrence": "once",
+                  "trigger": "temperature above 38.5 after day 2"
+                }
+              ],
+              "expected_diagnostics": [
+                {
+                  "by_day": 0,
+                  "citation_ids": [
+                    901
+                  ],
+                  "item": "full blood count with white cell count",
+                  "matcher": {
+                    "kind": "lab",
+                    "terms": [
+                      "full blood count",
+                      "white cell"
+                    ]
+                  },
+                  "proposed_severity": "moderate",
+                  "rationale": "suspected appendicitis needs an inflammatory marker",
+                  "recurrence": "once"
+                }
+              ],
+              "expected_disposition": "home",
+              "expected_los_days": 3,
+              "expected_monitoring": [
+                {
+                  "citation_ids": [],
+                  "frequency": "daily",
+                  "item": "daily wound review",
+                  "matcher": {
+                    "kind": "note",
+                    "terms": [
+                      "wound"
+                    ]
+                  },
+                  "proposed_severity": "minor",
+                  "rationale": "post-operative wound surveillance",
+                  "recurrence": "repeat"
+                }
+              ],
+              "expected_therapeutics": [
+                {
+                  "by_day": 0,
+                  "citation_ids": [
+                    902
+                  ],
+                  "item": "perioperative antibiotic prophylaxis",
+                  "matcher": {
+                    "kind": "drug",
+                    "terms": [
+                      "cefuroxime",
+                      "metronidazole",
+                      "antibiotic"
+                    ]
+                  },
+                  "proposed_severity": "major",
+                  "rationale": "standard before appendicectomy",
+                  "recurrence": "once"
+                }
+              ],
+              "uncertainty": [
+                "no operative note in the frozen course"
+              ]
+            },
+            "finishReason": "stop",
+            "inputCutoffAt": "2026-08-02T06:00:00.000Z",
+            "inputEventCount": 3,
+            "maxTokens": 8000,
+            "model": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+            "offTopicExcerptCount": 0,
+            "queryUnderspecified": false,
+            "retrievalFailed": false,
+            "retrievalOffTopic": false,
+            "retrievalQuery": "acute appendicitis management",
+            "retrievalSkipped": false,
+            "retrievedTitles": [
+              "Appendicitis — diagnosis",
+              "Appendicectomy — perioperative care"
+            ],
+            "seed": 7,
+            "status": "ok",
+            "temperature": 0,
+            "uncitedEntryCount": 1
+          },
+          {
+            "anchorKind": "pre_discharge",
+            "attempts": 1,
+            "checkpointType": "daily",
+            "citationIds": [
+              901,
+              902
+            ],
+            "citationSources": {
+              "901": "MKSAP",
+              "902": "StatPearls"
+            },
+            "day0QueryFromOt": false,
+            "dayIndex": 2,
+            "entriesTruncated": 0,
+            "entryCount": 4,
+            "errorDetail": null,
+            "expectedCourse": {
+              "escalation_triggers": [
+                {
+                  "action": "septic screen and surgical review",
+                  "citation_ids": [
+                    901
+                  ],
+                  "matcher": {
+                    "kind": "note",
+                    "terms": [
+                      "septic screen"
+                    ]
+                  },
+                  "proposed_severity": "major",
+                  "recurrence": "once",
+                  "trigger": "temperature above 38.5 after day 2"
+                }
+              ],
+              "expected_diagnostics": [
+                {
+                  "by_day": 0,
+                  "citation_ids": [
+                    901
+                  ],
+                  "item": "full blood count with white cell count",
+                  "matcher": {
+                    "kind": "lab",
+                    "terms": [
+                      "full blood count",
+                      "white cell"
+                    ]
+                  },
+                  "proposed_severity": "moderate",
+                  "rationale": "suspected appendicitis needs an inflammatory marker",
+                  "recurrence": "once"
+                }
+              ],
+              "expected_disposition": "home",
+              "expected_los_days": 3,
+              "expected_monitoring": [
+                {
+                  "citation_ids": [],
+                  "frequency": "daily",
+                  "item": "daily wound review",
+                  "matcher": {
+                    "kind": "note",
+                    "terms": [
+                      "wound"
+                    ]
+                  },
+                  "proposed_severity": "minor",
+                  "rationale": "post-operative wound surveillance",
+                  "recurrence": "repeat"
+                }
+              ],
+              "expected_therapeutics": [
+                {
+                  "by_day": 0,
+                  "citation_ids": [
+                    902
+                  ],
+                  "item": "perioperative antibiotic prophylaxis",
+                  "matcher": {
+                    "kind": "drug",
+                    "terms": [
+                      "cefuroxime",
+                      "metronidazole",
+                      "antibiotic"
+                    ]
+                  },
+                  "proposed_severity": "major",
+                  "rationale": "standard before appendicectomy",
+                  "recurrence": "once"
+                }
+              ],
+              "uncertainty": [
+                "no operative note in the frozen course"
+              ]
+            },
+            "finishReason": "stop",
+            "inputCutoffAt": "2026-08-03T09:00:00.000Z",
+            "inputEventCount": 4,
+            "maxTokens": 8000,
+            "model": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+            "offTopicExcerptCount": 0,
+            "queryUnderspecified": false,
+            "retrievalFailed": false,
+            "retrievalOffTopic": false,
+            "retrievalQuery": "acute appendicitis management",
+            "retrievalSkipped": false,
+            "retrievedTitles": [
+              "Appendicitis — diagnosis",
+              "Appendicectomy — perioperative care"
+            ],
+            "seed": 7,
+            "status": "ok",
+            "temperature": 0,
+            "uncitedEntryCount": 1
+          },
+          {
+            "anchorKind": "episode",
+            "attempts": 1,
+            "checkpointType": "episode",
+            "citationIds": [
+              901,
+              902
+            ],
+            "citationSources": {
+              "901": "MKSAP",
+              "902": "StatPearls"
+            },
+            "day0QueryFromOt": false,
+            "dayIndex": 2,
+            "entriesTruncated": 0,
+            "entryCount": 4,
+            "errorDetail": null,
+            "expectedCourse": {
+              "escalation_triggers": [
+                {
+                  "action": "septic screen and surgical review",
+                  "citation_ids": [
+                    901
+                  ],
+                  "matcher": {
+                    "kind": "note",
+                    "terms": [
+                      "septic screen"
+                    ]
+                  },
+                  "proposed_severity": "major",
+                  "recurrence": "once",
+                  "trigger": "temperature above 38.5 after day 2"
+                }
+              ],
+              "expected_diagnostics": [
+                {
+                  "by_day": 0,
+                  "citation_ids": [
+                    901
+                  ],
+                  "item": "full blood count with white cell count",
+                  "matcher": {
+                    "kind": "lab",
+                    "terms": [
+                      "full blood count",
+                      "white cell"
+                    ]
+                  },
+                  "proposed_severity": "moderate",
+                  "rationale": "suspected appendicitis needs an inflammatory marker",
+                  "recurrence": "once"
+                }
+              ],
+              "expected_disposition": "home",
+              "expected_los_days": 3,
+              "expected_monitoring": [
+                {
+                  "citation_ids": [],
+                  "frequency": "daily",
+                  "item": "daily wound review",
+                  "matcher": {
+                    "kind": "note",
+                    "terms": [
+                      "wound"
+                    ]
+                  },
+                  "proposed_severity": "minor",
+                  "rationale": "post-operative wound surveillance",
+                  "recurrence": "repeat"
+                }
+              ],
+              "expected_therapeutics": [
+                {
+                  "by_day": 0,
+                  "citation_ids": [
+                    902
+                  ],
+                  "item": "perioperative antibiotic prophylaxis",
+                  "matcher": {
+                    "kind": "drug",
+                    "terms": [
+                      "cefuroxime",
+                      "metronidazole",
+                      "antibiotic"
+                    ]
+                  },
+                  "proposed_severity": "major",
+                  "rationale": "standard before appendicectomy",
+                  "recurrence": "once"
+                }
+              ],
+              "uncertainty": [
+                "no operative note in the frozen course"
+              ]
+            },
+            "finishReason": "stop",
+            "inputCutoffAt": "2026-08-03T09:00:00.000Z",
+            "inputEventCount": 5,
+            "maxTokens": 8000,
+            "model": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+            "offTopicExcerptCount": 0,
+            "queryUnderspecified": false,
+            "retrievalFailed": false,
+            "retrievalOffTopic": false,
+            "retrievalQuery": "acute appendicitis management",
+            "retrievalSkipped": false,
+            "retrievedTitles": [
+              "Appendicitis — diagnosis",
+              "Appendicectomy — perioperative care"
+            ],
+            "seed": 7,
+            "status": "ok",
+            "temperature": 0,
+            "uncitedEntryCount": 1
+          }
+        ],
+        "row": {
+          "admissionContext": "Speciality: General Surgery\nDepartment: General Surgery\nAdmission type: EMERGENCY\nAdmitted from: CASUALTY\nAdmission remarks: right iliac fossa pain for one day, vomiting twice",
+          "admittedAt": "2026-08-01T06:00:00.000Z",
+          "assembledEvents": 6,
+          "bandUncertain": true,
+          "cappedCount": 0,
+          "checkpointConcurrency": 3,
+          "checkpointCount": 3,
+          "checkpointPolicy": "standard",
+          "commentary": null,
+          "completenessPct": 33,
+          "counters": {
+            "n_commission": 0,
+            "n_concordant": 1,
+            "n_context_dependent": 0,
+            "n_divergence_pass": 4,
+            "n_divergent": 0,
+            "n_dropped_invalid": 0,
+            "n_fidelity_pass": 0,
+            "n_findings": 4,
+            "n_findings_truncated": 0,
+            "n_judged_omissions_dropped": 0,
+            "n_low_value": 0,
+            "n_omission": 3,
+            "n_parse_failed": 0,
+            "n_resolver_grouped": 4,
+            "n_resolver_ungrouped": 12,
+            "n_sequencing": 0,
+            "n_timing": 0,
+            "n_unassessable": 3,
+            "n_unassessable_rejected": 0
+          },
+          "diffPromptChars": 1735,
+          "digestEntries": 4,
+          "dischargeType": "DISCHARGED",
+          "dischargedAt": "2026-08-04T09:00:00.000Z",
+          "divergenceBand": "no divergence found",
+          "divergenceIndex": 100,
+          "encounterId": "IPFIX0000001",
+          "engineVersion": "ipd-episode-audit/0.2",
+          "errorDetail": null,
+          "evidenceTiers": {
+            "A": [
+              "discharge_extracted_cases",
+              "kx_clinical_template_progress_reports",
+              "kx_discharge_summary_records",
+              "kx_ip_admissions"
+            ],
+            "B": [],
+            "C": []
+          },
+          "expectationsEvaluated": 1,
+          "extractionVersion": "doc-extract/2",
+          "facilityName": "Fixture General Hospital",
+          "findings": [
+            {
+              "author_name": null,
+              "author_role": null,
+              "capped": false,
+              "checkpoint_ref": "cp-d1/diagnostics/1",
+              "citation_ids": [
+                901
+              ],
+              "citation_provenance": "literature",
+              "confound": "no lab data recorded from day 1 onward",
+              "day_index": 1,
+              "domain": "diagnostics",
+              "evidence_basis": [],
+              "evidence_tier": "C",
+              "finding_id": "r-1",
+              "finding_type": "omission",
+              "group_size": 3,
+              "grouped_days": [
+                1,
+                2
+              ],
+              "grouped_refs": [
+                "cp-d1/diagnostics/1",
+                "cp-d2/diagnostics/1",
+                "cp-episode/diagnostics/1"
+              ],
+              "lvc_category": null,
+              "matched_term": null,
+              "matcher_kind": "lab",
+              "matcher_terms": [
+                "full blood count",
+                "white cell"
+              ],
+              "pass": "divergence",
+              "resolution": "absent_class_missing",
+              "responsible_clinician_id": null,
+              "severity": "moderate",
+              "severity_before_cap": "moderate",
+              "statement": "Expected: full blood count with white cell count. This pipeline cannot answer whether it happened: no lab record of any kind exists from day 1 onward, so \"not done\" and \"not recorded that day\" cannot be told apart. (expected at 3 checkpoints, days 1, 2)",
+              "verdict": "unassessable",
+              "verdict_before_cap": "unassessable"
+            },
+            {
+              "author_name": null,
+              "author_role": null,
+              "capped": false,
+              "checkpoint_ref": "cp-d1/therapeutics/1",
+              "citation_ids": [
+                902
+              ],
+              "citation_provenance": "literature",
+              "confound": "no drug data recorded from day 1 onward",
+              "day_index": 1,
+              "domain": "therapeutics",
+              "evidence_basis": [],
+              "evidence_tier": "C",
+              "finding_id": "r-2",
+              "finding_type": "omission",
+              "group_size": 3,
+              "grouped_days": [
+                1,
+                2
+              ],
+              "grouped_refs": [
+                "cp-d1/therapeutics/1",
+                "cp-d2/therapeutics/1",
+                "cp-episode/therapeutics/1"
+              ],
+              "lvc_category": null,
+              "matched_term": null,
+              "matcher_kind": "drug",
+              "matcher_terms": [
+                "cefuroxime",
+                "metronidazole",
+                "antibiotic"
+              ],
+              "pass": "divergence",
+              "resolution": "absent_class_missing",
+              "responsible_clinician_id": null,
+              "severity": "major",
+              "severity_before_cap": "major",
+              "statement": "Expected: perioperative antibiotic prophylaxis. This pipeline cannot answer whether it happened: no drug record of any kind exists from day 1 onward, so \"not done\" and \"not recorded that day\" cannot be told apart. (expected at 3 checkpoints, days 1, 2)",
+              "verdict": "unassessable",
+              "verdict_before_cap": "unassessable"
+            },
+            {
+              "author_name": "Dr Fixture Two",
+              "author_role": "RMO",
+              "capped": false,
+              "checkpoint_ref": "cp-d1/monitoring/1",
+              "citation_ids": [],
+              "citation_provenance": null,
+              "confound": null,
+              "day_index": 1,
+              "domain": "monitoring",
+              "evidence_basis": [
+                {
+                  "source_record_id": "fx-src-5",
+                  "source_table": "kx_clinical_template_progress_reports",
+                  "source_timestamp": "2026-08-03T09:00:00.000Z"
+                }
+              ],
+              "evidence_tier": "A",
+              "finding_id": "r-3",
+              "finding_type": "omission",
+              "group_size": 3,
+              "grouped_days": [
+                1,
+                2
+              ],
+              "grouped_refs": [
+                "cp-d1/monitoring/1",
+                "cp-d2/monitoring/1",
+                "cp-episode/monitoring/1"
+              ],
+              "lvc_category": null,
+              "matched_term": "wound",
+              "matcher_kind": "note",
+              "matcher_terms": [
+                "wound"
+              ],
+              "pass": "divergence",
+              "resolution": "present",
+              "responsible_clinician_id": "fx-clin-1",
+              "severity": "minor",
+              "severity_before_cap": "minor",
+              "statement": "Expected: daily wound review. The record shows it: note on day 2 matching \"wound\". (expected at 3 checkpoints, days 1, 2)",
+              "verdict": "concordant",
+              "verdict_before_cap": "concordant"
+            },
+            {
+              "author_name": null,
+              "author_role": null,
+              "capped": false,
+              "checkpoint_ref": "cp-d1/escalation/1",
+              "citation_ids": [
+                901
+              ],
+              "citation_provenance": "literature",
+              "confound": "an escalation trigger is conditional and its antecedent cannot be evaluated from this mirror",
+              "day_index": 1,
+              "domain": "escalation",
+              "evidence_basis": [],
+              "evidence_tier": "C",
+              "finding_id": "r-4",
+              "finding_type": "omission",
+              "group_size": 3,
+              "grouped_days": [
+                1,
+                2
+              ],
+              "grouped_refs": [
+                "cp-d1/escalation/1",
+                "cp-d2/escalation/1",
+                "cp-episode/escalation/1"
+              ],
+              "lvc_category": null,
+              "matched_term": null,
+              "matcher_kind": "note",
+              "matcher_terms": [
+                "septic screen"
+              ],
+              "pass": "divergence",
+              "resolution": "absent_class_missing",
+              "responsible_clinician_id": null,
+              "severity": "major",
+              "severity_before_cap": "major",
+              "statement": "Expected on condition: temperature above 38.5 after day 2 → septic screen and surgical review. This is a conditional, and this engine cannot check one: whether the trigger fired is a question about vitals and clinical observation, which this mirror does not carry. No conclusion is drawn about whether the action was needed or taken. (expected at 3 checkpoints, days 1, 2)",
+              "verdict": "unassessable",
+              "verdict_before_cap": "unassessable"
+            }
+          ],
+          "ipUid": "IPFIX0000001",
+          "judgeTemperature": 0,
+          "losDays": 3,
+          "memberId": "FX-MEMBER-0001",
+          "modelCheckpoint": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+          "modelJudge": "global.anthropic.claude-opus-4-6-v1",
+          "penaltyTotal": 0,
+          "promptEvents": 5,
+          "rawJudgeError": null,
+          "realCourse": [
+            {
+              "author_name": null,
+              "author_role": null,
+              "day_index": 0,
+              "detail": {
+                "chief_complaint": "right iliac fossa pain"
+              },
+              "event_id": "fx-1",
+              "event_type": "admission",
+              "evidence_tier": "A",
+              "occurred_at": "2026-08-01T06:00:00.000Z",
+              "provenance": {
+                "source_record_id": "fx-src-1",
+                "source_table": "kx_clinical_template_progress_reports",
+                "source_timestamp": "2026-08-01T06:00:00.000Z"
+              },
+              "responsible_clinician_id": "fx-clin-1",
+              "summary": "admitted with right iliac fossa pain"
+            },
+            {
+              "author_name": "Dr Fixture One",
+              "author_role": "RMO",
+              "day_index": 0,
+              "detail": {
+                "text": "tender right iliac fossa with guarding"
+              },
+              "event_id": "fx-2",
+              "event_type": "note",
+              "evidence_tier": "A",
+              "occurred_at": "2026-08-01T08:30:00.000Z",
+              "provenance": {
+                "source_record_id": "fx-src-2",
+                "source_table": "kx_clinical_template_progress_reports",
+                "source_timestamp": "2026-08-01T08:30:00.000Z"
+              },
+              "responsible_clinician_id": "fx-clin-1",
+              "summary": "acute abdomen, tender RIF, guarding"
+            },
+            {
+              "author_name": null,
+              "author_role": null,
+              "day_index": 0,
+              "detail": {
+                "test_name": "full blood count"
+              },
+              "event_id": "fx-3",
+              "event_type": "lab_order",
+              "evidence_tier": "A",
+              "occurred_at": "2026-08-01T11:00:00.000Z",
+              "provenance": {
+                "source_record_id": "fx-src-3",
+                "source_table": "kx_clinical_template_progress_reports",
+                "source_timestamp": "2026-08-01T11:00:00.000Z"
+              },
+              "responsible_clinician_id": "fx-clin-1",
+              "summary": "full blood count ordered"
+            },
+            {
+              "author_name": "Dr Fixture Two",
+              "author_role": "RMO",
+              "day_index": 1,
+              "detail": {
+                "text": "afebrile, tolerating orals"
+              },
+              "event_id": "fx-4",
+              "event_type": "note",
+              "evidence_tier": "A",
+              "occurred_at": "2026-08-02T09:15:00.000Z",
+              "provenance": {
+                "source_record_id": "fx-src-4",
+                "source_table": "kx_clinical_template_progress_reports",
+                "source_timestamp": "2026-08-02T09:15:00.000Z"
+              },
+              "responsible_clinician_id": "fx-clin-1",
+              "summary": "post-operative day 1, afebrile, tolerating orals"
+            },
+            {
+              "author_name": "Dr Fixture Two",
+              "author_role": "RMO",
+              "day_index": 2,
+              "detail": {
+                "text": "wound clean and dry"
+              },
+              "event_id": "fx-5",
+              "event_type": "note",
+              "evidence_tier": "A",
+              "occurred_at": "2026-08-03T09:00:00.000Z",
+              "provenance": {
+                "source_record_id": "fx-src-5",
+                "source_table": "kx_clinical_template_progress_reports",
+                "source_timestamp": "2026-08-03T09:00:00.000Z"
+              },
+              "responsible_clinician_id": "fx-clin-1",
+              "summary": "wound clean and dry"
+            },
+            {
+              "author_name": null,
+              "author_role": null,
+              "day_index": 3,
+              "detail": {
+                "discharge_type": "DISCHARGED"
+              },
+              "event_id": "fx-6",
+              "event_type": "discharge",
+              "evidence_tier": "A",
+              "occurred_at": "2026-08-04T09:00:00.000Z",
+              "provenance": {
+                "source_record_id": "fx-src-6",
+                "source_table": "kx_clinical_template_progress_reports",
+                "source_timestamp": "2026-08-04T09:00:00.000Z"
+              },
+              "responsible_clinician_id": "fx-clin-1",
+              "summary": "discharged home, stable"
+            }
+          ],
+          "resolutionCounts": {
+            "absent_class_missing": 9,
+            "absent_class_present": 0,
+            "ambiguous_confounded": 0,
+            "present": 3
+          },
+          "scoringStatus": "ok",
+          "speciality": "General Surgery",
+          "timings": {
+            "budget": {
+              "worst_case_one_call_ms": 332250
+            }
+          }
+        }
+      }
+    ],
+    "skips": [
+      {
+        "detail": null,
+        "reason": "in_progress"
+      }
+    ]
+  },
+  "chatCalls": [
+    "ipd_episode_diff",
+    "ipd_episode_fidelity"
+  ]
+}

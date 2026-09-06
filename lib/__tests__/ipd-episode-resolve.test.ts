@@ -537,7 +537,7 @@ test('ITEM 1: the gate is keyed on the section, and NON-escalation sections are 
   assert.equal(therapeutic.verdict, 'context_dependent', 'a plain expectation still resolves, now unasserted (decision 44)');
   // and run.ts pushes escalation entries under the exact constant the gate reads
   assert.equal(ESCALATION_SECTION, 'escalation');
-  const run = readFileSync('lib/ipd-episode/run.ts', 'utf8');
+  const run = readFileSync('lib/ipd-episode/compute.ts', 'utf8');  // lab-v2 decision 55
   assert.match(run, /push\(ESCALATION_SECTION,/, 'no repeated literal to drift from the gate');
 });
 
