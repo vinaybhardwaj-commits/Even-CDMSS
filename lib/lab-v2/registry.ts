@@ -23,6 +23,8 @@ import { OBSERVATION_SCHEMAS, type ObservationToolName } from './tools/observati
 // Slice B round B1 (§17.4). Same pattern: schemas beside their handlers.
 import { COMPARE_SCHEMAS } from './tools/compare';
 import { REPLAY_SCHEMAS } from './tools/replay';
+// Slice B round B2 (§17.5, decision 49). Same pattern again: schemas beside their handlers.
+import { EPISODE_SCHEMAS } from './tools/episode';
 
 export interface ToolAnnotations { readOnlyHint: boolean; destructiveHint: boolean; idempotentHint: boolean }
 
@@ -105,6 +107,22 @@ const b = (
   slice: 'B-1',
 });
 
+/** Slice B round B2 entries (§17.5). Both free: inspect reads the v2 store, replay serves steps. */
+const B2 = EPISODE_SCHEMAS as unknown as Record<string, { input: ZodTypeAny; output: ZodTypeAny }>;
+const b2 = (
+  name: string, description: string, scopes: readonly Scope[], effect: Effect,
+): ToolSpec => ({
+  name: name as ToolName,
+  description,
+  inputSchema: B2[name].input,
+  outputSchema: B2[name].output,
+  scopes,
+  effect,
+  classification: 'deidentified',
+  cost_class: 'free',
+  slice: 'B-2',
+});
+
 export const REGISTRY: readonly ToolSpec[] = [
   // ── capability discovery ──────────────────────────────────────────────────────────
   t('system_capabilities', 'List the tools this principal can see, the negotiated MCP protocol version, the SDK version, whether LAB_V2_ENABLED is set, and the pricing table version.', ANY, 'read'),
@@ -154,6 +172,10 @@ export const REGISTRY: readonly ToolSpec[] = [
     cost_class: 'free',
     slice: 'B-1',
   },
+
+  // ── Slice B round B2 (§17.5, decision 49) ─────────────────────────────────────────
+  b2('episode_checkpoint_inspect', 'For one IPD episode case or one replayed item: per checkpoint, the blinded input and its cut-off, what was expected by section and how much of it was cited, the events that fell inside the window by type, the retrieval that grounded it, the caps that could have bitten, and the arithmetic. Reads the v2 store only — never db13.', ['research_read'], 'read'),
+  b2('episode_replay', 'run_replay for an ipd_episode run: re-runs each episode through lib/ipd-episode/compute.ts against its frozen course and its stored judge replies, and reports per item whether the result hash is unchanged. Zero model calls. Refuses a run of any other engine.', ['research_write'], 'research_write'),
 ];
 
 export const BY_NAME: Record<string, ToolSpec> = Object.fromEntries(REGISTRY.map((s) => [s.name, s]));

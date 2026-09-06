@@ -3829,6 +3829,16 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "lab-v2",
+    "to": "ipd-episode",
+    "kind": "type"
+  },
+  {
+    "from": "lab-v2",
+    "to": "ipd-episode",
+    "kind": "value"
+  },
+  {
+    "from": "lab-v2",
     "to": "lab-execution-context",
     "kind": "value"
   },
@@ -5864,6 +5874,12 @@ export const VERSION_REGISTRY: VersionRow[] = [
     "constName": "IPD_ENGINE_VERSION",
     "value": "ipd-discharge-audit/0.2",
     "file": "lib/ipd-audit/store.ts",
+    "derived": false
+  },
+  {
+    "constName": "IPD_ENGINE_VERSION",
+    "value": "ipd-episode-audit/0.2",
+    "file": "lib/lab-v2/sources/ipd.ts",
     "derived": false
   },
   {

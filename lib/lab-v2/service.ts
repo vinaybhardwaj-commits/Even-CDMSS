@@ -36,6 +36,10 @@ import { OBSERVATION_HANDLERS, OBSERVATION_SCHEMAS } from './tools/observation';
 // Slice B round B1 (§17.4).
 import { COMPARE_SCHEMAS, experimentCompare, runDiff } from './tools/compare';
 import { REPLAY_SCHEMAS, runReplay } from './tools/replay';
+// Slice B round B2 (§17.5).
+import { EPISODE_SCHEMAS, episodeCheckpointInspect, episodeReplay } from './tools/episode';
+import { freezeIpdEpisode } from './adapters/ipd-episode';
+import { selectIpdCohort, type FrozenIpdCase } from './sources/ipd';
 import { freezeCohort } from './sources/cohort';
 import { freezeOpdCase, validateFrozenCase } from './sources/opd';
 import { openrouterConfigured, geminiConfigured } from '../llm';
@@ -61,6 +65,7 @@ const SCHEMAS: Record<string, SchemaPair> = {
   ...(OBSERVATION_SCHEMAS as unknown as Record<string, SchemaPair>),
   ...(COMPARE_SCHEMAS as unknown as Record<string, SchemaPair>),
   ...(REPLAY_SCHEMAS as unknown as Record<string, SchemaPair>),
+  ...(EPISODE_SCHEMAS as unknown as Record<string, SchemaPair>),
 };
 
 function scopesOf(principal: Principal): readonly Scope[] { return SCOPES_BY_PRINCIPAL[principal]; }
@@ -222,6 +227,59 @@ const HANDLERS: Record<ToolName, Handler> = {
     if (requiresIdentifyingInput(engine as never)) {
       throw new LabError('CLASSIFICATION_REQUIRED', `engine '${engine}' requires identifying input until Slice D (§3.3)`);
     }
+    // ── Slice B round B2: the IPD episode freeze (§17.5, decisions 48 and 50) ───────
+    // A frozen episode is a STORED AUDIT ROW, not a live encounter: the freeze reads
+    // ipd_episode_audits, its checkpoints and the extraction, strips verbatimSections, and keys
+    // the stored judge replies by the request hash the pipeline will actually compute. Every
+    // such dataset is `frozen`, because nothing in a replay of it reads anything live.
+    if (args.episodes) {
+      if (engine !== 'ipd_episode') {
+        throw new LabError('ENGINE_UNSUPPORTED', `the 'episodes' selector is ipd_episode only; '${engine}' takes a body or a cohort`);
+      }
+      const sel = args.episodes as { audit_ids?: string[]; engine_version?: string; limit?: number };
+      const excluded: { case_key: string; reason: string }[] = [];
+      const skip = new Set((args.exclusions as string[]) ?? []);
+      const ids = (sel.audit_ids ?? await selectIpdCohort(String(sel.engine_version), sel.limit ?? 200))
+        .filter((id) => !skip.has(id));
+      if (!ids.length) throw new LabError('INVALID_INPUT', 'the episode selection resolved to no cases');
+      const cases: FrozenIpdCase[] = [];
+      for (const id of ids) {
+        try {
+          cases.push(await freezeIpdEpisode(id));
+        } catch (e) {
+          const err = e as LabError;
+          // One episode's failure is an EXCLUSION with a reason, exactly as decision 41 rules for
+          // an OPD cohort — except NOT_CONFIGURED, which is the deployment's problem and would
+          // otherwise produce a dataset of 24 identical exclusions.
+          if (err.code === 'NOT_CONFIGURED') throw err;
+          excluded.push({ case_key: id, reason: `${err.code ?? 'ERROR'}: ${String(err.message).slice(0, 200)}` });
+        }
+      }
+      if (!cases.length) {
+        throw new LabError('SOURCE_UNAVAILABLE', `no episode could be frozen (${excluded.length} excluded)`);
+      }
+      const body = datasetBodySchema.parse({
+        engine,
+        cases: cases.map((c) => ({ case_key: c.case_key, member_key: c.member_key, frozen: c.frozen })),
+        snapshot_policy: 'episode_at_creation',
+        exclusions: (args.exclusions as string[]) ?? [],
+        classification: 'deidentified',
+        source_versions: {
+          frozen_at: new Date().toISOString(),
+          engine_versions: [...new Set(cases.map((c) => c.frozen.engine_version))],
+          stripped: [...new Set(cases.flatMap((c) => c.frozen.stripped))],
+        },
+        replay_exactness: 'frozen',
+      });
+      const { object, deduplicated } = await putObject(deps.db, deps.principal, 'dataset', body, 'deidentified', String(args.idempotency_key));
+      return {
+        dataset_id: object.id, hash: object.hash, replay_exactness: body.replay_exactness,
+        classification: 'deidentified', deduplicated,
+        counts: { requested: ids.length, frozen: cases.length, excluded: excluded.length },
+        excluded,
+      };
+    }
+
     // ── Slice B cohort mode (§17.4 item 1) ──────────────────────────────────────────
     // Many cases, each frozen with decision 41's sources and decision 44's member key, so the
     // dataset is `frozen` rather than `mutable_source`. One case's failure is an exclusion with a
@@ -513,8 +571,19 @@ const B1_HANDLERS: Record<string, Handler> = {
   },
 };
 
+/** Slice B round B2 (§17.5, decision 49). */
+const B2_HANDLERS: Record<string, Handler> = {
+  async episode_checkpoint_inspect(deps, args) {
+    return episodeCheckpointInspect({ db: deps.db, principal: deps.principal }, args as never);
+  },
+  async episode_replay(deps, args) {
+    return episodeReplay({ db: deps.db, principal: deps.principal }, args as never);
+  },
+};
+
 const ALL_HANDLERS: Record<string, Handler> = {
   ...HANDLERS,
   ...(OBSERVATION_HANDLERS as unknown as Record<string, Handler>),
   ...B1_HANDLERS,
+  ...B2_HANDLERS,
 };

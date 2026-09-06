@@ -310,9 +310,14 @@ export function allAdapters(): Record<string, Adapter> {
   const { makeAppropriatenessAdapter } = require('./appropriateness') as typeof import('./appropriateness');
   const { makePathwayAdapter } = require('./pathway') as typeof import('./pathway');
   const { makeDocAuditAdapter } = require('./doc-audit') as typeof import('./doc-audit');
+  // §17.5 decision 47 — the seventh engine. It is required lazily for the same reason the five
+  // route engines are: this module's types are imported by the observation tools, which must not
+  // drag the IPD pipeline and its prompts into their module graph.
+  const { makeIpdEpisodeAdapter } = require('./ipd-episode') as typeof import('./ipd-episode');
   /* eslint-enable @typescript-eslint/no-require-imports */
   return {
     opd_note_audit: opdAdapter,
+    ipd_episode: makeIpdEpisodeAdapter(),
     ask: makeAskAdapter(),
     ddx: makeDdxAdapter(),
     appropriateness: makeAppropriatenessAdapter(),

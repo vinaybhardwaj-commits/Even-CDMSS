@@ -59,6 +59,9 @@ export type EngineId = (typeof ENGINE_IDS)[number];
  */
 export const SUPPORTED_ENGINES: readonly EngineId[] = [
   'opd_note_audit', 'ask', 'ddx', 'appropriateness', 'pathway', 'doc_audit',
+  // §17.5 decision 47 — the seventh, and the first whose pipeline had to be extracted before it
+  // could run inside the fence at all. lib/ipd-episode/compute.ts.
+  'ipd_episode',
 ];
 
 /**
@@ -104,6 +107,23 @@ export const ENGINE_STAGES: Partial<Record<EngineId, readonly EngineStage[]>> = 
   pathway: [
     { name: 'pathway_skeleton', conditional: false },
     { name: 'clinical_state_normalise', conditional: true },
+  ],
+  /**
+   * §17.5 — the IPD episode pipeline's three governed stages, in the order they occur:
+   * lib/ipd-episode/checkpoint.ts:325 (once per checkpoint, up to the decision 43 ceiling), then
+   * lib/ipd-episode/judge.ts:125 and :156.
+   *
+   * ⚠️ `commentary` IS NOT A STAGE OF THIS ENGINE. Pass B left the pipeline under IPD decision 35
+   * and runs on demand from app/api/ipd-episode/commentary; an arm that priced it would be
+   * reserving budget against a call this engine cannot make (the decision 11 lesson, again).
+   * ⚠️ `checkpoint` IS ONE STAGE, NOT ONE PER CHECKPOINT. An episode makes between one and six
+   * checkpoint calls depending on its anchors, so a per-checkpoint stage would make the arm's
+   * cost ceiling depend on the episode — which is the opposite of what a ceiling is for.
+   */
+  ipd_episode: [
+    { name: 'checkpoint', conditional: false },
+    { name: 'divergence', conditional: false },
+    { name: 'fidelity', conditional: false },
   ],
   // lib/doc-audit.ts:199, :309/310, :423, :433, :443.
   doc_audit: [
@@ -228,6 +248,52 @@ export const opdFrozenSchema = z.object({
   })).optional(),
 });
 export type OpdFrozen = z.infer<typeof opdFrozenSchema>;
+
+/**
+ * §17.5 decisions 48 and 50 — the frozen inputs for ONE ipd_episode case.
+ *
+ * ⚠️ WHAT IS NOT IN HERE IS THE POINT. No encounter id (`episode_ref` is sha256 of the audit row
+ * id), no member id (only its salted hash, and that rides on the CASE, not in here), and no
+ * `verbatimSections` — `stripped` records that it was removed and the freeze refuses the case if
+ * any patient-name key survived it.
+ */
+export const ipdFrozenSchema = z.object({
+  audit_id: z.string().min(1),
+  engine_version: z.string().min(1),
+  episode_ref: z.string().min(1),
+  envelope: z.object({
+    encounterId: z.string(),
+    memberId: z.null(),
+    facilityName: z.string().nullable(),
+    speciality: z.string().nullable(),
+    admittedAt: z.string(),
+    dischargedAt: z.string().nullable(),
+    losDays: z.number().nullable(),
+    dischargeType: z.string().nullable(),
+    treatingDepartmentName: z.string().nullable(),
+    admissionType: z.string().nullable(),
+    admitSource: z.string().nullable(),
+    remarks: z.string().nullable(),
+    responsibleClinicianId: z.string().nullable(),
+  }),
+  real_course: z.array(z.record(z.unknown())),
+  sources_present: z.array(z.string()),
+  extraction: z.object({ extraction_version: z.string().nullable(), extracted_case: z.unknown() }),
+  checkpoints: z.record(z.record(z.unknown())),
+  /** Decision 48 — request hash → the stored reply. Empty means FRESH mode, not a broken case. */
+  steps: z.record(z.object({
+    stage: z.string(),
+    request_hash: z.string(),
+    completion: z.unknown(),
+    text: z.string(),
+    served: z.object({ provider: z.string(), model: z.string().nullable() }).nullable(),
+  })),
+  admission_context: z.string().nullable(),
+  models: z.object({ checkpoint: z.string().nullable(), judge: z.string().nullable() }),
+  stripped: z.array(z.string()),
+  stored: z.record(z.unknown()),
+});
+export type IpdFrozenParsed = z.infer<typeof ipdFrozenSchema>;
 
 export const datasetCaseSchema = z.object({
   case_key: z.string().min(1),
@@ -376,6 +442,16 @@ export const toolSchemas = {
       cohort: z.union([
         z.object({ case_keys: z.array(z.string().min(1)).min(1).max(200) }),
         z.object({ filter: z.record(z.unknown()) }),
+      ]).optional(),
+      /**
+       * §17.5 decision 48 — the ipd_episode selector. `audit_ids` is an explicit list of
+       * `ipd_episode_audits.id`; `engine_version` takes every CURRENT row at that version, oldest
+       * first. Never an encounter id: decision 50 keeps the live db13 key out of the research
+       * store, and a caller who has one can find its audit row through `audit_search`.
+       */
+      episodes: z.union([
+        z.object({ audit_ids: z.array(z.string().uuid()).min(1).max(200) }),
+        z.object({ engine_version: z.string().min(1), limit: z.number().int().min(1).max(200).default(200) }),
       ]).optional(),
       exclusions: z.array(z.string()).default([]),
       idempotency_key: z.string().min(1),

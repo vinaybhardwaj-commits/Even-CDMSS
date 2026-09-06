@@ -236,7 +236,11 @@ test('§17.3: an engine with no adapter is still supported:false with a reason',
 test('§17.3: SUPPORTED_ENGINES and the adapter registry agree', () => {
   const registered = Object.keys(ALL_ADAPTERS()).sort();
   assert.deepEqual(registered, [...SUPPORTED_ENGINES].sort());
-  assert.equal(registered.length, 6);
+  // lab-v2 decision 47 (§17.5): the seventh engine. ipd_episode could not be adapted at all until
+  // its pipeline moved into lib/ipd-episode/compute.ts, because its first stage was a db13 read
+  // through a module import and lib/metabase.ts:115 throws on that inside the fence.
+  assert.equal(registered.length, 7);
+  assert.ok(registered.includes('ipd_episode'), 'the extracted IPD pipeline is a registered engine');
   for (const e of SUPPORTED_ENGINES) assert.ok(ENGINE_STAGES[e], `${e} must declare stages`);
 });
 
