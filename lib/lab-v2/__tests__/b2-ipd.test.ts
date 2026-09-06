@@ -12,7 +12,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { freshDb } from './helpers';
 import { hash } from '../contracts';
@@ -359,7 +359,7 @@ test('§17.5: every inferred statement is a SELECT over the three tables the rou
   const statements = [
     AUDIT_ROW_SQL('11111111-2222-4333-8444-555555555555'),
     CHECKPOINT_ROWS_SQL('11111111-2222-4333-8444-555555555555'),
-    EXTRACTION_SQL('IP-1234'),
+    EXTRACTION_SQL('ENC-FIXTURE-0001'),   // lab-v2 decision 64: never an encounter id, not even a made-up one
     COHORT_SQL('ipd-episode-audit/0.2', 24),
   ];
   for (const s of statements) {
@@ -380,7 +380,7 @@ test('§17.5: every inferred statement is a SELECT over the three tables the rou
 test('§17.5: the cohort statement refuses anything that is not an id, rather than escaping it', () => {
   assert.throws(() => COHORT_SQL("0.2'; DROP TABLE x --", 10), (e: { code?: string }) => e.code === 'INVALID_INPUT');
   assert.throws(() => AUDIT_ROW_SQL('not-a-uuid'), (e: { code?: string }) => e.code === 'INVALID_INPUT');
-  assert.throws(() => EXTRACTION_SQL("IP-1' OR 1=1"), (e: { code?: string }) => e.code === 'INVALID_INPUT');
+  assert.throws(() => EXTRACTION_SQL("ENC-1' OR 1=1"), (e: { code?: string }) => e.code === 'INVALID_INPUT');
 });
 
 // ── decision 48: the production golden A/B, as a committed record ───────────────────────────
@@ -394,7 +394,7 @@ test('§17.5 decision 48: the golden A/B record is complete, equal on every case
   const ab = JSON.parse(readFileSync(join(process.cwd(), 'lib/lab-v2/__tests__/fixtures/golden-ab-06-sep-2026.json'), 'utf8')) as {
     engine_version: string; model_calls: number; gateway_calls: number; refused: unknown[];
     totals: { cases: number; equal: number; decision_40: number; section_1_27: number };
-    cases: { case_key: string; episode: string; decision_40: boolean; section_1_27: boolean; source_hash: string; replay_hash: string; equal: boolean; checkpoints: number; n_findings: number; replayed_stages: number }[];
+    cases: { case_key: string; decision_40: boolean; section_1_27: boolean; source_hash: string; replay_hash: string; equal: boolean; checkpoints: number; n_findings: number; replayed_stages: number }[];
   };
   assert.equal(ab.engine_version, 'ipd-episode-audit/0.2');
   assert.equal(ab.cases.length, ab.totals.cases);
@@ -407,21 +407,68 @@ test('§17.5 decision 48: the golden A/B record is complete, equal on every case
   assert.equal(ab.gateway_calls, 0, 'and nothing was reserved against a budget');
   assert.deepEqual(ab.refused, [], 'every selected row could be frozen');
   for (const c of ab.cases) {
-    assert.equal(c.equal, true, `${c.episode} did not replay to its stored row`);
-    assert.equal(c.source_hash, c.replay_hash, `${c.episode}`);
+    // lab-v2 decision 64: the audit row id is the only handle, so it is the only handle a failure
+    // message can name. That is the point — an encounter id is a live db13 key.
+    assert.match(c.case_key, /^[0-9a-f-]{36}$/, 'the case key is an audit row id, not an encounter id');
+    assert.equal(c.equal, true, `${c.case_key} did not replay to its stored row`);
+    assert.equal(c.source_hash, c.replay_hash, `${c.case_key}`);
     assert.match(c.source_hash, /^[0-9a-f]{64}$/);
-    assert.equal(c.replayed_stages, 2, `${c.episode}: both judge passes were served from steps`);
+    assert.equal(c.replayed_stages, 2, `${c.case_key}: both judge passes were served from steps`);
     assert.ok(c.checkpoints >= 1 && c.n_findings >= 0);
   }
   // ⚠️ NO CLINICAL CONTENT, EVER. The record is ids, hashes and counts; a future edit that added a
   // statement, a course or a name would put a patient in a public repository.
-  const allowed = new Set(['case_key', 'episode', 'decision_40', 'section_1_27', 'source_hash', 'replay_hash', 'equal', 'checkpoints', 'n_findings', 'replayed_stages']);
+  const allowed = new Set(['case_key', 'decision_40', 'section_1_27', 'source_hash', 'replay_hash', 'equal', 'checkpoints', 'n_findings', 'replayed_stages']);
   for (const c of ab.cases) {
     for (const k of Object.keys(c)) assert.ok(allowed.has(k), `the golden record grew a '${k}' column`);
   }
   for (const k of keysOf(ab)) {
     assert.ok(!PATIENT_NAME_KEY.test(k), `the golden record carries a name key: ${k}`);
   }
+});
+
+test('lab-v2 decision 64: no encounter id appears anywhere under lib/lab-v2/__tests__/', () => {
+  /**
+   * ⚠️ WHAT THIS GUARDS, AND WHY A COMMENT IS NOT ENOUGH.
+   *
+   * An `IP-nnnn` is a LIVE db13 encounter key. Decision 50 makes the audit row id the only key an
+   * IPD case may carry, precisely so a research artefact cannot be walked back to an admission —
+   * and the golden A/B record then carried 24 of them anyway, in a public repository, because the
+   * report table wanted a readable handle. This repository has had PHI history rewritten once.
+   *
+   * So the rule is enforced over the WHOLE directory rather than over the files anyone remembers
+   * to check, and it scans fixtures as well as tests, because the fixture is where the last 24
+   * were. A case is addressed by its audit row id; if a reader needs the encounter behind one,
+   * that lookup belongs in production Neon, where the authorisation to make it lives.
+   */
+  const ENCOUNTER_ID = /\bIP-[0-9]{3,5}\b/;
+  const dir = join(process.cwd(), 'lib/lab-v2/__tests__');
+  const walk = (d: string, out: string[] = []): string[] => {
+    for (const e of readdirSync(d, { withFileTypes: true })) {
+      const p = join(d, e.name);
+      if (e.isDirectory()) walk(p, out);
+      else out.push(p);
+    }
+    return out;
+  };
+  const files = walk(dir);
+  assert.ok(files.length >= 15, `expected the whole suite to be scanned, walked ${files.length}`);
+  const hits: string[] = [];
+  for (const f of files) {
+    for (const [i, line] of readFileSync(f, 'utf8').split('\n').entries()) {
+      const m = ENCOUNTER_ID.exec(line);
+      if (m) hits.push(`${f.slice(process.cwd().length + 1)}:${i + 1} — ${m[0]}`);
+    }
+  }
+  assert.deepEqual(hits, [], `encounter id(s) in the lab-v2 test tree:\n${hits.join('\n')}`);
+  // The scan is only worth anything if it can actually see one, so prove the pattern bites.
+  // ⚠️ THE PROBES ARE ASSEMBLED FROM PIECES, and that is not fussiness: a literal one here would
+  // be a hit in this very file, which is exactly the property being enforced. The first draft of
+  // this test failed on its own two examples.
+  const probe = `${'IP'}-${'1286'}`;
+  assert.ok(ENCOUNTER_ID.test(probe), 'the pattern matches a real encounter id');
+  assert.ok(ENCOUNTER_ID.test(`freeze ${'IP'}-${'14690'} next`), 'and one inside a sentence');
+  assert.ok(!ENCOUNTER_ID.test('IPFIX0000001'), 'and not the synthetic fixture handle');
 });
 
 test('§17.5: the two statement-rewrite suffixes are the ones judge-core actually appends', () => {
