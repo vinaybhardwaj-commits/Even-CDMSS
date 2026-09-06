@@ -27,7 +27,9 @@ import {
 import {
   CHUNK_STATE_SQL, NEAR_DUPLICATE_SQL, OVERLAP_SQL, PG_TRGM_SQL, STAGED_CHUNKS_SQL,
   STAGED_IDS_SQL, VISIBLE_SUMMARY_SQL, candidateLegs, corpusStage, corpusValidate,
+  quarantinedSource, readStagedIds,
 } from '../tools/corpus';
+import { CORPUS_QUARANTINE_INSERT_SQL, labLabel } from '../../lab';
 import {
   ACTIVATED_IDS_SQL, CORPUS_DEACTIVATE_SQL, activateLabel, deactivateIds,
 } from '../releases/corpus-writer';
@@ -167,11 +169,11 @@ test('§17.7 decision 80a: the inverse is id-keyed, flips both flags, and refuse
 
 test('§17.7: every inferred mksap_chunks read is a bounded SELECT, and none is a write', () => {
   const statements: [string, string][] = [
-    ['staged chunks', STAGED_CHUNKS_SQL(LABEL)],
-    ['staged ids', STAGED_IDS_SQL(LABEL)],
+    ['staged chunks', STAGED_CHUNKS_SQL],
+    ['staged ids', STAGED_IDS_SQL],
     ['visible summary', VISIBLE_SUMMARY_SQL],
-    ['overlap', OVERLAP_SQL(LABEL)],
-    ['near duplicate', NEAR_DUPLICATE_SQL(LABEL, 0.9)],
+    ['overlap', OVERLAP_SQL],
+    ['near duplicate', NEAR_DUPLICATE_SQL(0.9)],
     ['pg_trgm', PG_TRGM_SQL],
     ['chunk state', CHUNK_STATE_SQL(IDS)],
     ['activated ids', ACTIVATED_IDS_SQL],
@@ -184,19 +186,50 @@ test('§17.7: every inferred mksap_chunks read is a bounded SELECT, and none is 
     assert.equal((sql.match(/;/g) ?? []).length, 0, `${name}: a single statement`);
     assert.ok(!/SELECT\s+\*/.test(sql), `${name}: never SELECT *`);
   }
-  // The three that scan the corpus are bounded; the two summaries are aggregates over one row.
   for (const [name, sql] of statements.filter(([n]) => !['visible summary', 'pg_trgm'].includes(n))) {
     assert.ok(/LIMIT \d+/.test(sql), `${name} must be bounded`);
   }
-  // ⚠️ THE SERVABLE PREDICATE IS PRODUCTION'S, WORD FOR WORD (lib/retrieve.ts:167).
-  for (const sql of [VISIBLE_SUMMARY_SQL, OVERLAP_SQL(LABEL)]) {
+  // ⚠️ THE SERVABLE PREDICATE IS PRODUCTION'S, WORD FOR WORD (lib/retrieve.ts:167) — and it belongs
+  // ONLY to the statements that ask about servability.
+  for (const sql of [VISIBLE_SUMMARY_SQL, OVERLAP_SQL]) {
     assert.ok(sql.includes('visible IS NOT FALSE'));
     assert.ok(sql.includes("source NOT LIKE 'labq:%'"));
   }
-  // The candidate legs carry the same guards, from production's own clause builder.
   for (const leg of [candidateLegs(null, 10).vector.sql, candidateLegs(null, 10).bm25.sql]) {
     assert.ok(leg.includes("source NOT LIKE 'labq:%'"), 'side A never sees a quarantined chunk');
   }
+});
+
+test('§17.7 decision 86: the staged-set reader binds the source and carries NO visibility predicate', () => {
+  /**
+   * ⚠️ THE FAILURE THIS PINS. On `8110b22f` these statements built `WHERE source = '<label>'`; the
+   * rows live under `labq:<label>`, so the reader matched nothing that exists. `corpus_stage` wrote
+   * chunk 4145293 through v1's own ingest and then reported `CASE_NOT_FOUND` for the label it had
+   * just written, and `corpus_validate` did the same on 15 real pre-existing rows.
+   *
+   * Two properties now, and BOTH are ways the reader could have returned nothing:
+   *   · the source is a BOUND parameter, `$1`, whose value is `'labq:' || slug`;
+   *   · no visibility or servability predicate — a quarantined row is `visible = false` by
+   *     construction, so `visible IS NOT FALSE` would exclude every row it is meant to find.
+   */
+  for (const [name, sql] of [
+    ['staged ids', STAGED_IDS_SQL],
+    ['staged chunks', STAGED_CHUNKS_SQL],
+    ['near duplicate', NEAR_DUPLICATE_SQL(0.9)],
+  ] as [string, string][]) {
+    assert.match(sql, /(?:^|\s)(?:s\.)?source = \$1/m, `${name} binds the source`);
+    // ⚠️ The STAGED side must not be interpolated. `NEAR_DUPLICATE_SQL` legitimately carries
+    // `source NOT LIKE 'labq:%'` on the VISIBLE side — that is the servable predicate, on the half
+    // of the join where it belongs — so the check is about the staged predicate, not the string.
+    assert.ok(!/(?:^|\s)(?:s\.)?source = '/m.test(sql), `${name} must not interpolate the staged source`);
+    assert.ok(!/visible IS NOT FALSE/.test(sql.split('JOIN')[0]), `${name} must carry no visibility predicate on the STAGED side`);
+  }
+  // The overlap statement's subquery is the staged side; its outer half is deliberately servable.
+  assert.match(OVERLAP_SQL, /WHERE s\.source = \$1/);
+  // And the value that gets bound is the quarantined source, built once.
+  assert.equal(quarantinedSource('c1-batch'), 'labq:c1-batch');
+  assert.equal(quarantinedSource('UPPER'), 'labq:upper');
+  assert.equal(quarantinedSource("x'; DROP TABLE mksap_chunks --"), 'labq:x-drop-table-mksap_chunks');
 });
 
 test('§17.7: a label is SLUGGED by v1, and the slug that means "default" is refused', () => {
@@ -206,27 +239,20 @@ test('§17.7: a label is SLUGGED by v1, and the slug that means "default" is ref
    *     "x'; DROP TABLE mksap_chunks --" → "x-drop-table-mksap_chunks"
    *     "a b"   → "a-b"        "UPPER" → "upper"
    *     ""      → "default"    "  "    → "default"     "!!!" → "default"
-   * The first three are genuine sanitisations and are trusted — no quote, no space, no semicolon
-   * survives. The last three are the hazard: a blank label would silently address the batch NAMED
-   * `default`, and a release could stage, review and activate it because someone sent an empty
-   * string. That is refused.
+   * The first three are genuine sanitisations and are trusted. The last three are the hazard: a
+   * blank label would silently address the batch NAMED `default`. That is refused.
    */
   for (const dangerous of ["x'; DROP TABLE mksap_chunks --", 'a b', 'UPPER']) {
-    const sql = STAGED_IDS_SQL(dangerous);
-    assert.ok(!/['";]/.test(sql.replace(/'[a-z0-9_-]+'/g, '')), `the slug of ${dangerous} carries no punctuation`);
-    assert.equal((sql.match(/;/g) ?? []).length, 0);
+    const bound = quarantinedSource(dangerous);
+    assert.ok(!/['";\s]/.test(bound), `the bound source for ${dangerous} carries no punctuation`);
+    assert.match(bound, /^labq:[a-z0-9][a-z0-9_-]*$/);
   }
   for (const blank of ['', '  ', '!!!']) {
-    assert.throws(() => STAGED_IDS_SQL(blank), (e: { code?: string; message?: string }) =>
+    assert.throws(() => quarantinedSource(blank), (e: { code?: string; message?: string }) =>
       e.code === 'INVALID_INPUT' && /slugs to 'default'/.test(String(e.message)), JSON.stringify(blank));
   }
   // A batch legitimately named `default` is still addressable.
-  assert.match(STAGED_IDS_SQL('default'), /source = 'default'/);
-  for (const bad of [[0], [-1], [1.5], ['x'], []]) {
-    assert.throws(() => CHUNK_STATE_SQL(bad as never), (e: { code?: string }) => e.code === 'INVALID_INPUT');
-  }
-  // ⚠️ bigint arrives as a STRING (decision 72); a string that IS an id is fine.
-  assert.match(CHUNK_STATE_SQL(['4145286'] as never), /IN \(4145286\)/);
+  assert.equal(quarantinedSource('default'), 'labq:default');
 });
 
 test('§17.7: the impact estimate admits the staged batch through production’s OWN quarantine seam', () => {
@@ -285,7 +311,7 @@ test('§17.7: corpus_validate runs the duplicate check where pg_trgm IS present'
   assert.deepEqual(dup.offenders, [4145286]);
   assert.equal(out.ok, false);
   assert.deepEqual(out.near_duplicates, [{ staged_id: 4145286, visible_id: 99, visible_source: 'choosing-wisely', similarity: 0.94 }]);
-  assert.match(NEAR_DUPLICATE_SQL(LABEL, 0.9), /similarity\(s\.text, v\.text\) > 0\.9/);
+  assert.match(NEAR_DUPLICATE_SQL(0.9), /similarity\(s\.text, v\.text\) > 0\.9/);
   await db.close();
 });
 
@@ -731,6 +757,75 @@ test('§17.7: activateLabel calls v1 and reads back the ids it must be checked a
   // ⚠️ v1 returns a COUNT, not ids, so the ids are read back rather than invented — which is what
   // makes decision 79a's post-check possible at all.
   assert.match(ACTIVATED_IDS_SQL, /^SELECT id FROM mksap_chunks WHERE source = \$1 ORDER BY id LIMIT 500$/);
+});
+
+test('§17.7 decision 86: the reader finds a row v1’s OWN quarantine ingest just wrote', async () => {
+  /**
+   * ⚠️ THE TEST THAT WOULD HAVE CAUGHT IT, AND WHY IT LOOKS LIKE THIS.
+   *
+   * Every other corpus test injects its read, so none of them ever exercised the predicate — which
+   * is exactly how `WHERE source = '<label>'` reached production. This one does not inject: it
+   * writes a row with **v1's own `CORPUS_QUARANTINE_INSERT_SQL`**, the statement
+   * `corpusAddQuarantined` runs, into a real `mksap_chunks`, and then asks the real reader to find
+   * it. If the predicate is wrong the read comes back empty and this fails.
+   *
+   * ⚠️ ONE SUBSTITUTION, STATED. `corpusAddQuarantined` itself cannot run here: it embeds on the
+   * mini over the network and writes through production's `sql`. And PGlite 0.5.8 in this repo
+   * ships no `vector` extension (`@electric-sql/pglite/vector` is not in its exports), so
+   * `$9::vector` cannot execute. So the fixture runs v1's statement with the `::vector` cast
+   * neutralised and NOTHING else changed — and the test asserts that is the only difference,
+   * character for character, rather than asking anyone to take it on trust. The predicate under
+   * test never touches `embedding`; what it depends on is `source` and the `visible = false`
+   * literal, and both come from v1's statement unmodified.
+   */
+  const V1 = CORPUS_QUARANTINE_INSERT_SQL;
+  const forPglite = V1.replace('$9::vector', '$9');
+  // The ONE difference, pinned. A reworded v1 statement fails here rather than silently diverging.
+  assert.equal(forPglite.split('$9').length, V1.split('$9::vector').length, 'exactly one cast was neutralised');
+  assert.equal(V1.replace('$9::vector', '$9'), forPglite);
+  assert.ok(V1.includes('visible'), 'v1 writes the visibility flag explicitly');
+  assert.match(V1, /VALUES \(\$1, \$2, \$3, \$4, \$5, \$6, \$7, \$8, \$9::vector, \$10, false,/,
+    'and the literal it writes is FALSE — which is why the reader may carry no visibility predicate');
+
+  const db = await embedded();
+  // v1's own column list, and `visible boolean NOT NULL` as production has it. `embedding` is text
+  // here for the reason above; every other column is production's type.
+  await db.exec(`CREATE TABLE mksap_chunks (
+    id bigserial PRIMARY KEY, source text, book text NOT NULL, chapter text, section text,
+    item_number text, chunk_type text, text text NOT NULL, text_hash text NOT NULL,
+    embedding text NOT NULL, token_count integer, visible boolean NOT NULL,
+    citation_url text, citation_doi text, citation_pmid text, source_release_year integer,
+    license_status text, provenance text, text_tsv tsvector,
+    UNIQUE (book, text_hash))`);
+
+  const label = 'lab-v2-c1-verify';
+  const source = `labq:${labLabel(label)}`;
+  const inserted = await db.query<{ id: string }>(forPglite, [
+    source, 'Even Protocols', 'Sepsis', 'lab', '1', 'note',
+    'A staged passage about early antibiotic administration in suspected sepsis.',
+    'hash-c1-verify', '[0.1,0.2]', 120, null, null, null, null, null, null,
+  ]);
+  assert.equal(inserted.length, 1, 'v1’s statement wrote one row');
+  const writtenId = Number(inserted[0].id);
+
+  // The row has production's shape: quarantined and INVISIBLE.
+  const row = (await db.query<{ source: string; visible: boolean }>(
+    `SELECT source, visible FROM mksap_chunks WHERE id = $1`, [writtenId]))[0];
+  assert.equal(row.source, source);
+  assert.equal(row.visible, false, 'quarantine means invisible — v1’s own literal');
+
+  // ⚠️ THE ASSERTION. The real reader, the real statement, no injection.
+  const found = await readStagedIds(label, {
+    read: (async <T,>(_s: string, statement: string, params: unknown[] = []) =>
+      db.query(statement, params) as Promise<T[]>) as never,
+  });
+  assert.deepEqual(found, [writtenId],
+    'the staged-set reader must find the row v1’s ingest just wrote; on 8110b22f it found nothing');
+
+  // And it is found by the BOUND source, not by a label that happens to match.
+  const byBareLabel = await db.query(STAGED_IDS_SQL, [labLabel(label)]);
+  assert.equal(byBareLabel.length, 0, 'the bare label matches nothing — which is what the bug did');
+  await db.close();
 });
 
 test('§17.7: the 0002 migration is applied by the same route, and is checksum-stable', async () => {

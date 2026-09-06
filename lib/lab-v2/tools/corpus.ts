@@ -25,6 +25,7 @@ import { z } from 'zod';
 import { LabError, hash } from '../contracts';
 import { boundedRead } from '../sources/read';
 import { corpusAddQuarantined, labLabel } from '../../lab';
+import { QUARANTINE_PREFIX } from '../releases/corpus-writer';
 import { buildFilterClauses, defaultBm25Sql, renderFilterSql } from '../../retrieve';
 import { embedQuery, vectorLiteral } from '../../llm';
 import { fuse, rankCorrelation } from './retrieval-compare';
@@ -35,18 +36,37 @@ import type { Db } from '../db';
 const SOURCE = 'mksap_chunks';
 
 /** A slug, refused rather than escaped. `labLabel` is v1's own sanitiser; this is the gate before it. */
-function labelLit(value: string): string {
+/**
+ * DECISION 86 — the quarantined source a label names, validated and then BOUND.
+ *
+ * ⚠️ WHAT WENT WRONG ON `8110b22f`, AND IT WAS FOUND IN PRODUCTION. Every label-keyed read built
+ * `WHERE source = '<label>'`. The rows live under `source = 'labq:<label>'`, so the reader matched
+ * NOTHING: `corpus_stage` wrote chunk 4145293 under `labq:lab-v2-c1-verify` through v1's own
+ * ingest — visible false, embedding and tsvector present, confirmed in Neon — and then returned
+ * `CASE_NOT_FOUND` for the label it had just written. `corpus_validate` did the same on that label
+ * and on the pre-existing `labq:guidelines-lvc-22jul`, 15 real rows. The predicate had never been
+ * exercised: every test injected its read, and the one assertion about the string encoded the bug.
+ *
+ * ⚠️ AND THE SOURCE IS NOW A BOUND PARAMETER, not an interpolated literal. Decision 86 says
+ * `WHERE source = $1` with `$1 = 'labq:' || slug`. The slug is still validated — v1's `labLabel`
+ * is a sanitiser, not a gate, and `''` slugs to `default` — but the value reaches the statement as
+ * a parameter, so the statement itself has no interpolation to get wrong.
+ *
+ * ⚠️ AND NO VISIBILITY PREDICATE. A quarantined row is `visible = false` by construction (v1's
+ * `CORPUS_QUARANTINE_INSERT_SQL`), so a reader carrying `visible IS NOT FALSE` — the SERVABLE
+ * predicate — would match none of them. Servability is what `corpus_diff` asks about the corpus;
+ * it is the wrong question to ask about a staged batch, and asking it is the other way this reader
+ * could have returned nothing.
+ */
+export function quarantinedSource(value: string): string {
   const l = labLabel(value);
   /**
-   * ⚠️ v1's `labLabel` SLUGS rather than refuses, and one of its outputs is a trap.
+   * v1's `labLabel` SLUGS rather than refuses, and one of its outputs is a trap.
    * `labLabel('')`, `labLabel('  ')` and `labLabel('!!!')` all return **`default`** — so a blank or
-   * unusable label would silently address the batch named `default` rather than failing. Measured
-   * 06 Sep 2026. A release that staged, reviewed and activated `default` because someone sent an
-   * empty string is exactly the accident this whole round exists to make impossible.
+   * unusable label would silently address the batch named `default`. Measured 06 Sep 2026.
    *
    * Everything else it does is a genuine sanitisation and is trusted: `x'; DROP TABLE mksap_chunks --`
-   * comes back as `x-drop-table-mksap_chunks`, which carries no quote, space or semicolon. The
-   * charset below is v1's own output alphabet, verified rather than re-derived.
+   * comes back as `x-drop-table-mksap_chunks`. The charset below is v1's own output alphabet.
    */
   if (l === 'default' && labLabel(String(value).trim()) !== String(value).trim().toLowerCase()) {
     throw new LabError('INVALID_INPUT', `label '${value}' slugs to 'default'; name the batch explicitly`);
@@ -54,7 +74,7 @@ function labelLit(value: string): string {
   if (!/^[a-z0-9][a-z0-9_-]{0,62}$/.test(l)) {
     throw new LabError('INVALID_INPUT', `label '${value}' is not a corpus batch label`);
   }
-  return `'${l}'`;
+  return `${QUARANTINE_PREFIX}${l}`;
 }
 
 /** §17.7 — the ceiling every corpus read shares. A batch at the ceiling is REFUSED at staging
@@ -78,7 +98,7 @@ function idList(ids: readonly (number | string)[]): string {
 
 /** The staged batch, with everything `corpus_validate` needs to judge it. Never the embedding
  *  itself — a 768-float vector in a tool response is noise; whether it EXISTS is the question. */
-export const STAGED_CHUNKS_SQL = (label: string) => `SELECT
+export const STAGED_CHUNKS_SQL = `SELECT
   id, book, chapter, section, source, chunk_type, token_count, visible,
   length(text) AS text_chars,
   left(text, 240) AS preview,
@@ -86,18 +106,20 @@ export const STAGED_CHUNKS_SQL = (label: string) => `SELECT
   (text_tsv IS NOT NULL) AS has_tsv,
   text_hash
 FROM mksap_chunks
-WHERE source = ${labelLit(label)}
+WHERE source = $1
 ORDER BY id
 LIMIT 500`;
 
-/** Just the ids, for the prepare/apply comparison. Deliberately its own statement: the check that
- *  decides whether a production write may proceed should not depend on a projection someone might
- *  widen later. */
-export const STAGED_IDS_SQL = (label: string) =>
-  `SELECT id FROM mksap_chunks WHERE source = ${labelLit(label)} ORDER BY id LIMIT 500`;
+/**
+ * Just the ids. Deliberately its own statement: the check that decides whether a production write
+ * may proceed should not depend on a projection someone might widen later.
+ *
+ * ⚠️ NO PREDICATE BUT THE SOURCE. Decision 86: every row under the label, whatever its visibility.
+ */
+export const STAGED_IDS_SQL = `SELECT id FROM mksap_chunks WHERE source = $1 ORDER BY id LIMIT 500`;
 
 /** The servable set, exactly as `lib/retrieve.ts:167` defines it. Used for the diff's denominators
- *  and for the corpus size a snapshot pins. */
+ *  and for the corpus size a snapshot pins. This one IS about servability, and says so. */
 export const VISIBLE_SUMMARY_SQL = `SELECT
   count(*) AS visible_chunks,
   count(DISTINCT source) AS visible_sources,
@@ -106,13 +128,13 @@ FROM mksap_chunks
 WHERE text IS NOT NULL AND visible IS NOT FALSE AND source NOT LIKE 'labq:%'`;
 
 /** Book/chapter overlap between the staged batch and what is already servable — the diff's shape. */
-export const OVERLAP_SQL = (label: string) => `SELECT
+export const OVERLAP_SQL = `SELECT
   c.book, c.chapter,
   count(*) AS visible_chunks
 FROM mksap_chunks c
 WHERE c.text IS NOT NULL AND c.visible IS NOT FALSE AND c.source NOT LIKE 'labq:%'
   AND (c.book, COALESCE(c.chapter, '')) IN (
-    SELECT s.book, COALESCE(s.chapter, '') FROM mksap_chunks s WHERE s.source = ${labelLit(label)}
+    SELECT s.book, COALESCE(s.chapter, '') FROM mksap_chunks s WHERE s.source = $1
   )
 GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 100`;
 
@@ -120,12 +142,11 @@ GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 100`;
  * DECISION 83 — the near-duplicate check, and the reason it is a separate statement.
  *
  * `similarity()` is `pg_trgm`. The extension is NOT installed on production Neon (measured
- * 06 Sep 2026: `pg_extension` has no row, `pg_proc` has no `similarity`), so this statement cannot
- * run there and `corpus_validate` reports the check as **skipped**, with the reason. It is never
- * reported as passed: "we did not look" and "we looked and found nothing" are different claims,
- * and only one of them is safe to act on.
+ * 06 Sep 2026), so this statement cannot run there and `corpus_validate` reports the check as
+ * **skipped**, with the reason. It is never reported as passed: "we did not look" and "we looked
+ * and found nothing" are different claims, and only one of them is safe to act on.
  */
-export const NEAR_DUPLICATE_SQL = (label: string, threshold: number) => `SELECT
+export const NEAR_DUPLICATE_SQL = (threshold: number) => `SELECT
   s.id AS staged_id,
   v.id AS visible_id,
   v.source AS visible_source,
@@ -135,7 +156,7 @@ JOIN mksap_chunks v
   ON v.text IS NOT NULL AND v.visible IS NOT FALSE AND v.source NOT LIKE 'labq:%'
  AND v.book = s.book
  AND similarity(s.text, v.text) > ${Number(threshold)}
-WHERE s.source = ${labelLit(label)}
+WHERE s.source = $1
 ORDER BY 4 DESC LIMIT 100`;
 
 /** Is `pg_trgm` there at all? Asked before the check, so a missing extension is a reported SKIP
@@ -290,7 +311,7 @@ const asIds = (rows: Record<string, unknown>[]): number[] =>
 
 export async function readStagedIds(label: string, deps: CorpusDeps = {}): Promise<number[]> {
   const read = deps.read ?? liveRead;
-  return asIds(await read<{ id: unknown }>(SOURCE, STAGED_IDS_SQL(label)));
+  return asIds(await read<Record<string, unknown>>(SOURCE, STAGED_IDS_SQL, [quarantinedSource(label)]));
 }
 
 export async function corpusStage(
@@ -315,7 +336,7 @@ export async function corpusStage(
     added = { chunks: out.chunks, inserted: out.inserted, skipped_dup: out.skipped_dup };
   }
 
-  const chunk_ids = asIds(await read<{ id: unknown }>(SOURCE, STAGED_IDS_SQL(label)));
+  const chunk_ids = asIds(await read<Record<string, unknown>>(SOURCE, STAGED_IDS_SQL, [quarantinedSource(label)]));
   if (!chunk_ids.length) {
     throw new LabError('CASE_NOT_FOUND', `no quarantined chunks under labq:${label} — stage some text, or check the label`);
   }
@@ -343,7 +364,7 @@ export async function corpusValidate(
 ) {
   const read = deps.read ?? liveRead;
   const label = await labelFor(db, args);
-  const rows = await read<Record<string, unknown>>(SOURCE, STAGED_CHUNKS_SQL(label));
+  const rows = await read<Record<string, unknown>>(SOURCE, STAGED_CHUNKS_SQL, [quarantinedSource(label)]);
   if (!rows.length) throw new LabError('CASE_NOT_FOUND', `no quarantined chunks under labq:${label}`);
 
   const chunks = rows.map((r) => ({
@@ -388,7 +409,7 @@ export async function corpusValidate(
       offenders: [],
     });
   } else {
-    const dups = await read<Record<string, unknown>>(SOURCE, NEAR_DUPLICATE_SQL(label, 0.9));
+    const dups = await read<Record<string, unknown>>(SOURCE, NEAR_DUPLICATE_SQL(0.9), [quarantinedSource(label)]);
     near = dups.map((d) => ({
       staged_id: Number(d.staged_id), visible_id: Number(d.visible_id),
       visible_source: d.visible_source == null ? null : String(d.visible_source),
@@ -428,14 +449,14 @@ export async function corpusDiff(
   const label = labLabel(args.label);
   const k = Math.floor(args.k ?? 10);
 
-  const staged = await read<Record<string, unknown>>(SOURCE, STAGED_CHUNKS_SQL(label));
+  const staged = await read<Record<string, unknown>>(SOURCE, STAGED_CHUNKS_SQL, [quarantinedSource(label)]);
   if (!staged.length) throw new LabError('CASE_NOT_FOUND', `no quarantined chunks under labq:${label}`);
   const stagedIds = asIds(staged);
   const stagedSet = new Set(stagedIds);
 
   const vis = (await read<Record<string, unknown>>(SOURCE, VISIBLE_SUMMARY_SQL))[0] ?? {};
   const maxChunkId = Number(vis.max_chunk_id ?? 0);
-  const overlapRows = await read<Record<string, unknown>>(SOURCE, OVERLAP_SQL(label));
+  const overlapRows = await read<Record<string, unknown>>(SOURCE, OVERLAP_SQL, [quarantinedSource(label)]);
 
   // ── the queries the impact is measured on ────────────────────────────────────────────
   const queries = args.queries?.length ? args.queries : await freezeQueriesOf(db, args.dataset_id);
