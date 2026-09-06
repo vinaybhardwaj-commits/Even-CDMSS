@@ -586,6 +586,84 @@ test('§17.7 C2: the proposal hash is over the statement and its citation, never
   }));
 });
 
+test('§17.7 C2.1 decision 95: rule_propose forwards keywords and category to v1 byte-for-byte', async () => {
+  const db = await storeDb();
+  const stub = proposeStub({
+    proposal_id: '44444444-4444-4444-4444-444444444444', status: 'proposed',
+    keywords: ['chest radiography', 'preoperative x-ray'], category: 'imaging',
+  });
+  const out = await rulePropose(db, 'research', {
+    ...PROPOSE_ARGS,
+    // ⚠️ Deliberately un-normalised input. v2 must pass it through EXACTLY as given: decision 94 put
+    // the trim, the case-insensitive de-dup and every refusal in parseProposeArgs, which is what the
+    // row is written from. A second normalisation here would diverge from it the first time either
+    // changed, and the artifact a reviewer approved would then describe keywords the table lacks.
+    keywords: ['  chest radiography ', 'Chest Radiography', 'preoperative x-ray'],
+    category: 'imaging',
+    idempotency_key: 'prop-95a',
+  }, stub.deps);
+
+  const [tool, sent] = stub.seen[0];
+  assert.equal(tool, 'lvc_propose');
+  assert.deepEqual(sent.keywords, ['  chest radiography ', 'Chest Radiography', 'preoperative x-ray'],
+    'forwarded unchanged — untrimmed, un-de-duplicated, exactly as the caller wrote it');
+  assert.equal(sent.category, 'imaging');
+  // And the echo is v1's answer about what it STORED, not our copy of what we sent.
+  assert.deepEqual(out.keywords, ['chest radiography', 'preoperative x-ray']);
+  assert.equal(out.category, 'imaging');
+  assert.match(out.matching, /2 keyword phrase\(s\) staged as written/);
+  assert.ok(!out.matching.includes('zero-keyword'), 'the inert-rule warning must not fire on a rule that carries keywords');
+
+  // The staged set a review binds carries both, so an approval is about the trigger phrases too.
+  const staged = (await getObject(db, out.staged_set_id))!.body as Record<string, unknown>;
+  assert.deepEqual(staged.keywords, ['  chest radiography ', 'Chest Radiography', 'preoperative x-ray']);
+  assert.equal(staged.category, 'imaging');
+
+  // Nothing forwarded ⇒ nothing sent, and the keyword-free warning is v2's own refusal wording.
+  const plain = proposeStub({ proposal_id: '55555555-5555-5555-5555-555555555555', status: 'proposed' });
+  const bare = await rulePropose(db, 'research', { ...PROPOSE_ARGS, idempotency_key: 'prop-95b' }, plain.deps);
+  assert.equal(plain.seen[0][1].keywords, undefined);
+  assert.equal(plain.seen[0][1].category, undefined);
+  assert.deepEqual(bare.keywords, []);
+  assert.equal(bare.category, null);
+  assert.equal(bare.matching, KEYWORDLESS_PROPOSAL);
+});
+
+test('§17.7 C2.1 decision 95: the hash moves with a keyword, and an absent field hashes as ABSENT', async () => {
+  const db = await storeDb();
+  const stub = proposeStub({ proposal_id: '66666666-6666-6666-6666-666666666666', status: 'proposed' });
+  const propose = (extra: Record<string, unknown>, key: string) =>
+    rulePropose(db, 'research', { ...PROPOSE_ARGS, ...extra, idempotency_key: key }, stub.deps);
+
+  const a = await propose({ keywords: ['chest radiography'], category: 'imaging' }, 'h-1');
+  const b = await propose({ keywords: ['chest radiography'], category: 'imaging' }, 'h-2');
+  assert.equal(a.proposal_hash, b.proposal_hash, 'the same proposal hashes the same');
+  const kw = await propose({ keywords: ['chest x-ray'], category: 'imaging' }, 'h-3');
+  assert.notEqual(a.proposal_hash, kw.proposal_hash, 'a changed keyword is a changed artifact');
+  const cat = await propose({ keywords: ['chest radiography'], category: 'other' }, 'h-4');
+  assert.notEqual(a.proposal_hash, cat.proposal_hash, 'a changed category is a changed artifact');
+
+  /**
+   * ⚠️ THE BACKWARD-COMPATIBILITY ASSERTION. `canonicalJson` drops `undefined` keys, so an
+   * old-shape propose hashes byte-identically to what it hashed before decision 95. Written as the
+   * pre-95 expression VERBATIM: `?? null` on either field here would have expired every approval
+   * already on record.
+   */
+  const bare = await propose({}, 'h-5');
+  assert.equal(bare.proposal_hash, hash({
+    statement: PROPOSE_ARGS.statement,
+    citation_url: PROPOSE_ARGS.citation_url,
+    citation_doi: null,
+    citation_pmid: null,
+    source_release_year: PROPOSE_ARGS.source_release_year,
+    supersedes_id: null,
+  }), 'an absent keywords/category must not change the hash of a proposal that has neither');
+  assert.notEqual(bare.proposal_hash, a.proposal_hash);
+  // Absent is not the same as empty: a caller who says "no keywords" out loud said something.
+  const empty = await propose({ keywords: [] }, 'h-6');
+  assert.notEqual(empty.proposal_hash, bare.proposal_hash, 'an explicit [] is a statement, not an absence');
+});
+
 test('§17.7 C2: v1’s refusals reach the caller in v1’s own words', async () => {
   const db = await storeDb();
   const refusal = proposeStub({ text: 'Error: cannot read the existing rulebook to run the mandatory duplicate check — refusing to propose ungated' }, true);

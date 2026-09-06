@@ -3854,6 +3854,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "lab-v2",
+    "to": "lvc-proposal-core",
+    "kind": "value"
+  },
+  {
+    "from": "lab-v2",
     "to": "lvc-ratified-wording",
     "kind": "value"
   },

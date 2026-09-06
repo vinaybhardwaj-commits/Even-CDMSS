@@ -34,6 +34,7 @@ import { replayTransport } from './replay';
 import { tick } from '../worker';
 import { activeRules, readProposal, type LvcRuleRow, type RulesDeps } from '../releases/rules-target';
 import { callLabTool } from '../../mcp-tools';
+import { PROPOSAL_CATEGORIES } from '../../lvc-proposal-core';
 import type { Db } from '../db';
 
 export const RULES_SCHEMAS = {
@@ -50,6 +51,15 @@ export const RULES_SCHEMAS = {
       license_status: z.string().max(120).optional(),
       provenance: z.string().max(500).optional(),
       supersedes_id: z.string().max(100).optional(),
+      /**
+       * DECISION 95 — the two fields decision 94 taught v1 to carry, forwarded.
+       *
+       * ⚠️ `PROPOSAL_CATEGORIES` IS IMPORTED, NOT RESTATED. `lvc-proposal-core.ts` already holds the
+       * frozen copy of the engine's twelve, with a test pinning it equal to `LVC_CATEGORIES`. A
+       * third copy here would be a third thing to keep in step.
+       */
+      keywords: z.array(z.string().min(1)).max(12).optional(),
+      category: z.enum(PROPOSAL_CATEGORIES).optional(),
       idempotency_key: z.string().min(1),
     }),
     output: z.object({
@@ -61,6 +71,9 @@ export const RULES_SCHEMAS = {
       status: z.string(),
       statement: z.string(),
       supersedes_id: z.string().nullable(),
+      /** DECISION 95 — what was forwarded, echoed back, so a reader is not left inferring it. */
+      keywords: z.array(z.string()),
+      category: z.string().nullable(),
       /** v1's own note, passed through verbatim: staged only, the rulebook is untouched. */
       note: z.string(),
       /** ⚠️ Read this. See KEYWORDLESS_PROPOSAL. */
@@ -204,17 +217,41 @@ export async function rulePropose(
     // principal is the honest value and it is what the ledger has.
     proposed_by: principal,
     supersedes_id: args.supersedes_id,
+    /**
+     * DECISION 95 — FORWARDED UNCHANGED, AND THAT IS THE POINT.
+     *
+     * ⚠️ v2 MUST NOT NORMALISE THESE A SECOND TIME. Decision 94 put the trim, the case-insensitive
+     * de-dup, the twelve-phrase ceiling and every refusal in `parseProposeArgs`, which is what the
+     * row is actually written from. A second normalisation here would silently diverge from it the
+     * first time either changed, and the artifact a reviewer approved would then describe keywords
+     * that are not the keywords in the table. Whatever v1 decides is what happened.
+     */
+    keywords: args.keywords,
+    category: args.category,
   });
   const body = bodyOf(res, 'lvc_propose', 'INVALID_INPUT');
   const proposalId = body.proposal_id == null ? '' : String(body.proposal_id);
   if (!proposalId) {
     throw new LabError('SOURCE_UNAVAILABLE', 'lvc_propose reported success with no proposal id; a release could never name this row');
   }
+  // v1's own answer about what it stored, never our copy of what we sent — decision 94 may have
+  // trimmed or de-duplicated it. Falls back to what was forwarded only if v1 says nothing.
+  const forwarded: string[] = Array.isArray(body.keywords)
+    ? (body.keywords as unknown[]).map((k) => String(k))
+    : (Array.isArray(args.keywords) ? (args.keywords as unknown[]).map((k) => String(k)) : []);
 
   /**
    * The hash a release binds to. Over the STATEMENT and its citation, never over the row: the row
    * carries a `status` and a `proposed_at` that move on their own, and an artifact hash that moved
    * on its own would expire approvals for no reason.
+   *
+   * DECISION 95 — AND OVER THE KEYWORDS AND THE CATEGORY, because they are half of what a rule DOES.
+   * A review that bound only the text would approve a sentence and let the trigger phrases change
+   * underneath it, which is the same class of hole `APPROVAL_HASH_MISMATCH` exists to close.
+   *
+   * ⚠️ ABSENT HASHES AS ABSENT, NOT AS `[]` OR `null`. `canonicalJson` drops `undefined` keys, so an
+   * old-shape propose produces byte-identically the hash it produced before decision 95 and every
+   * approval already on record still binds. `?? null` here would have expired all of them.
    */
   const proposal_hash = hash({
     statement: String(args.statement),
@@ -223,15 +260,19 @@ export async function rulePropose(
     citation_pmid: args.citation_pmid ?? null,
     source_release_year: args.source_release_year ?? null,
     supersedes_id: args.supersedes_id ?? null,
+    keywords: args.keywords,
+    category: args.category,
   });
   // The staged set for the rules target: the same object kind `release_prepare` already takes, so
-  // the release core needs no new input field for a second target.
+  // the release core needs no new input field for a second target. Same absent-is-absent rule.
   const { object, deduplicated } = await putObject(db, principal, 'staged_set', {
     kind: 'staged_set',
     target: 'rules',
     proposal_id: proposalId,
     proposal_hash,
     statement: String(args.statement),
+    keywords: args.keywords,
+    category: args.category,
     proposed_by: principal,
   }, 'deidentified', String(args.idempotency_key));
 
@@ -243,8 +284,22 @@ export async function rulePropose(
     status: String(body.status ?? 'proposed'),
     statement: String(args.statement),
     supersedes_id: args.supersedes_id == null ? null : String(args.supersedes_id),
+    keywords: forwarded,
+    category: args.category == null ? null : String(args.category),
     note: String(body.note ?? 'STAGED only — lvc_recommendations is untouched.'),
-    matching: KEYWORDLESS_PROPOSAL,
+    /**
+     * ⚠️ CONDITIONAL NOW, AND IT HAD TO BECOME SO. Before decision 95 this always read
+     * `KEYWORDLESS_PROPOSAL`, which was true of every proposal v2 could make. It is a statement of
+     * fact about THIS proposal, so leaving it unconditional would have made the tool assert
+     * "carries no keywords" on a proposal that carries them.
+     *
+     * The keyword-free branch is `KEYWORDLESS_PROPOSAL` verbatim — the same constant `rule_simulate`
+     * and `release_prepare` refuse with — so the warning and the later refusal are the same words.
+     */
+    matching: forwarded.length
+      ? `${forwarded.length} keyword phrase(s) staged as written. v1 trims, de-duplicates and refuses `
+        + '(decision 94); what the table holds is what a release will promote and what the engine will match on.'
+      : KEYWORDLESS_PROPOSAL,
   };
 }
 
