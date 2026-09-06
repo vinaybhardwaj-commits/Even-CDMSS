@@ -160,11 +160,34 @@ export function rankCorrelation(a: number[], b: number[]): number | null {
 export interface RetrievalCompareDeps {
   /** Injection seam (repo idiom). Production passes nothing. */
   embed?: (text: string) => Promise<number[]>;
-  read?: (source: string, statement: string, params: unknown[]) => Promise<{ id: number; rank: number }[]>;
+  read?: (source: string, statement: string, params: unknown[]) => Promise<{ id: unknown; rank: unknown }[]>;
 }
 
-const liveRead = (source: string, statement: string, params: unknown[]) =>
-  boundedRead<{ id: number; rank: number }>(source, statement, params, 500);
+/**
+ * §17.6 DECISION 72 — COERCED AT THE READ BOUNDARY, and this is where it belongs.
+ *
+ * ⚠️ `ROW_NUMBER()` IS `bigint`, AND THE DRIVER HANDS BACK A STRING. Postgres returns bigint and
+ * numeric as strings because they do not all fit in a double, and the node driver passes that
+ * through faithfully. `retrieval_compare` then failed its OWN output schema with
+ * "Expected number, received string" — the validator doing exactly its job, on a shape the tool
+ * had never converted. Coercing here means every consumer downstream (the fusion, the overlap,
+ * the correlation, the response) sees numbers, and only ONE place has to know that a column came
+ * off the wire as text.
+ */
+export function coerceRankRows(rows: { id: unknown; rank: unknown }[]): { id: number; rank: number }[] {
+  // ⚠️ `Number(null)` IS 0, AND `Number('')` IS 0. A null rank is not rank 0 — it is a row that
+  // came back wrong — so absence is rejected BEFORE the conversion rather than converted into a
+  // number that would sort first and win the fusion.
+  const num = (v: unknown): number => (v == null || v === '' ? NaN : Number(v));
+  return rows
+    .map((r) => ({ id: num(r.id), rank: num(r.rank) }))
+    // A row whose id or rank will not parse is dropped rather than carried as NaN: NaN sorts
+    // unpredictably and would corrupt the fusion silently.
+    .filter((r) => Number.isFinite(r.id) && Number.isFinite(r.rank));
+}
+
+const liveRead = async (source: string, statement: string, params: unknown[]) =>
+  coerceRankRows(await boundedRead<{ id: unknown; rank: unknown }>(source, statement, params, 500));
 
 export async function retrievalCompare(
   args: { queries: string[]; k?: number; a: CandidateConfig; b: CandidateConfig },
@@ -201,13 +224,16 @@ export async function retrievalCompare(
     const runConfig = async (c: CandidateConfig): Promise<{ ids: number[]; ms: number }> => {
       const started = Date.now();
       const legs: { id: number; rank: number }[][] = [];
+      // ⚠️ COERCED AGAIN AROUND AN INJECTED READ. `deps.read` is a test seam, and a test that
+      // supplies string-shaped rows — which is what production actually returns — must exercise
+      // the same conversion the live path does, or the seam would hide the bug it exists to test.
       if (c.embedding && vlit) {
         const leg = vectorLegSql(pool, c.max_chunk_id);
-        legs.push(await read('mksap_chunks', leg.sql, [vlit, 0.3, ...leg.params]).catch(() => []));
+        legs.push(coerceRankRows(await read('mksap_chunks', leg.sql, [vlit, 0.3, ...leg.params]).catch(() => [])));
       }
       if (c.bm25) {
         const leg = bm25LegSql(pool, c.max_chunk_id);
-        legs.push(await read('mksap_chunks', leg.sql, [query, ...leg.params]).catch(() => []));
+        legs.push(coerceRankRows(await read('mksap_chunks', leg.sql, [query, ...leg.params]).catch(() => [])));
       }
       return { ids: fuse(legs, k), ms: Date.now() - started };
     };
@@ -233,8 +259,8 @@ export async function retrievalCompare(
       rank_correlation: rho,
       only_in_a: ra.ids.filter((id) => !setB.has(id)),
       only_in_b: rb.ids.filter((id) => !new Set(ra.ids).has(id)),
-      ms_a: ra.ms,
-      ms_b: rb.ms,
+      ms_a: Math.round(ra.ms),
+      ms_b: Math.round(rb.ms),
     });
   }
 
@@ -252,8 +278,8 @@ export async function retrievalCompare(
       queries: args.queries.length,
       mean_overlap_at_k: mean(overlaps),
       mean_rank_correlation: mean(correlations),
-      ms_a: msA,
-      ms_b: msB,
+      ms_a: Math.round(msA),
+      ms_b: Math.round(msB),
     },
     per_query,
   };

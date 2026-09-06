@@ -53,6 +53,8 @@ export type LabErrorCode =
   | 'CLASSIFICATION_REQUIRED'// §3.3 / decision 34 — a request body carrying an identifying field
   | 'REPLAY_DIVERGED'        // §10 / decision 45 — a replayed stage's request hash differs from the stored one
   | 'PLAN_STALE'             // §17.6 / decision 68 — the rows a repair plan was built from have moved
+  | 'REPAIR_FROZEN_CASE'     // §17.6 / decision 75 — a repair was handed a REPLAY case and refused before writing
+  | 'OUTPUT_INVALID'         // §17.6 / decision 72 — a handler's output did not match its own schema
   | 'ATTRIBUTION_UNVERIFIED'// §6.2 — served model differs from requested
   | 'LAB_IO_FORBIDDEN';     // §7 — production IO attempted inside a lab context
 

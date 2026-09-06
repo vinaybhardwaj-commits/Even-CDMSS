@@ -35,7 +35,12 @@
  */
 import { withLabExecution, exitLabExecution } from '../../lab-execution-context';
 import { computeEpisodeAudit, type EpisodeComputeDependencies } from '../../ipd-episode/compute';
-import { IPD_EPISODE_ENGINE_VERSION, saveEpisodeAudit, type EpisodeAuditRow, type CheckpointWriteRow } from '../../ipd-episode/store';
+import {
+  IPD_EPISODE_ENGINE_VERSION, clearSkip, fetchExtractionByIpUid, recordSkip, saveEpisodeAudit,
+  type EpisodeAuditRow, type CheckpointWriteRow,
+} from '../../ipd-episode/store';
+import { fetchDischargeSummary, fetchProgressNotes } from '../../ipd-episode/db13';
+import { assembleEpisode } from '../../ipd-episode/assemble';
 import { runCheckpoint } from '../../ipd-episode/checkpoint';
 import { IPD_EPISODE_FIDELITY_SYSTEM } from '../../ipd-episode/prompts';
 import { retrieve as productionRetrieve, type RetrieveOptions, type RetrieveResult } from '../../retrieve';
@@ -312,13 +317,179 @@ export function makeIpdEpisodeAdapter(deps: IpdAdapterDeps = {}): Adapter {
 export const ipdEpisodeAdapter: Adapter = makeIpdEpisodeAdapter();
 
 /**
- * §17.6 DECISION 67 — the repair adapter. One line of difference, and it is the whole of the
- * difference: `saveEpisodeAudit` is `lib/ipd-episode/store.ts`'s own writer, so the row this lands
- * is byte-for-byte the row the nightly worker lands, demote-then-insert included. It is exported
- * for `worker.ts` alone and is never in `ALL_ADAPTERS`.
+ * §17.6 DECISION 75 — THE REPAIR ADAPTER, REBUILT. It is a separate path, not a flag.
+ *
+ * ⚠️ WHAT WENT WRONG, AND WHY ONE LINE OF DIFFERENCE WAS THE DEFECT. Round B3's repair adapter was
+ * `makeIpdEpisodeAdapter({ writeAudit: saveEpisodeAudit })` — the replay adapter with a writer
+ * bolted on. `reaudit_execute` then froze its case the way B2 freezes for replay, so the case
+ * arrived carrying `steps` and a synthetic `EPFROZEN…` handle, the adapter took FROZEN mode by its
+ * own rule, and the writer landed production row `bcc093f0` with `encounter_id EPFROZEN3499…`,
+ * `engine_version` 0.1 (the SOURCE row's, not the plan's 0.2), `member_id` null and 81 findings
+ * replayed from stored 0.1 judge replies. Zero model calls, `is_current` true, and an orphan row
+ * under an encounter that does not exist. Nothing was wrong with the writer; the wrong thing was
+ * handed to it.
+ *
+ * So a repair no longer shares a code path with a replay. This adapter:
+ *   · REFUSES `REPAIR_FROZEN_CASE` before anything if the case carries `steps`, a synthetic
+ *     `episode_ref`, or a `real_course` — the three fingerprints of a replay case;
+ *   · runs `computeEpisodeAudit` on the REAL encounter id through the PRODUCTION fetchers, under
+ *     `exitLabExecution`, so assembly reads live db13 exactly as the nightly worker does;
+ *   · stamps THE PLAN'S engine version, from the arm, never the source row's;
+ *   · runs checkpoints and both judge passes for real, through the gateway;
+ *   · writes with the engine's own `saveEpisodeAudit`.
+ *
+ * ⚠️ IT READS AND WRITES PRODUCTION, AND THAT IS THE POINT. A repair is a nightly-worker run that
+ * an operator asked for. `exitLabExecution` is the sanctioned hole; what keeps it safe is that this
+ * adapter is not in `ALL_ADAPTERS` and is reachable only from a run whose `operation` is 'reaudit'.
  */
-export function makeIpdEpisodeRepairAdapter(deps: IpdAdapterDeps = {}): Adapter {
-  return makeIpdEpisodeAdapter({ ...deps, writeAudit: deps.writeAudit ?? saveEpisodeAudit });
+export const REPLAY_CASE_FINGERPRINTS = ['steps', 'episode_ref', 'real_course', 'checkpoints'] as const;
+
+/** The pointer a repair runs on. Deliberately NOT a frozen case: there is nothing frozen about it. */
+export interface IpdRepairCase {
+  audit_id: string;
+  /** The REAL encounter, resolved at execute time from the audit row (decision 75). */
+  encounter_id: string;
+  source_engine_version?: string | null;
+}
+
+/**
+ * ⚠️ THE GUARD IS ON THE SHAPE, NOT ON A FLAG. A flag would have to be set correctly by the caller;
+ * a fingerprint is a fact about the object. Any of the four means "this was built to be replayed",
+ * and a replay case must never reach a production write.
+ */
+export function assertNotAReplayCase(frozen: Record<string, unknown>): void {
+  const found = REPLAY_CASE_FINGERPRINTS.filter((k) => {
+    const v = frozen[k];
+    if (v == null) return false;
+    if (Array.isArray(v)) return v.length > 0;
+    if (typeof v === 'object') return Object.keys(v as object).length > 0;
+    return true;
+  });
+  if (found.length) {
+    throw new LabError('REPAIR_FROZEN_CASE',
+      `a repair was handed a REPLAY case (carries ${found.join(', ')}); a repair runs fresh on the real episode and must never write a replayed result`);
+  }
+  if (typeof frozen.encounter_id === 'string' && frozen.encounter_id.startsWith('EPFROZEN')) {
+    throw new LabError('REPAIR_FROZEN_CASE',
+      'a repair was handed the synthetic EPFROZEN handle; the real encounter id is resolved at execute time');
+  }
+}
+
+export interface IpdRepairDeps {
+  /** Every one of these is production's. They are injected ONLY so a test can spy on them. */
+  fetchDischargeSummary?: EpisodeComputeDependencies['fetchDischargeSummary'];
+  fetchProgressNotes?: EpisodeComputeDependencies['fetchProgressNotes'];
+  fetchExtractionByIpUid?: EpisodeComputeDependencies['fetchExtractionByIpUid'];
+  assembleEpisode?: EpisodeComputeDependencies['assembleEpisode'];
+  recordSkip?: EpisodeComputeDependencies['recordSkip'];
+  clearSkip?: EpisodeComputeDependencies['clearSkip'];
+  writeAudit?: EpisodeComputeDependencies['saveEpisodeAudit'];
+  checkpoint?: EpisodeComputeDependencies['checkpoint'];
+  retrieve?: (query: string, opts: RetrieveOptions) => Promise<RetrieveResult>;
+}
+
+export function makeIpdEpisodeRepairAdapter(deps: IpdRepairDeps = {}): Adapter {
+  const retrieveImpl = deps.retrieve ?? productionRetrieve;
+  // Captured OUTSIDE the fence and run under exit(), exactly as the retrieve edge is — the engine's
+  // own readers reach `metabaseQuery`, which throws inside a lab context by design.
+  const live: EpisodeComputeDependencies = {
+    fetchDischargeSummary: deps.fetchDischargeSummary ?? ((id) => exitLabExecution(() => fetchDischargeSummary(id))),
+    fetchProgressNotes: deps.fetchProgressNotes ?? ((id, limit) => exitLabExecution(() => fetchProgressNotes(id, limit))),
+    fetchExtractionByIpUid: deps.fetchExtractionByIpUid ?? ((id) => exitLabExecution(() => fetchExtractionByIpUid(id))),
+    assembleEpisode: deps.assembleEpisode ?? ((a) => exitLabExecution(() => assembleEpisode(a))),
+    recordSkip: deps.recordSkip ?? ((a) => exitLabExecution(() => recordSkip(a))),
+    clearSkip: deps.clearSkip ?? ((id, v) => exitLabExecution(() => clearSkip(id, v))),
+    saveEpisodeAudit: deps.writeAudit ?? ((row, cps) => exitLabExecution(() => saveEpisodeAudit(row, cps))),
+    checkpoint: deps.checkpoint ?? runCheckpoint,
+  };
+
+  return {
+    engine: 'ipd_episode',
+    stages: IPD_EPISODE_STAGES,
+    engineVersion: () => IPD_EPISODE_ENGINE_VERSION,
+    frozenInputs: ['audit_id', 'encounter_id'],
+    perAttemptTimeoutMs: IPD_PER_ATTEMPT_MS,
+
+    async run(ctx: AdapterContext): Promise<AdapterOutcome> {
+      const frozen = (ctx.frozen ?? {}) as Record<string, unknown>;
+      // BEFORE ANYTHING. Not after the run, not beside the write.
+      assertNotAReplayCase(frozen);
+      const encounterId = String(frozen.encounter_id ?? '');
+      const auditId = String(frozen.audit_id ?? '');
+      if (!encounterId || !auditId) {
+        throw new LabError('INVALID_INPUT', 'a repair case needs both audit_id and the resolved encounter_id');
+      }
+      // THE PLAN'S VERSION, from the arm. Never the source row's — that is what stamped 0.1 on a
+      // row a 0.2 repair produced.
+      const engineVersion = String(ctx.arm?.engine_version ?? '');
+      if (!engineVersion) throw new LabError('INVALID_INPUT', 'a repair arm must name the engine version to write');
+
+      const retrieveEdge = async (query: string, opts?: unknown): Promise<RetrieveResult> => {
+        const started = Date.now();
+        const out = await exitLabExecution(() => retrieveImpl(query, (opts ?? {}) as RetrieveOptions));
+        ctx.event('retrieval_read', { query_hash: hash(query), chunks: out?.hits?.length ?? 0, ms: Date.now() - started, frozen: false });
+        return out;
+      };
+      const chatEdge = async (label: string, params: unknown): Promise<unknown> => {
+        const staged = await ctx.gateway.call(ipdStageForLabel(label), params as Record<string, unknown>);
+        return staged.completion;
+      };
+
+      let written: { row: EpisodeAuditRow; status: string; auditId: string | null } | null = null;
+      const spyDeps: EpisodeComputeDependencies = {
+        ...live,
+        saveEpisodeAudit: async (row, checkpoints) => {
+          const saved = await live.saveEpisodeAudit(row, checkpoints);
+          written = { row, status: saved.status, auditId: saved.auditId };
+          return saved;
+        },
+      };
+
+      return withLabExecution(
+        { chat: chatEdge, retrieve: retrieveEdge as unknown as (q: string, o?: unknown) => Promise<unknown>, event: ctx.event },
+        async (): Promise<AdapterOutcome> => {
+          try {
+            const episode = await computeEpisodeAudit(spyDeps, { encounterId, engineVersion, deadlineAt: null });
+            const w = written as { row: EpisodeAuditRow; status: string; auditId: string | null } | null;
+            return {
+              result: {
+                repaired: Boolean(w),
+                source_audit_id: auditId,
+                encounter_id: encounterId,
+                engine_version: engineVersion,
+                skip: episode.skip ?? null,
+                error: episode.error ?? null,
+              },
+              summary: {
+                engine: 'ipd_episode',
+                case_key: auditId,
+                engine_version: engineVersion,
+                exact: false,
+                n_findings: episode.nFindings ?? null,
+                divergence_index: episode.divergenceIndex ?? null,
+                scoring_status: episode.scoringStatus ?? null,
+                checkpoint_count: episode.checkpointCount ?? null,
+                skip: episode.skip ?? null,
+                repair: w
+                  ? { status: w.status, audit_id: w.auditId, encounter_id: w.row.encounterId, engine_version: w.row.engineVersion }
+                  : { status: 'not_written', audit_id: null, encounter_id: encounterId, engine_version: engineVersion },
+              },
+              execution_status: episode.error && !episode.skip ? 'failed' : 'succeeded',
+              assessment_status: w && episode.scoringStatus === 'ok' ? 'assessed' : 'unassessable',
+            };
+          } catch (e) {
+            const err = e as Error & { code?: string };
+            if (err.code === 'REPAIR_FROZEN_CASE') throw err;
+            return {
+              result: { error: err.message, code: err.code ?? null },
+              summary: { engine: 'ipd_episode', case_key: auditId, error: err.code ?? 'engine_error', message: String(err.message).slice(0, 300) },
+              execution_status: 'failed', assessment_status: 'not_reached',
+            };
+          }
+        },
+      );
+    },
+  };
 }
 
 /**

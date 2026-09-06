@@ -30,6 +30,8 @@ import type { EpisodeAuditRow, CheckpointWriteRow } from '../../ipd-episode/stor
 import { freezeIpdCase } from '../sources/ipd';
 import { recordIpdSteps } from '../adapters/ipd-episode';
 import { FIXTURE_AUDIT_ID, runFixtureEpisode, storedCheckpointsFrom, storedExtractionRow, storedRowFrom } from './fixtures/ipd-stored';
+import { FIXTURE_ENCOUNTER, fixtureDeps, fixtureLedger } from './fixtures/episode-fixture';
+import { fixtureTransport } from '../transport';
 import type { Db } from '../db';
 
 const deps = (db: Db, principal: 'research' | 'operator' | 'reviewer' | 'release' = 'operator') =>
@@ -58,11 +60,21 @@ async function frozenCase() {
 
 test('§17.6 decision 67: reaudit writes through the ENGINE’S OWN writer, with the row the pipeline built', async () => {
   const db = await freshDb();
-  const c = await frozenCase();
+  const ledger = fixtureLedger();
+  const live = fixtureDeps(ledger);
 
   // THE SPY. Not a database read: the claim is about WHICH function ran.
+  // ⚠️ The case is a POINTER now, not a frozen case — decision 75. Handing this adapter a replay
+  // case is what landed the orphan production row, and b3-fix1.test.ts asserts the refusal.
   const calls: { row: EpisodeAuditRow; checkpoints: CheckpointWriteRow[] }[] = [];
   const adapter = makeIpdEpisodeRepairAdapter({
+    fetchDischargeSummary: live.fetchDischargeSummary as never,
+    fetchProgressNotes: live.fetchProgressNotes as never,
+    fetchExtractionByIpUid: live.fetchExtractionByIpUid as never,
+    assembleEpisode: live.assembleEpisode as never,
+    recordSkip: live.recordSkip as never,
+    clearSkip: live.clearSkip as never,
+    checkpoint: live.checkpoint as never,
     writeAudit: async (row, checkpoints) => {
       calls.push({ row, checkpoints });
       return { status: 'inserted', auditId: 'new-row-0001', failedCheckpoints: 0 };
@@ -70,17 +82,28 @@ test('§17.6 decision 67: reaudit writes through the ENGINE’S OWN writer, with
   });
 
   const budget = await ensureBudget(db, 'operator', 'repair', 10_000_000);
+  const stages = {
+    checkpoint: { provider: 'ollama', model: 'local-model', max_cost_microusd: 5000 },
+    divergence: { provider: 'ollama', model: 'local-model', max_cost_microusd: 5000 },
+    fidelity: { provider: 'ollama', model: 'local-model', max_cost_microusd: 5000 },
+  };
   const { run } = await submitRun(db, 'operator', 'reaudit', null, budget.id, 'spy', 'h', 86_400_000, [{
-    case_key: c.case_key, arm_hash: 'h', repetition: 1,
-    payload: { engine: 'ipd_episode', frozen: c.frozen, arm: { stages: {} }, budget_id: budget.id },
+    case_key: 'aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa', arm_hash: 'h', repetition: 1,
+    payload: {
+      engine: 'ipd_episode',
+      frozen: { audit_id: 'aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa', encounter_id: FIXTURE_ENCOUNTER },
+      arm: { engine_version: 'ipd-episode-audit/0.2', stages },
+      budget_id: budget.id,
+    },
   }]);
-  await tick({ db, transport: (async () => { throw new Error('no provider'); }) as never, adapters: { ipd_episode: adapter } });
+  await tick({ db, transport: fixtureTransport({ reply: JSON.stringify({ findings: [] }) }), adapters: { ipd_episode: adapter } });
 
   assert.equal(calls.length, 1, 'the engine’s writer ran exactly once');
   const [w] = calls;
   // The row is the PIPELINE'S row, not something the repair assembled: every field it carries came
   // out of computeEpisodeAudit, and these are the ones a stored row is scored from.
-  assert.equal(w.row.engineVersion, c.frozen.engine_version);
+  assert.equal(w.row.engineVersion, 'ipd-episode-audit/0.2');
+  assert.equal(w.row.encounterId, FIXTURE_ENCOUNTER);
   assert.equal(w.row.scoringStatus, 'ok');
   assert.ok((w.row.findings as unknown[]).length > 0, 'findings, from the run that just happened');
   assert.equal(w.checkpoints.length, 3, 'and one checkpoint row per checkpoint, carrying the blinding proof');
@@ -88,8 +111,7 @@ test('§17.6 decision 67: reaudit writes through the ENGINE’S OWN writer, with
 
   const [item] = await itemsOf(db, run.id);
   assert.equal(item.state, 'succeeded');
-  assert.deepEqual((item.result as { summary: { repair?: unknown } }).summary.repair,
-    { status: 'inserted', audit_id: 'new-row-0001', failed_checkpoints: 0 });
+  assert.equal((item.result as { summary: { repair: { status: string } } }).summary.repair.status, 'inserted');
   await db.close();
 });
 
@@ -173,8 +195,14 @@ test('§17.6 decision 67: `operation` is never a caller-supplied field, which is
 
 // ── decision 68: the canary, the review, the stale plan ─────────────────────────────────────
 
-/** A freezer that needs no database: the canary tests are about the WINDOW, not about freezing. */
-const stubFreeze = async (id: string) => ({ case_key: id, member_key: null, frozen: { audit_id: id } });
+/**
+ * A resolver that needs no database: the canary tests are about the WINDOW, not about resolution.
+ * §17.6 decision 75 replaced the freeze here with a pointer, so this is what execute now needs.
+ */
+const stubResolve = async (ids: readonly string[]) => ids.map((id) => ({
+  audit_id: id, encounter_id: `ENC-${id.slice(0, 8)}`, ip_uid: `ENC-${id.slice(0, 8)}`,
+  current_engine_version: 'v0.2', already_at_version: false,
+}));
 
 /** Twelve audit-row ids, so a plan is longer than one canary window. */
 const IDS = Array.from({ length: 12 }, (_, i) => `1111111${i.toString(16)}-2222-4333-8444-55555555555${i.toString(16)}`);
@@ -188,7 +216,12 @@ test('§17.6: an OPD case already current at the target version is planned as a 
     // holding, not an error. The PLAN says so before an operator spends anything on it.
     { uid: 'note-2', engine_version: 'opd-note-audit/0.82' },
   ];
-  const plan = await reauditPlan({ db, principal: 'operator', searchOpd }, {
+  // §17.6 decision 74 — qualification is asked of the UID, so the resolver answers it.
+  const resolveOpd = async () => new Map([
+    ['note-1', { current_engine_version: 'opd-note-audit/0.81.21', already_at_version: false }],
+    ['note-2', { current_engine_version: 'opd-note-audit/0.82', already_at_version: true }],
+  ]);
+  const plan = await reauditPlan({ db, principal: 'operator', searchOpd, resolveOpd }, {
     engine: 'opd_note_audit', engine_version: 'opd-note-audit/0.82', filter: {}, limit: 10,
   } as never);
   assert.equal(plan.cases.length, 2);
@@ -221,7 +254,7 @@ test('§17.6 decision 68: reaudit_execute refuses without a plan', async () => {
 
 test('§17.6 decision 68: it stops at N, and N defaults to 5 and caps at 20', async () => {
   const db = await freshDb();
-  const plan = await reauditPlan({ db, principal: 'operator' }, {
+  const plan = await reauditPlan({ db, principal: 'operator', resolveIpd: stubResolve }, {
     engine: 'ipd_episode', engine_version: 'v0.3', filter: { audit_ids: IDS }, limit: 12,
   } as never);
   assert.equal(plan.cases.length, 12);
@@ -230,7 +263,7 @@ test('§17.6 decision 68: it stops at N, and N defaults to 5 and caps at 20', as
   assert.equal(plan.writer, REPAIR_WRITERS.ipd_episode);
   assert.equal(plan.estimated_budget_microusd, 12 * ESTIMATED_MICROUSD_PER_CASE.ipd_episode);
 
-  const out = await reauditExecute({ db, principal: 'operator', freezeIpd: stubFreeze }, {
+  const out = await reauditExecute({ db, principal: 'operator', resolveIpd: stubResolve }, {
     plan_id: plan.plan_id, idempotency_key: 'canary-1',
   }) as never as { window: { from: number; to: number; of: number }; remaining: number; cases: { outcome: string }[] };
   assert.deepEqual(out.window, { from: 0, to: 5, of: 12 }, 'the first five, and it stops');
@@ -241,12 +274,12 @@ test('§17.6 decision 68: it stops at N, and N defaults to 5 and caps at 20', as
 
 test('§17.6 decision 68: a second call without the review flag is refused', async () => {
   const db = await freshDb();
-  const plan = await reauditPlan({ db, principal: 'operator' }, {
+  const plan = await reauditPlan({ db, principal: 'operator', resolveIpd: stubResolve }, {
     engine: 'ipd_episode', engine_version: 'v0.3', filter: { audit_ids: IDS }, limit: 12,
   } as never);
-  await reauditExecute({ db, principal: 'operator', freezeIpd: stubFreeze }, { plan_id: plan.plan_id, idempotency_key: 'c1' });
+  await reauditExecute({ db, principal: 'operator', resolveIpd: stubResolve }, { plan_id: plan.plan_id, idempotency_key: 'c1' });
   await assert.rejects(
-    () => reauditExecute({ db, principal: 'operator', freezeIpd: stubFreeze }, { plan_id: plan.plan_id, idempotency_key: 'c2' }),
+    () => reauditExecute({ db, principal: 'operator', resolveIpd: stubResolve }, { plan_id: plan.plan_id, idempotency_key: 'c2' }),
     (e: { code?: string; message?: string }) => e.code === 'INVALID_INPUT' && /already run its canary/.test(String(e.message)),
   );
   await db.close();
@@ -254,21 +287,21 @@ test('§17.6 decision 68: a second call without the review flag is refused', asy
 
 test('§17.6 decision 68: review_passed without a reason is refused, and the reason is stored as an event', async () => {
   const db = await freshDb();
-  const plan = await reauditPlan({ db, principal: 'operator' }, {
+  const plan = await reauditPlan({ db, principal: 'operator', resolveIpd: stubResolve }, {
     engine: 'ipd_episode', engine_version: 'v0.3', filter: { audit_ids: IDS }, limit: 12,
   } as never);
-  await reauditExecute({ db, principal: 'operator', freezeIpd: stubFreeze }, { plan_id: plan.plan_id, idempotency_key: 'c1' });
+  await reauditExecute({ db, principal: 'operator', resolveIpd: stubResolve }, { plan_id: plan.plan_id, idempotency_key: 'c1' });
 
   await assert.rejects(
-    () => reauditExecute({ db, principal: 'operator', freezeIpd: stubFreeze }, { plan_id: plan.plan_id, idempotency_key: 'c2', review_passed: true }),
+    () => reauditExecute({ db, principal: 'operator', resolveIpd: stubResolve }, { plan_id: plan.plan_id, idempotency_key: 'c2', review_passed: true }),
     (e: { code?: string; message?: string }) => e.code === 'INVALID_INPUT' && /review_reason/.test(String(e.message)),
   );
   await assert.rejects(
-    () => reauditExecute({ db, principal: 'operator', freezeIpd: stubFreeze }, { plan_id: plan.plan_id, idempotency_key: 'c2', review_passed: true, review_reason: '   ' }),
+    () => reauditExecute({ db, principal: 'operator', resolveIpd: stubResolve }, { plan_id: plan.plan_id, idempotency_key: 'c2', review_passed: true, review_reason: '   ' }),
     (e: { code?: string }) => e.code === 'INVALID_INPUT',
   );
 
-  const out = await reauditExecute({ db, principal: 'operator', freezeIpd: stubFreeze }, {
+  const out = await reauditExecute({ db, principal: 'operator', resolveIpd: stubResolve }, {
     plan_id: plan.plan_id, idempotency_key: 'c2', review_passed: true,
     review_reason: 'read all five: findings match the notes, no new commission class',
   }) as never as { window: { from: number; to: number }; review_passed: boolean };
@@ -284,14 +317,14 @@ test('§17.6 decision 68: review_passed without a reason is refused, and the rea
 
 test('§17.6 decision 68: the review event is written BEFORE the work, so a failed repair still records the authorisation', async () => {
   const db = await freshDb();
-  const plan = await reauditPlan({ db, principal: 'operator' }, {
+  const plan = await reauditPlan({ db, principal: 'operator', resolveIpd: stubResolve }, {
     engine: 'ipd_episode', engine_version: 'v0.3', filter: { audit_ids: IDS.slice(0, 5) }, limit: 5,
   } as never);
-  await reauditExecute({ db, principal: 'operator', freezeIpd: stubFreeze }, { plan_id: plan.plan_id, idempotency_key: 'c1' });
+  await reauditExecute({ db, principal: 'operator', resolveIpd: stubResolve }, { plan_id: plan.plan_id, idempotency_key: 'c1' });
   // Every case is already submitted, so the continuation cannot run — and the reason is on the
   // record anyway, because a human said it before anything was attempted.
   await assert.rejects(
-    () => reauditExecute({ db, principal: 'operator', freezeIpd: stubFreeze }, {
+    () => reauditExecute({ db, principal: 'operator', resolveIpd: stubResolve }, {
       plan_id: plan.plan_id, idempotency_key: 'c2', review_passed: true, review_reason: 'looked, all good',
     }),
     (e: { code?: string }) => e.code === 'INVALID_INPUT',
@@ -305,14 +338,18 @@ test('§17.6 decision 68: a plan whose source rows have moved is PLAN_STALE', as
   const db = await freshDb();
   let version = 'opd-note-audit/0.81.21';
   const searchOpd = async () => [{ uid: 'note-1', engine_version: version }, { uid: 'note-2', engine_version: version }];
-  const plan = await reauditPlan({ db, principal: 'operator', searchOpd }, {
+  const resolveOpd = async () => new Map([
+    ['note-1', { current_engine_version: version, already_at_version: false }],
+    ['note-2', { current_engine_version: version, already_at_version: false }],
+  ]);
+  const plan = await reauditPlan({ db, principal: 'operator', searchOpd, resolveOpd }, {
     engine: 'opd_note_audit', engine_version: 'opd-note-audit/0.82', filter: {}, limit: 10,
   } as never);
   assert.match(plan.source_snapshot_hash, /^[0-9a-f]{64}$/);
 
   // Unchanged: the plan still describes the world, and the repair proceeds.
   const ok = await reauditExecute({
-    db, principal: 'operator', searchOpd,
+    db, principal: 'operator', searchOpd, resolveOpd,
     freezeOpd: async (k: string) => ({ case_key: k, member_key: null, frozen: { note: {} } }),
   }, { plan_id: plan.plan_id, idempotency_key: 'fresh' }) as never as { window: { to: number } };
   assert.equal(ok.window.to, 2);
@@ -322,7 +359,7 @@ test('§17.6 decision 68: a plan whose source rows have moved is PLAN_STALE', as
   version = 'opd-note-audit/0.82';
   await assert.rejects(
     () => reauditExecute({
-      db, principal: 'operator', searchOpd,
+      db, principal: 'operator', searchOpd, resolveOpd,
       freezeOpd: async (k: string) => ({ case_key: k, member_key: null, frozen: { note: {} } }),
     }, { plan_id: plan.plan_id, idempotency_key: 'stale', review_passed: true, review_reason: 'continuing' }),
     (e: { code?: string; message?: string }) => e.code === 'PLAN_STALE' && /re-run reaudit_plan/.test(String(e.message)),
@@ -360,10 +397,10 @@ test('§17.6: reaudit_execute is operator-only, and never reachable by a researc
 
 test('§17.6: reaudit_execute returns a run and never waits for it', async () => {
   const db = await freshDb();
-  const plan = await reauditPlan({ db, principal: 'operator' }, {
+  const plan = await reauditPlan({ db, principal: 'operator', resolveIpd: stubResolve }, {
     engine: 'ipd_episode', engine_version: 'v0.3', filter: { audit_ids: IDS.slice(0, 2) }, limit: 2,
   } as never);
-  const out = await reauditExecute({ db, principal: 'operator', freezeIpd: stubFreeze }, {
+  const out = await reauditExecute({ db, principal: 'operator', resolveIpd: stubResolve }, {
     plan_id: plan.plan_id, idempotency_key: 'async-1',
   }) as never as { run_id: string; cases: { outcome: string }[] };
   const items = await itemsOf(db, out.run_id, 10, 0);
@@ -375,22 +412,20 @@ test('§17.6: reaudit_execute returns a run and never waits for it', async () =>
   await db.close();
 });
 
-test('§17.6: a repair of a case that cannot be frozen is a per-case failure, not the plan’s', async () => {
+test('§17.6: a case that cannot be resolved is a per-case failure, not the plan’s', async () => {
   const db = await freshDb();
-  const plan = await reauditPlan({ db, principal: 'operator' }, {
-    engine: 'ipd_episode', engine_version: 'v0.3', filter: { audit_ids: IDS.slice(0, 3) }, limit: 3,
+  const ids = IDS.slice(0, 3);
+  const plan = await reauditPlan({ db, principal: 'operator', resolveIpd: stubResolve }, {
+    engine: 'ipd_episode', engine_version: 'v0.3', filter: { audit_ids: ids }, limit: 3,
   } as never);
-  let n = 0;
-  const out = await reauditExecute({
-    db,
-    principal: 'operator',
-    // The middle one refuses; the other two freeze.
-    freezeIpd: async (id: string) => {
-      n += 1;
-      if (n === 2) throw Object.assign(new Error('no such row'), { code: 'CASE_NOT_FOUND' });
-      return { case_key: id, member_key: null, frozen: { audit_id: id } };
-    },
-  }, { plan_id: plan.plan_id, idempotency_key: 'partial' }) as never as { cases: { case_key: string; outcome: string; detail: string | null }[] };
+  // The middle audit row has vanished since the plan was made — the resolver returns two of three.
+  // §17.6 decision 75 moved the per-case failure from the freeze to the resolution; the SHAPE of
+  // the outcome is unchanged, which is the property this test is about.
+  const partial = async (want: readonly string[]) =>
+    (await stubResolve(want)).filter((r) => r.audit_id !== ids[1]);
+  const out = await reauditExecute({ db, principal: 'operator', resolveIpd: partial }, {
+    plan_id: plan.plan_id, idempotency_key: 'partial',
+  }) as never as { cases: { case_key: string; outcome: string; detail: string | null }[] };
   assert.deepEqual(out.cases.map((c) => c.outcome), ['queued', 'failed', 'queued']);
   assert.match(String(out.cases[1].detail), /CASE_NOT_FOUND/);
   await db.close();

@@ -144,9 +144,22 @@ export async function callTool(deps: ServiceDeps, name: string, rawArgs: unknown
 
   // Outputs are validated before return (§8): a handler that drifts from its declared
   // contract fails here rather than shipping a shape a client will silently mis-read.
-  const validated = SCHEMAS[spec.name].output.safeParse(out) as unknown as { success: boolean; data?: unknown; error?: { issues: { message: string }[] } };
+  const validated = SCHEMAS[spec.name].output.safeParse(out) as unknown as { success: boolean; data?: unknown; error?: { issues: { path?: (string | number)[]; message: string }[] } };
   if (!validated.success) {
-    throw new LabError('STORE_UNAVAILABLE', `internal: '${name}' produced an output that does not match its schema: ${validated.error?.issues[0]?.message ?? ''}`);
+    /**
+     * §17.6 DECISION 72 — `OUTPUT_INVALID`, WITH THE FIELD PATH, AND NEVER `STORE_UNAVAILABLE`.
+     *
+     * ⚠️ `retrieval_compare` failed here on production with "Expected number, received string" —
+     * Postgres hands bigint and numeric back as text — and the caller was told `STORE_UNAVAILABLE`,
+     * which names a DIFFERENT failure: the v2 database being unreachable. An operator chasing that
+     * would have gone looking at Neon. The store was fine; the handler's own output was wrong, and
+     * the error now says so and says WHERE.
+     */
+    const issues = (validated.error?.issues ?? []).slice(0, 5)
+      .map((i) => `${(i.path ?? []).join('.') || '(root)'}: ${i.message}`);
+    throw new LabError('OUTPUT_INVALID',
+      `'${name}' produced an output that does not match its own schema — ${issues.join('; ')}`,
+      { tool: name, issues });
   }
   // §3.2.3 — actor, tool and outcome. NEVER the request body of a tool carrying clinical text.
   await recordEvent(deps.db, deps.principal, name, 'tool_call', { tool: name, request_hash: hash(args), outcome: 'ok' })

@@ -24,7 +24,7 @@ import { auditOpdNote, opdAuditPerAttemptMs, type OpdLabDependencies } from '../
 import { saveOpdAudit } from '../../opd-audit-store';
 import { OPD_ENGINE_VERSION } from '../../opd-note-audit-core';
 import { retrieve as productionRetrieve, type RetrieveOptions, type RetrieveResult } from '../../retrieve';
-import { hash, opdFrozenSchema, OPD_STAGES, type OpdFrozen } from '../contracts';
+import { LabError, hash, opdFrozenSchema, OPD_STAGES, type OpdFrozen } from '../contracts';
 import type { Adapter, AdapterContext, AdapterOutcome } from './types';
 
 /**
@@ -227,10 +227,31 @@ export const opdAdapter: Adapter = makeOpdAdapter();
  * `ALL_ADAPTERS`.
  */
 export function makeOpdRepairAdapter(deps: OpdAdapterDeps = {}): Adapter {
-  return makeOpdAdapter({
+  const inner = makeOpdAdapter({
     ...deps,
     writeAudit: deps.writeAudit ?? ((audit, meta) => saveOpdAudit(audit as Parameters<typeof saveOpdAudit>[0], meta)),
   });
+  return {
+    ...inner,
+    /**
+     * §17.6 DECISION 75, OPD SIDE. The OPD engine has no replay mode, so it could not take the
+     * wrong branch the way the IPD adapter did — but a case frozen WITH `sources` would serve a
+     * frozen corpus to a run whose whole point is to be what the nightly worker would write. So
+     * the same refusal applies: a repair reads live, or it does not run.
+     */
+    async run(ctx: AdapterContext): Promise<AdapterOutcome> {
+      const frozen = (ctx.frozen ?? {}) as Record<string, unknown>;
+      const sources = frozen.sources;
+      if (Array.isArray(sources) && sources.length) {
+        throw new LabError('REPAIR_FROZEN_CASE',
+          'a repair was handed a case with frozen retrieval sources; a repair reads the corpus live, exactly as the nightly worker does');
+      }
+      if (!ctx.arm || typeof ctx.arm.engine_version !== 'string' || !ctx.arm.engine_version) {
+        throw new LabError('INVALID_INPUT', 'a repair arm must name the engine version to write');
+      }
+      return inner.run(ctx);
+    },
+  };
 }
 
 export const ADAPTERS: Record<string, Adapter> = { opd_note_audit: opdAdapter };

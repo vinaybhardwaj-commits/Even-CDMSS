@@ -107,6 +107,95 @@ ORDER BY (extraction_version = 'doc-extract/2') DESC, (extraction_version = 'doc
          extracted_at DESC NULLS LAST
 LIMIT 1`;
 
+/**
+ * §17.6 DECISIONS 74 AND 75 — resolve an audit row to its REAL episode, and ask whether that
+ * episode is already at the target version.
+ *
+ * ⚠️ BOTH HALVES EXIST BECAUSE OF THE SAME FAILURE. Round B3's `reaudit_execute` planned by AUDIT
+ * ROW and repaired a case that already had a current row at the target version beside the old one
+ * (decision 74), and it repaired a FROZEN handle instead of the episode (decision 75). The
+ * `already_at_version` subquery is keyed on `encounter_id`, not on the row: qualification is a
+ * property of the EPISODE, and an episode with a current row at the target has nothing to repair.
+ *
+ * ⚠️ THE ENCOUNTER ID LEAVES THIS FUNCTION, and that is the ruled exception, not an oversight.
+ * Decision 50 keeps it out of a research CASE KEY and decision 64 keeps it out of the repository;
+ * decision 75 requires the repair to run on the real episode, which cannot happen without it. It
+ * travels in the run ITEM's payload, never in the plan object and never in a dataset.
+ */
+export const EPISODE_QUALIFY_SQL = (auditIds: readonly string[], targetVersion: string) => {
+  const ids = auditIds.map((id) => uuidLit(id, 'audit_id')).join(', ');
+  if (!ids) throw new LabError('INVALID_INPUT', 'no audit ids to resolve');
+  return `SELECT a.id AS audit_id, a.encounter_id, a.ip_uid,
+  a.engine_version AS current_engine_version, a.is_current,
+  EXISTS (
+    SELECT 1 FROM ipd_episode_audits t
+    WHERE t.encounter_id = a.encounter_id AND t.is_current
+      AND t.engine_version = ${idLit(targetVersion, 'engine_version')}
+  ) AS already_at_version
+FROM ipd_episode_audits a
+WHERE a.id IN (${ids})
+ORDER BY a.audited_at
+LIMIT ${Math.max(1, Math.min(200, auditIds.length))}`;
+};
+
+/** §17.6 decision 74, OPD side: qualification is per uid, not per audit row. */
+export const OPD_QUALIFY_SQL = (uids: readonly string[], targetVersion: string) => {
+  const list = uids.map((u) => idLit(u, 'uid')).join(', ');
+  if (!list) throw new LabError('INVALID_INPUT', 'no uids to resolve');
+  return `SELECT o.uid, o.engine_version AS current_engine_version,
+  EXISTS (
+    SELECT 1 FROM opd_note_audits t
+    WHERE t.uid = o.uid AND t.engine_version = ${idLit(targetVersion, 'engine_version')}
+  ) AS already_at_version
+FROM opd_note_audits o
+WHERE o.uid IN (${list})
+ORDER BY o.uid
+LIMIT ${Math.max(1, Math.min(500, uids.length))}`;
+};
+
+export interface EpisodeRef {
+  audit_id: string;
+  encounter_id: string;
+  ip_uid: string;
+  current_engine_version: string | null;
+  already_at_version: boolean;
+}
+
+/** Resolve and qualify, in one read. Used by `reaudit_plan`; never by a dataset freeze. */
+export async function resolveEpisodesForRepair(
+  auditIds: readonly string[], targetVersion: string,
+  read: (sql: string) => Promise<Record<string, unknown>[]> = (q) => boundedRead('ipd_episode_audits', q, [], 200),
+): Promise<EpisodeRef[]> {
+  const rows = await read(EPISODE_QUALIFY_SQL(auditIds, targetVersion));
+  return rows.map((r) => ({
+    audit_id: String(r.audit_id),
+    encounter_id: String(r.encounter_id),
+    ip_uid: String(r.ip_uid ?? r.encounter_id),
+    current_engine_version: r.current_engine_version == null ? null : String(r.current_engine_version),
+    already_at_version: r.already_at_version === true,
+  }));
+}
+
+/** The same question for OPD: does this uid already carry a row at the target version? */
+export async function resolveOpdForRepair(
+  uids: readonly string[], targetVersion: string,
+  read: (sql: string) => Promise<Record<string, unknown>[]> = (q) => boundedRead('opd_note_audits', q, [], 500),
+): Promise<Map<string, { current_engine_version: string | null; already_at_version: boolean }>> {
+  const rows = await read(OPD_QUALIFY_SQL(uids, targetVersion));
+  const out = new Map<string, { current_engine_version: string | null; already_at_version: boolean }>();
+  for (const r of rows) {
+    const uid = String(r.uid);
+    const already = r.already_at_version === true;
+    const prior = out.get(uid);
+    // A uid can have several rows; ANY current row at the target disqualifies the episode.
+    out.set(uid, {
+      current_engine_version: r.current_engine_version == null ? null : String(r.current_engine_version),
+      already_at_version: already || prior?.already_at_version === true,
+    });
+  }
+  return out;
+}
+
 export const COHORT_SQL = (engineVersion: string, limit: number) => `SELECT id, encounter_id
 FROM ipd_episode_audits
 WHERE engine_version = ${idLit(engineVersion, 'engine_version')} AND is_current

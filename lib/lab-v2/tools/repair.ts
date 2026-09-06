@@ -35,9 +35,8 @@ import { z } from 'zod';
 import { LabError, hash } from '../contracts';
 import { ensureBudget, getObject, itemsOf, putObject, recordEvent, submitRun } from '../store';
 import { auditFilterSchema, searchAudits, type AuditFilter } from '../sources/audits';
-import { freezeIpdEpisode } from '../adapters/ipd-episode';
 import { freezeOpdCase } from '../sources/opd';
-import { selectIpdCohort } from '../sources/ipd';
+import { resolveEpisodesForRepair, resolveOpdForRepair, selectIpdCohort, type EpisodeRef } from '../sources/ipd';
 import type { Db } from '../db';
 
 /** Decision 68 — the canary, and its ceiling. */
@@ -126,7 +125,9 @@ export interface RepairDeps {
   /** Injection seams (repo idiom). Production passes none of them. */
   searchOpd?: (f: AuditFilter, limit: number, offset: number) => Promise<{ uid: string; engine_version?: string | null }[]>;
   selectIpd?: (engineVersion: string, limit: number) => Promise<string[]>;
-  freezeIpd?: (auditId: string) => Promise<{ case_key: string; member_key: string | null; frozen: unknown }>;
+  /** §17.6 decision 74/75 — resolve an audit row to its real episode and ask if it qualifies. */
+  resolveIpd?: (auditIds: readonly string[], targetVersion: string) => Promise<EpisodeRef[]>;
+  resolveOpd?: (uids: readonly string[], targetVersion: string) => Promise<Map<string, { current_engine_version: string | null; already_at_version: boolean }>>;
   freezeOpd?: (caseKey: string) => Promise<{ case_key: string; member_key: string | null; frozen: unknown }>;
 }
 
@@ -171,18 +172,24 @@ export async function reauditPlan(deps: RepairDeps, args: { engine: RepairEngine
       throw new LabError('INVALID_INPUT', `filter: ${parsed.error.issues.map((i) => `${i.path.join('.')} ${i.message}`).join('; ')}`);
     }
     const rows = await (deps.searchOpd ?? searchAudits)(parsed.data as AuditFilter, limit, 0);
-    for (const r of rows) {
-      const current = r.engine_version == null ? null : String(r.engine_version);
-      const already = current === targetVersion;
+    const uids = [...new Set(rows.map((r) => String(r.uid)))];
+    // DECISION 74 — asked of the UID, not of the row this filter happened to return.
+    const qualified = uids.length
+      ? await (deps.resolveOpd ?? resolveOpdForRepair)(uids, targetVersion)
+      : new Map<string, { current_engine_version: string | null; already_at_version: boolean }>();
+    for (const uid of uids) {
+      const q = qualified.get(uid);
+      const current = q?.current_engine_version ?? (rows.find((r) => String(r.uid) === uid)?.engine_version ?? null);
+      const already = q?.already_at_version === true;
       cases.push({
-        case_key: String(r.uid),
-        current_engine_version: current,
+        case_key: uid,
+        current_engine_version: current == null ? null : String(current),
         qualifies: !already,
         // ⚠️ NOT A FAILURE, AND NOT SILENT. saveOpdAudit's conflict clause refuses to overwrite a
         // successful row at the same version, so repairing one is a no-op — which is decision 67's
         // "never an UPDATE" holding, not an error. The plan says so before anything runs.
         reason: already
-          ? `already current at ${targetVersion}; saveOpdAudit would return 'exists' and write nothing`
+          ? `already_at_version: this uid already carries a row at ${targetVersion}; saveOpdAudit would return 'exists' and write nothing`
           : `current at ${current ?? 'no version'}, repair writes ${targetVersion}`,
       });
     }
@@ -192,14 +199,31 @@ export async function reauditPlan(deps: RepairDeps, args: { engine: RepairEngine
     const ids = filter.audit_ids?.length
       ? filter.audit_ids.map(String)
       : await (deps.selectIpd ?? selectIpdCohort)(sourceVersion ?? targetVersion, limit);
+    /**
+     * ⚠️ DECISION 74 — QUALIFICATION IS A PROPERTY OF THE EPISODE, NOT OF THE ROW.
+     *
+     * Round B3 asked "is this audit row at the target version?" and repaired a 0.1 row whose
+     * encounter ALREADY had a current 0.2 row beside it. The episode had nothing to repair; the
+     * ROW did, and the row is not the unit. The subquery in EPISODE_QUALIFY_SQL is keyed on
+     * `encounter_id`, so an encounter with any current row at the target does not qualify.
+     */
+    const refs = ids.length
+      ? await (deps.resolveIpd ?? resolveEpisodesForRepair)(ids, targetVersion)
+      : [];
+    const byId = new Map(refs.map((r) => [r.audit_id, r]));
     for (const id of ids) {
+      const ref = byId.get(id);
+      if (!ref) {
+        cases.push({ case_key: id, current_engine_version: null, qualifies: false, reason: 'no such ipd_episode_audits row' });
+        continue;
+      }
       cases.push({
         case_key: id,
-        current_engine_version: sourceVersion,
-        // An IPD repair always writes: saveEpisodeAudit demotes and inserts a new run_seq even at
-        // the same version, so there is no no-op case to report.
-        qualifies: true,
-        reason: `ipd_episode_audits row ${id}; repair writes a new run at ${targetVersion} and demotes the current one`,
+        current_engine_version: ref.current_engine_version,
+        qualifies: !ref.already_at_version,
+        reason: ref.already_at_version
+          ? `already_at_version: this episode already carries a current row at ${targetVersion}`
+          : `current at ${ref.current_engine_version ?? 'no version'}; repair runs the episode fresh and writes ${targetVersion}`,
       });
     }
   }
@@ -312,15 +336,54 @@ export async function reauditExecute(deps: RepairDeps, args: {
   const armHash = hash({ engine, engine_version: targetVersion, plan_id: plan.id });
   const arm = { engine, engine_version: targetVersion, stages: stagesForRepair(engine), plan_id: plan.id };
 
+  /**
+   * ⚠️ DECISION 75 — THIS LOOP IS WHERE ROUND B3 WENT WRONG, AND IT NO LONGER FREEZES ANYTHING.
+   *
+   * It called `freezeIpdEpisode`, which is B2's REPLAY freeze: the case came back carrying `steps`
+   * and a synthetic `EPFROZEN…` handle, the adapter took frozen mode by its own rule, and a
+   * production row landed under an encounter that does not exist, stamped with the SOURCE row's
+   * engine version and 81 findings replayed from stored judge replies.
+   *
+   * A repair case is now a POINTER: the audit row id, and the REAL encounter id resolved from it.
+   * Nothing is frozen, so there is nothing for the adapter to replay, and the repair adapter
+   * refuses `REPAIR_FROZEN_CASE` on any object carrying a replay fingerprint anyway. Two
+   * independent guards, because one of them was already trusted once.
+   */
+  const ipdRefs = engine === 'ipd_episode' && window.length
+    ? new Map((await (deps.resolveIpd ?? resolveEpisodesForRepair)(window.map((c) => c.case_key), targetVersion))
+      .map((r) => [r.audit_id, r]))
+    : new Map<string, EpisodeRef>();
+
   for (const c of window) {
     try {
-      const frozen = engine === 'ipd_episode'
-        ? await (deps.freezeIpd ?? freezeIpdEpisode)(c.case_key)
-        : await (deps.freezeOpd ?? ((k: string) => freezeOpdCase(k, { withSources: true, withMemberKey: false })))(c.case_key);
-      items.push({
-        case_key: c.case_key, arm_hash: armHash, repetition: 1,
-        payload: { engine, frozen: frozen.frozen, arm, budget_id: '', plan_id: plan.id },
-      });
+      if (engine === 'ipd_episode') {
+        const ref = ipdRefs.get(c.case_key);
+        if (!ref) throw new LabError('CASE_NOT_FOUND', `no ipd_episode_audits row ${c.case_key}`);
+        // Re-checked HERE as well as in the plan: a sweep between plan and execute could have
+        // brought the episode to the target version, and PLAN_STALE only catches a change to the
+        // rows the plan named.
+        if (ref.already_at_version) {
+          cases.push({ case_key: c.case_key, outcome: 'skipped_exists', new_row_id: null, detail: `already_at_version ${targetVersion}` });
+          continue;
+        }
+        items.push({
+          case_key: c.case_key, arm_hash: armHash, repetition: 1,
+          payload: {
+            engine,
+            // The POINTER. No steps, no real_course, no synthetic ref — see the header.
+            frozen: { audit_id: ref.audit_id, encounter_id: ref.encounter_id, source_engine_version: ref.current_engine_version },
+            arm, budget_id: '', plan_id: plan.id,
+          },
+        });
+      } else {
+        // ⚠️ `withSources: false`. A repair reads the corpus LIVE, because it must be what the
+        // nightly worker would have written; a frozen source list would make it a replay.
+        const frozen = await (deps.freezeOpd ?? ((k: string) => freezeOpdCase(k, { withSources: false, withMemberKey: false })))(c.case_key);
+        items.push({
+          case_key: c.case_key, arm_hash: armHash, repetition: 1,
+          payload: { engine, frozen: frozen.frozen, arm, budget_id: '', plan_id: plan.id },
+        });
+      }
       cases.push({ case_key: c.case_key, outcome: 'queued', new_row_id: null, detail: null });
     } catch (e) {
       const err = e as LabError;
@@ -331,7 +394,11 @@ export async function reauditExecute(deps: RepairDeps, args: {
     }
   }
   if (!items.length) {
-    throw new LabError('SOURCE_UNAVAILABLE', `no case in this window could be frozen (${cases.length} failed)`);
+    const skipped = cases.filter((c) => c.outcome === 'skipped_exists').length;
+    throw new LabError(skipped ? 'INVALID_INPUT' : 'SOURCE_UNAVAILABLE',
+      skipped
+        ? `every case in this window is already at ${targetVersion} (${skipped} skipped_exists); re-run reaudit_plan`
+        : `no case in this window could be prepared (${cases.length} failed)`);
   }
   for (const it of items) (it.payload as { budget_id: string }).budget_id = budget.id;
 
