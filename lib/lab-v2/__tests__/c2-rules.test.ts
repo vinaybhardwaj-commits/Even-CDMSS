@@ -128,10 +128,15 @@ async function lvcDb(): Promise<Db> {
 }
 
 /** One active recommendation, written with v1's OWN promotion INSERT. */
-async function seedRecommendation(db: Db, proposalId: string, statement: string) {
+async function seedRecommendation(
+  db: Db, proposalId: string, statement: string,
+  keywords: string[] = [], category: string | null = null,
+) {
   const rows = await db.query<{ id: string }>(unquote(PROMOTION_INSERT()), [
     statement, 'because the evidence says so', 'https://example.org/x', null, null,
     2024, 'open', 'EHRC review', 'research', 'dr-reviewer',
+    // §17.7 C2.1 decision 94 — the two columns the promotion now copies from the proposal.
+    category, keywords,
   ]);
   await db.query(`UPDATE lvc_recommendation_proposals SET status = 'ratified', promoted_id = $2 WHERE id = $1::uuid`, [proposalId, rows[0].id]);
   await db.query(unquote(RATIFICATION_INSERT()), [proposalId, 'dr-reviewer', 'read the citation', rows[0].id]);
@@ -139,10 +144,14 @@ async function seedRecommendation(db: Db, proposalId: string, statement: string)
 }
 
 /** One staged proposal, written with v1's OWN staging INSERT. */
-async function seedProposal(db: Db, statement: string): Promise<string> {
+async function seedProposal(
+  db: Db, statement: string, keywords: string[] = [], category: string | null = null,
+): Promise<string> {
   const rows = await db.query<{ id: string }>(unquote(PROPOSAL_INSERT()), [
     statement, 'rationale', 'evidence', 'https://example.org/x', null, null,
     2024, 'open', 'EHRC', 'research', null,
+    // §17.7 C2.1 decision 94 — `category` text and `keywords` jsonb.
+    category, JSON.stringify(keywords),
   ]);
   return String(rows[0].id);
 }
@@ -151,47 +160,75 @@ const readerFor = (db: Db) =>
   (async <T,>(_source: string, statement: string, params: unknown[] = []) => db.query(statement, params) as Promise<T[]>) as never;
 
 // ═════════════════════════════════════════════════════════════════════════════════════
-// 1. THE FLAG — the finding this round could not fix, made executable
+// 1. THE FLAG — raised by C2, CLOSED by decision 94 (C2.1). What is left is the half
+//    that was always v2's job: an inert rule is still refused, by name.
 // ═════════════════════════════════════════════════════════════════════════════════════
 
-test('§17.7 C2 FLAG: a rule promoted through v1’s own path can NEVER match a finding', async () => {
-  // (a) The matcher needs keywords, and says so.
+/**
+ * ⚠️ THIS TEST USED TO ASSERT THE OPPOSITE, AND THAT IS WHY IT IS HERE.
+ *
+ * C2 shipped it as *"a rule promoted through v1's own path can NEVER match a finding"*, with every
+ * assertion carrying the message *"if this fails the flag is stale — re-read the round"*. Decision
+ * 94 made it fail, exactly as intended, and the round it demanded is C2.1. It is now the closure
+ * test: the keywords a proposer writes reach the engine, end to end, through v1's own statements.
+ *
+ * The keyword-free half is NOT relaxed. `matchRule` still refuses a zero-keyword rule, an old-shape
+ * propose still lands an inert one, and v2 still refuses to simulate or release it — decision 94
+ * made keywords available, not mandatory.
+ */
+test('§17.7 C2.1 decision 94: the keywords a proposal carries reach the engine, end to end', async () => {
+  // (a) The matcher needs keywords, and still says so.
   const keywordless = { id: 'ehrc-new', keywords: [] as string[], category: 'imaging' };
   assert.equal(
     matchLvcRule({ verdict: 'low-value', subject: 'routine chest x-ray', rationale: 'not indicated' }, [keywordless]),
-    null, 'a zero-keyword rule matched something; if this fails the flag is stale — re-read the round');
+    null, 'a zero-keyword rule matched something; the inert-rule refusals below would then be wrong too');
   assert.equal(
     matchLvcRule({ verdict: 'low-value', subject: 'routine chest x-ray', rationale: 'not indicated' },
       [{ ...keywordless, keywords: ['chest x-ray'] }]),
-    'ehrc-new', 'the same rule WITH keywords matches, so the matcher is not simply broken');
+    'ehrc-new', 'the same rule WITH keywords matches');
 
-  // (b) v1 cannot express keywords: the parser has no such field.
+  // (b) The parser now carries them — decision 94, item 1.
   const parsed = parseProposeArgs({
     statement: 'Avoid routine preoperative chest radiography in asymptomatic adults.',
     citation_url: 'https://example.org/x', source_release_year: 2024, license_status: 'open',
     keywords: ['chest radiography'], category: 'imaging',
   }, []);
-  assert.equal(parsed.ok, true);
-  assert.ok(parsed.ok && !('keywords' in parsed.value), 'parseProposeArgs now carries keywords — the flag may be closed; re-read it');
+  assert.ok(parsed.ok);
+  assert.deepEqual(parsed.value.keywords, ['chest radiography']);
+  assert.equal(parsed.value.category, 'imaging');
 
-  // (c) Neither v1 write names the column, though both tables HAVE it.
-  assert.ok(!/keywords/.test(PROPOSAL_INSERT()), 'lvc_propose now writes keywords — the flag may be closed');
-  assert.ok(!/keywords/.test(PROMOTION_INSERT()), 'lvc_ratify now writes keywords — the flag may be closed');
+  // (c) Both v1 writes now name the columns — decision 94, item 2.
+  assert.ok(/keywords/.test(PROPOSAL_INSERT()), 'lvc_propose writes keywords');
+  assert.ok(/keywords/.test(PROMOTION_INSERT()), 'lvc_ratify copies them into the rulebook');
   const m0005 = readFileSync(join(ROOT, 'migrations/0005_choosing_wisely.sql'), 'utf8');
-  assert.match(m0005, /keywords\s+TEXT\[\] DEFAULT '\{\}'/, 'the column exists and defaults empty');
+  assert.match(m0005, /keywords\s+TEXT\[\] DEFAULT '\{\}'/, 'the column, where it always was');
 
-  // (d) And end to end on a real table: v1's own promotion INSERT lands a row the engine's own
-  //     selection returns with no keywords, which the matcher then cannot use.
+  // (d) End to end on real tables, through v1's own statements: the rule FIRES.
   const db = await lvcDb();
-  const pid = await seedProposal(db, 'Avoid routine preoperative chest radiography in asymptomatic adults.');
-  const rid = await seedRecommendation(db, pid, 'Avoid routine preoperative chest radiography in asymptomatic adults.');
+  const statement = 'Avoid routine preoperative chest radiography in asymptomatic adults.';
+  const pid = await seedProposal(db, statement, ['chest radiography'], 'imaging');
+  const rid = await seedRecommendation(db, pid, statement, ['chest radiography'], 'imaging');
   const rows = await db.query<Record<string, unknown>>(
     `SELECT id, keywords, category FROM lvc_recommendations WHERE status = 'active'`);
   const landed = rows.find((r) => String(r.id) === rid);
   assert.ok(landed, 'the promoted row is active');
-  assert.deepEqual(parseKeywords(landed!.keywords), [], 'promoted with an empty keyword array');
+  assert.deepEqual(parseKeywords(landed!.keywords), ['chest radiography']);
   assert.equal(matchLvcRule({ verdict: 'low-value', subject: 'preoperative chest radiography', rationale: 'asymptomatic adult' },
-    [{ id: rid, keywords: parseKeywords(landed!.keywords), category: null }]), null);
+    [{ id: rid, keywords: parseKeywords(landed!.keywords), category: String(landed!.category) }]), rid,
+    'the rule created through v1’s own path now matches — this is what decision 94 bought');
+});
+
+test('§17.7 C2.1: an OLD-SHAPE propose still lands an inert rule, and v2 still refuses it', async () => {
+  // ⚠️ Decision 94 made keywords AVAILABLE, not mandatory, so this path still exists and still
+  // produces a rule that can never fire. Refusing it is v2's job and v2 still does it.
+  const db = await lvcDb();
+  const statement = 'Avoid routine vitamin D screening in asymptomatic adults.';
+  const pid = await seedProposal(db, statement);                       // no keywords, no category
+  const rid = await seedRecommendation(db, pid, statement);
+  const rows = await db.query<Record<string, unknown>>(`SELECT id, keywords FROM lvc_recommendations WHERE id = '${rid}'`);
+  assert.deepEqual(parseKeywords(rows[0].keywords), [], 'promoted with an empty keyword array');
+  assert.equal(matchLvcRule({ verdict: 'low-value', subject: 'vitamin D level', rationale: 'asymptomatic adult' },
+    [{ id: rid, keywords: [], category: null }]), null);
 });
 
 test('§17.7 C2 FLAG: rule_simulate and release_prepare refuse a keywordless proposal by name', async () => {
@@ -280,18 +317,61 @@ test('§17.7 decisions 89 and 90: both rules writers are v1’s, imported, and n
   assert.ok(MCP_TOOLS.includes('export async function lvcRatify('), 'decision 89’s token');
 });
 
-test('§17.7 decision 89: lib/mcp-tools.ts differs from its predecessor by exactly that one token', () => {
-  let predecessor: string;
+/**
+ * ⚠️ §14.3 FREEZES `lib/mcp-tools.ts`, AND IT NOW CARRIES EXACTLY TWO RATIFIED CARVE-OUTS.
+ *
+ * Decision 89 (C2): the word `export` on `lvcRatify`, and nothing else. C2 asserted that as literal
+ * byte-identity against `6f5cfa81`.
+ * Decision 94 (C2.1): `keywords` and `category` through `lvcPropose`, `lvcRatify` and the
+ * `lvc_propose` input schema — which makes byte-identity no longer the right assertion.
+ *
+ * So the guarantee is restated in the two forms that survive both and still bite:
+ *   1. THE MODULE'S EXPORT SURFACE is `6f5cfa81`'s plus exactly `lvcRatify`. That is what decision
+ *      89 was actually protecting, and decision 94 adds no export at all.
+ *   2. EVERY LINE DECISION 94 CHANGED lies inside decision 94's own scope — the `lvc_propose` tool
+ *      schema, or the two functions. A change anywhere else in this frozen file fails here.
+ */
+const exportedSymbols = (src: string) =>
+  [...src.matchAll(/^export (?:async function|function|const|class|type|interface) (\w+)/gm)]
+    .map((m) => m[1]).sort();
+
+const gitShow = (rev: string) => {
   try {
-    predecessor = execFileSync('git', ['show', '6f5cfa81:lib/mcp-tools.ts'], { cwd: ROOT, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
+    return execFileSync('git', ['show', `${rev}:lib/mcp-tools.ts`], { cwd: ROOT, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
   } catch {
-    assert.fail('could not read lib/mcp-tools.ts at 6f5cfa81; decision 89 is a claim about a diff and the diff must be checkable');
+    return assert.fail(`could not read lib/mcp-tools.ts at ${rev}; both rulings are claims about a diff and a diff must be checkable`);
   }
-  // Undo the one token and the two files must be byte-identical. Anything else in that file —
-  // a second export, a fix, a comment — fails here, which is the whole point of the ruling.
-  const undone = MCP_TOOLS.replace('\nexport async function lvcRatify(', '\nasync function lvcRatify(');
-  assert.equal(undone, predecessor, 'lib/mcp-tools.ts carries a change beyond decision 89’s single `export`');
-  assert.notEqual(MCP_TOOLS, predecessor, 'the token is actually there');
+};
+
+test('§17.7 decision 89: the export surface of lib/mcp-tools.ts is C1’s plus exactly lvcRatify', () => {
+  const before = exportedSymbols(gitShow('6f5cfa81'));
+  const now = exportedSymbols(MCP_TOOLS);
+  assert.deepEqual(now, [...before, 'lvcRatify'].sort(),
+    'lib/mcp-tools.ts exports something decision 89 did not authorise');
+  assert.ok(MCP_TOOLS.includes('export async function lvcRatify('), 'the token is actually there');
+  assert.ok(!before.includes('lvcRatify'), 'and it was not there before');
+});
+
+test('§17.7 C2.1 decision 94: every line it changed in the frozen file is inside its own scope', () => {
+  const lineOf = (needle: string) => {
+    const i = MCP_TOOLS.indexOf(needle);
+    assert.notEqual(i, -1, `${needle} has moved; read lib/mcp-tools.ts before touching this test`);
+    return MCP_TOOLS.slice(0, i).split('\n').length;
+  };
+  // Decision 94's two regions: the `lvc_propose` tool schema, and the two F14 functions.
+  const regions: [number, number][] = [
+    [lineOf("name: 'lvc_propose',"), lineOf("name: 'lvc_ratify',")],
+    [lineOf('async function lvcPropose('), lineOf('async function lvcGaps(')],
+  ];
+  const diff = execFileSync('git', ['diff', '--unified=0', '9c440fcc', '--', 'lib/mcp-tools.ts'],
+    { cwd: ROOT, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
+  const hunks = [...diff.matchAll(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/gm)]
+    .map((m) => ({ start: Number(m[1]), count: m[2] === undefined ? 1 : Number(m[2]) }));
+  assert.ok(hunks.length > 0, 'decision 94 changed this file; if there is no diff the ruling has not landed');
+  const outside = hunks.filter((h) =>
+    !regions.some(([lo, hi]) => h.start >= lo && h.start + Math.max(h.count, 1) <= hi + 1));
+  assert.deepEqual(outside, [],
+    `decision 94 authorises lvcPropose, lvcRatify and the lvc_propose schema; these hunks are elsewhere: ${JSON.stringify(outside)}`);
 });
 
 test('§17.7 decision 89: lvcPropose is NOT exported — rule_propose goes through v1’s own dispatcher', () => {
@@ -566,11 +646,13 @@ const driveWith = (after: (caseKey: string) => Record<string, unknown>[] | 'dive
 
 async function simulateFixture(db: Db) {
   const lvc = await lvcDb();
-  const pid = await seedProposal(lvc, 'Avoid routine preoperative chest radiography in asymptomatic adults.');
-  // ⚠️ The one thing v1 cannot write. Set here, explicitly, so the rest of the round is testable at
-  // all — and this line IS the flag: without it the tool refuses, which the FLAG tests assert.
-  await lvc.query(`UPDATE lvc_recommendation_proposals SET keywords = $2::jsonb, category = $3 WHERE id = $1::uuid`,
-    [pid, JSON.stringify(['chest radiography']), 'imaging']);
+  // ⚠️ C2 had to set the keywords with an out-of-band UPDATE here, because v1's own staging INSERT
+  // could not write them. Decision 94 closed that: they now go in through v1's own statement, on
+  // the same call as the statement itself.
+  const pid = await seedProposal(
+    lvc, 'Avoid routine preoperative chest radiography in asymptomatic adults.',
+    ['chest radiography'], 'imaging',
+  );
   return { lvc, pid, deps: { read: readerFor(lvc) } };
 }
 

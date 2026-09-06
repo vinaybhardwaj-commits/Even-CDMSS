@@ -485,7 +485,9 @@ test('F14 faults 2-4: the promotion INSERT names the three audit columns 0024 ad
   for (const col of ['proposed_by', 'ratified_by', 'ratified_at']) {
     assert.ok(MCP_SRC.includes(col), `promotion INSERT must carry ${col}`);
   }
-  assert.match(MCP_SRC, /source_release_year, license_status, provenance, proposed_by, ratified_by, ratified_at\)/);
+  // DECISION 94 (C2.1) extended this column list by `category, keywords`; the three audit columns
+  // this test exists for are unchanged and still in this order, which is what is asserted.
+  assert.match(MCP_SRC, /source_release_year, license_status, provenance, proposed_by, ratified_by, ratified_at,\s*\n\s*category, keywords\)/);
 });
 
 test('F14 fault 5: `id` is supplied explicitly, matching the ehrc-<uuid> convention', () => {
