@@ -35,7 +35,7 @@
  */
 import { withLabExecution, exitLabExecution } from '../../lab-execution-context';
 import { computeEpisodeAudit, type EpisodeComputeDependencies } from '../../ipd-episode/compute';
-import { IPD_EPISODE_ENGINE_VERSION, type EpisodeAuditRow, type CheckpointWriteRow } from '../../ipd-episode/store';
+import { IPD_EPISODE_ENGINE_VERSION, saveEpisodeAudit, type EpisodeAuditRow, type CheckpointWriteRow } from '../../ipd-episode/store';
 import { runCheckpoint } from '../../ipd-episode/checkpoint';
 import { IPD_EPISODE_FIDELITY_SYSTEM } from '../../ipd-episode/prompts';
 import { retrieve as productionRetrieve, type RetrieveOptions, type RetrieveResult } from '../../retrieve';
@@ -81,10 +81,22 @@ export function rowAsStored(w: EpisodeAuditRow): Record<string, unknown> {
 
 export interface IpdAdapterDeps {
   retrieve?: (query: string, opts: RetrieveOptions) => Promise<RetrieveResult>;
+  /**
+   * §17.6 DECISION 67 — the production store writer, and the ONLY thing that separates a repair
+   * from an ordinary lab run.
+   *
+   * Absent (every ordinary run, and every test that does not ask otherwise): `saveEpisodeAudit` is
+   * an in-memory no-op and the episode's row exists only as this item's result. Present: the
+   * engine's OWN writer runs and a new `ipd_episode_audits` row lands with `is_current` flipped,
+   * exactly as the nightly worker writes it. Never an UPDATE — the writer demotes and inserts, and
+   * this adapter does not know how to do anything else because it does not do the writing.
+   */
+  writeAudit?: (row: EpisodeAuditRow, checkpoints: CheckpointWriteRow[]) => Promise<{ status: 'inserted' | 'updated' | 'skipped'; auditId: string | null; failedCheckpoints: number }>;
 }
 
 export function makeIpdEpisodeAdapter(deps: IpdAdapterDeps = {}): Adapter {
   const retrieveImpl = deps.retrieve ?? productionRetrieve;
+  const writeAudit = deps.writeAudit ?? null;
   return {
     engine: 'ipd_episode',
     stages: IPD_EPISODE_STAGES,
@@ -109,6 +121,7 @@ export function makeIpdEpisodeAdapter(deps: IpdAdapterDeps = {}): Adapter {
       // writers are in-memory. `saveEpisodeAudit` CAPTURES rather than discards, because the row
       // it is handed is the answer this whole adapter exists to produce.
       let written: { row: EpisodeAuditRow; checkpoints: CheckpointWriteRow[] } | null = null;
+      let repairWrite: { status: string; auditId: string | null; failedCheckpoints: number } | null = null;
       let divergedCheckpoint: LabError | null = null;
       const skips: { reason: string; detail: string | null }[] = [];
       const assembled = assembledFrom(frozen);
@@ -130,6 +143,18 @@ export function makeIpdEpisodeAdapter(deps: IpdAdapterDeps = {}): Adapter {
         clearSkip: async () => {},
         saveEpisodeAudit: async (row, checkpoints) => {
           written = { row, checkpoints };
+          // ⚠️ THE ONE PRODUCTION WRITE IN THIS PLATFORM, and it happens only on a repair.
+          //
+          // `saveEpisodeAudit` reaches `sql`, which THROWS inside the fence — that is §7 working,
+          // not an obstacle to route around. `exitLabExecution` is the sanctioned hole the retrieve
+          // edge already uses; here it is a WRITE, which is a real escalation, so: the writer is
+          // injected (never imported here), it is supplied only by the repair adapter below, and
+          // that adapter is reachable only from a run whose operation is 'reaudit' (worker.ts).
+          if (writeAudit) {
+            const saved = await exitLabExecution(() => writeAudit(row, checkpoints));
+            repairWrite = saved;
+            return saved;
+          }
           return { status: 'inserted', auditId: frozen.audit_id, failedCheckpoints: 0 };
         },
         checkpoint: exact
@@ -252,6 +277,15 @@ export function makeIpdEpisodeAdapter(deps: IpdAdapterDeps = {}): Adapter {
                 source_hash: storedHash,
                 replay_hash: replayHash,
                 equal: storedHash === replayHash,
+                // DECISION 65. A frozen run never touches the gateway, so §9's `unknown` would be
+                // the wrong word: the models on the record ARE the models that answered, earlier.
+                // worker.ts honours this only when the gateway saw no call at all.
+                ...(exact ? {
+                  attribution_status: 'replayed' as const,
+                  served: { model_checkpoint: frozen.models.checkpoint, model_judge: frozen.models.judge },
+                } : {}),
+                // §17.6 decision 67 — present only on a repair, and it is the row that landed.
+                ...(repairWrite ? { repair: { status: repairWrite.status, audit_id: repairWrite.auditId, failed_checkpoints: repairWrite.failedCheckpoints } } : {}),
               },
               execution_status: 'succeeded',
               assessment_status: episode.scoringStatus === 'ok' ? 'assessed' : 'unassessable',
@@ -276,6 +310,16 @@ export function makeIpdEpisodeAdapter(deps: IpdAdapterDeps = {}): Adapter {
 }
 
 export const ipdEpisodeAdapter: Adapter = makeIpdEpisodeAdapter();
+
+/**
+ * §17.6 DECISION 67 — the repair adapter. One line of difference, and it is the whole of the
+ * difference: `saveEpisodeAudit` is `lib/ipd-episode/store.ts`'s own writer, so the row this lands
+ * is byte-for-byte the row the nightly worker lands, demote-then-insert included. It is exported
+ * for `worker.ts` alone and is never in `ALL_ADAPTERS`.
+ */
+export function makeIpdEpisodeRepairAdapter(deps: IpdAdapterDeps = {}): Adapter {
+  return makeIpdEpisodeAdapter({ ...deps, writeAudit: deps.writeAudit ?? saveEpisodeAudit });
+}
 
 /**
  * DECISION 48's step-keying pass, and the reason it lives here rather than in sources/ipd.ts.

@@ -402,18 +402,29 @@ test('§17.4: run_diff pairs on case key and reports subjects, band and hash equ
     { case_key: 'u3', nqi: 60, band: 'D', subjects: [], hash: 'h4' },
   ]);
   const out = await callTool(deps(db), 'run_diff', { run_a: a.id, run_b: b.id }) as {
-    paired: number; only_in_a: string[]; only_in_b: string[];
+    paired: number; paired_on: string; arms_a: string[]; arms_b: string[];
+    only_in_a: { case_key: string; arm_hash: string; repetition: number }[];
+    only_in_b: { case_key: string; arm_hash: string; repetition: number }[];
     cases: {
-      case_key: string; subjects_added: string[]; subjects_removed: string[];
+      case_key: string; arm_hash: string; repetition: number;
+      subjects_added: string[]; subjects_removed: string[];
       band_before: string; band_after: string; result_hash_equal: boolean;
       note_quality_index_before: number; note_quality_index_after: number;
     }[];
   };
   assert.equal(out.paired, 1, 'only u1 is on both sides');
-  assert.deepEqual(out.only_in_a, ['u2']);
-  assert.deepEqual(out.only_in_b, ['u3']);
+  // lab-v2 decision 58 (§17.6). These two runs carry DIFFERENT arms, so the arm cannot be part of
+  // the key without pairing nothing — the tool says which key it used instead of choosing silently.
+  assert.equal(out.paired_on, 'case_key+repetition');
+  assert.deepEqual(out.arms_a, ['armA']);
+  assert.deepEqual(out.arms_b, ['armB']);
+  // An unpaired item is named by its whole key now, not by its case alone.
+  assert.deepEqual(out.only_in_a, [{ case_key: 'u2', arm_hash: 'armA', repetition: 1 }]);
+  assert.deepEqual(out.only_in_b, [{ case_key: 'u3', arm_hash: 'armB', repetition: 1 }]);
   const c = out.cases[0];
   assert.equal(c.case_key, 'u1');
+  assert.equal(c.arm_hash, 'armA', 'the arm rides on every row');
+  assert.equal(c.repetition, 1);
   assert.deepEqual(c.subjects_added, ['s9']);
   assert.deepEqual(c.subjects_removed, ['s2']);
   assert.equal(c.band_before, 'C');

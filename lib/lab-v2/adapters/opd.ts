@@ -21,6 +21,7 @@
  */
 import { withLabExecution, exitLabExecution } from '../../lab-execution-context';
 import { auditOpdNote, opdAuditPerAttemptMs, type OpdLabDependencies } from '../../opd-note-audit';
+import { saveOpdAudit } from '../../opd-audit-store';
 import { OPD_ENGINE_VERSION } from '../../opd-note-audit-core';
 import { retrieve as productionRetrieve, type RetrieveOptions, type RetrieveResult } from '../../retrieve';
 import { hash, opdFrozenSchema, OPD_STAGES, type OpdFrozen } from '../contracts';
@@ -50,10 +51,22 @@ export function stageForLabel(label: string): string {
  *  passes nothing and gets lib/retrieve.ts's `retrieve`, which is the whole point of the edge. */
 export interface OpdAdapterDeps {
   retrieve?: (query: string, opts: RetrieveOptions) => Promise<RetrieveResult>;
+  /**
+   * §17.6 DECISION 67 — the production store writer, supplied ONLY by the repair adapter below.
+   *
+   * ⚠️ THE OPD TABLE HAS NO `is_current`. `saveOpdAudit` is `ON CONFLICT (uid, engine_version)`:
+   * at a NEW engine version it inserts and the old row at the old version is kept, which is what
+   * decision 67 asks for; at the SAME version it returns 'exists' and touches nothing, because its
+   * conflict clause admits only rows already marked `llm_leg_failed`. So a repair at the same
+   * version is a no-op by construction rather than by a check this file makes — and it is
+   * reported as `skipped_exists`, never as a success and never as a failure.
+   */
+  writeAudit?: (audit: unknown, meta: { model?: string | null; provider?: string | null; latencyMs?: number | null }) => Promise<'inserted' | 'updated' | 'exists' | string>;
 }
 
 export function makeOpdAdapter(deps: OpdAdapterDeps = {}): Adapter {
   const retrieveImpl = deps.retrieve ?? productionRetrieve;
+  const writeAudit = deps.writeAudit ?? null;
   return {
   engine: 'opd_note_audit',
   stages: OPD_STAGES,
@@ -150,6 +163,20 @@ export function makeOpdAdapter(deps: OpdAdapterDeps = {}): Adapter {
           // half-audit into a comparison denominator as though it were whole.
           const llmLegFailed = (audit as { llmLegFailed?: boolean }).llmLegFailed === true;
           const findings = (audit as { findings?: unknown[] }).findings ?? [];
+          // ⚠️ THE ONE PRODUCTION WRITE, and only on a repair. `saveOpdAudit` reaches `sql`, which
+          // throws inside the fence — §7 working, not an obstacle to route around. The writer is
+          // INJECTED (never imported here) and is supplied only by the repair adapter below, which
+          // is reachable only from a run whose operation is 'reaudit'.
+          let repair: { status: string } | null = null;
+          if (writeAudit) {
+            const status = await exitLabExecution(() => writeAudit(audit, {
+              // The receipt the gateway settled this item's call with, so the stored row names the
+              // model that actually answered rather than the one the arm asked for.
+              model: (audit as { model?: string }).model ?? null,
+              provider: null,
+            }));
+            repair = { status: String(status) };
+          }
           return {
             result: audit,
             summary: {
@@ -169,6 +196,9 @@ export function makeOpdAdapter(deps: OpdAdapterDeps = {}): Adapter {
               note_quality_index: (audit as { scorecard?: { headline?: number } }).scorecard?.headline ?? null,
               band: (audit as { scorecard?: { band?: string } }).scorecard?.band ?? null,
               llm_leg_failed: llmLegFailed,
+              // §17.6 decision 67 — present only on a repair. 'exists' is the honest outcome of a
+              // repair at the SAME engine version: nothing was written, and nothing was lost.
+              ...(repair ? { repair } : {}),
             },
             execution_status: 'succeeded',
             assessment_status: llmLegFailed ? 'unassessable' : 'assessed',
@@ -189,5 +219,18 @@ export function makeOpdAdapter(deps: OpdAdapterDeps = {}): Adapter {
 }
 
 export const opdAdapter: Adapter = makeOpdAdapter();
+
+/**
+ * §17.6 DECISION 67 — the repair adapter. `saveOpdAudit` is `lib/opd-audit-store.ts`'s own writer,
+ * the one `app/api/opd-audit/worker/route.ts:158` calls every night, called with the same
+ * `{model, provider}` meta shape and never with `force`. Exported for `worker.ts` alone; never in
+ * `ALL_ADAPTERS`.
+ */
+export function makeOpdRepairAdapter(deps: OpdAdapterDeps = {}): Adapter {
+  return makeOpdAdapter({
+    ...deps,
+    writeAudit: deps.writeAudit ?? ((audit, meta) => saveOpdAudit(audit as Parameters<typeof saveOpdAudit>[0], meta)),
+  });
+}
 
 export const ADAPTERS: Record<string, Adapter> = { opd_note_audit: opdAdapter };

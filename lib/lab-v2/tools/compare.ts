@@ -41,10 +41,19 @@ export const COMPARE_SCHEMAS = {
       run_a: z.string().uuid(),
       run_b: z.string().uuid(),
       paired: z.number().int(),
-      only_in_a: z.array(z.string()),
-      only_in_b: z.array(z.string()),
+      /** DECISION 58 — an unpaired item is named by its WHOLE key, never by its case alone. */
+      only_in_a: z.array(z.object({ case_key: z.string(), arm_hash: z.string(), repetition: z.number().int() })),
+      only_in_b: z.array(z.object({ case_key: z.string(), arm_hash: z.string(), repetition: z.number().int() })),
+      /** DECISION 58 — the arms each side actually carried, so "which arm" is never a guess. */
+      arms_a: z.array(z.string()),
+      arms_b: z.array(z.string()),
+      /** Which key the two sides were matched on. See the note in runDiff. */
+      paired_on: z.enum(['case_key+arm_hash+repetition', 'case_key+repetition']),
       cases: z.array(z.object({
         case_key: z.string(),
+        /** DECISION 58 — the other two thirds of the pairing key, reported on every row. */
+        arm_hash: z.string(),
+        repetition: z.number().int(),
         status_a: z.object({ execution: z.string().nullable(), assessment: z.string().nullable(), attribution: z.string().nullable() }),
         status_b: z.object({ execution: z.string().nullable(), assessment: z.string().nullable(), attribution: z.string().nullable() }),
         subjects_added: z.array(z.string()),
@@ -135,8 +144,64 @@ export async function runDiff(deps: CompareDeps, args: { run_a: string; run_b: s
   if (!a) throw new LabError('NOT_FOUND', `no run ${args.run_a}`);
   if (!b) throw new LabError('NOT_FOUND', `no run ${args.run_b}`);
   const [ia, ib] = await Promise.all([itemsOf(db, a.id, 1000, 0), itemsOf(db, b.id, 1000, 0)]);
-  const mapA = new Map(ia.map((i) => [i.case_key, i]));
-  const mapB = new Map(ib.map((i) => [i.case_key, i]));
+
+  /**
+   * DECISION 58 — THE PAIRING KEY IS `(case_key, arm_hash, repetition)`, NOT `case_key`.
+   *
+   * ⚠️ WHAT THE OLD KEY ACTUALLY DID. A run of one dataset against two arms at three repetitions
+   * has SIX items per case. `new Map(items.map((i) => [i.case_key, i]))` keeps the LAST of them
+   * and silently discards five — so a two-arm diff compared one arbitrary arm on the left with an
+   * arbitrary arm on the right, reported one row per case, and named neither. Every number it
+   * produced was about a pair nobody chose, and nothing in the output said so.
+   *
+   * The triple is the item's identity in the schema (`items` is unique on it), so pairing on it is
+   * not a refinement — it is the only key that addresses one item. The arm and the repetition are
+   * reported on every row for the same reason: a reader must be able to see which two things were
+   * compared without opening the run.
+   */
+  const SEP = String.fromCharCode(0);
+  const fullKey = (i: { case_key: string; arm_hash: string; repetition: number }) =>
+    `${i.case_key}${SEP}${i.arm_hash}${SEP}${i.repetition}`;
+  const caseRepKey = (i: { case_key: string; repetition: number }) => `${i.case_key}${SEP}${i.repetition}`;
+
+  /**
+   * ⚠️ THE ARM IS PART OF THE KEY ONLY WHEN BOTH SIDES SHARE ARMS, AND THE OUTPUT SAYS WHICH.
+   *
+   * Decision 58's defect is a collision WITHIN a run: two arms at three repetitions is six items
+   * per case, and the old `case_key` map kept one of them. The triple fixes that, because the
+   * triple is the item's identity in the schema.
+   *
+   * But the commonest use of `run_diff` is exactly the opposite shape — run A on arm X against
+   * run B on arm Y — and there the triple matches nothing at all. Pairing on it would answer
+   * "0 paired" to the question the tool exists for. So the arm joins the key when it CAN
+   * (the two runs share at least one arm hash) and stands aside when it cannot, and `paired_on`
+   * reports which happened. What never happens again is a silent choice.
+   */
+  const armsA = new Set(ia.map((i) => i.arm_hash));
+  const armsB = new Set(ib.map((i) => i.arm_hash));
+  const sharedArms = [...armsA].some((h) => armsB.has(h));
+  const keyOf = sharedArms ? fullKey : caseRepKey;
+  const paired_on = sharedArms ? 'case_key+arm_hash+repetition' as const : 'case_key+repetition' as const;
+
+  // A key that collides on ONE side is a bug in this function, not in the data: `items` is unique
+  // on the triple, so the only way to collide is to have dropped part of it. Refusing beats
+  // reporting a comparison of items nobody chose — which is the whole of decision 58.
+  for (const [side, list] of [['a', ia], ['b', ib]] as const) {
+    const seen = new Set<string>();
+    for (const i of list) {
+      const k = keyOf(i);
+      if (seen.has(k)) {
+        throw new LabError('INVALID_INPUT',
+          `run ${side === 'a' ? args.run_a : args.run_b} has two items for ${i.case_key} at repetition ${i.repetition} under different arms; pair these runs against a run that shares an arm, or compare the experiment with experiment_compare`);
+      }
+      seen.add(k);
+    }
+  }
+
+  const mapA = new Map(ia.map((i) => [keyOf(i), i]));
+  const mapB = new Map(ib.map((i) => [keyOf(i), i]));
+  const idOf = (i: { case_key: string; arm_hash: string; repetition: number }) =>
+    ({ case_key: i.case_key, arm_hash: i.arm_hash, repetition: i.repetition });
 
   const cases = [...mapA.keys()].filter((k) => mapB.has(k)).sort().map((key) => {
     const x = mapA.get(key)!;
@@ -150,7 +215,9 @@ export async function runDiff(deps: CompareDeps, args: { run_a: string; run_b: s
     const ha = resultHashOf(x);
     const hb = resultHashOf(y);
     return {
-      case_key: key,
+      case_key: x.case_key,
+      arm_hash: x.arm_hash,
+      repetition: x.repetition,
       status_a: { execution: x.execution_status, assessment: x.assessment_status, attribution: x.attribution_status },
       status_b: { execution: y.execution_status, assessment: y.assessment_status, attribution: y.attribution_status },
       subjects_added: d.added,
@@ -169,8 +236,14 @@ export async function runDiff(deps: CompareDeps, args: { run_a: string; run_b: s
     run_a: a.id,
     run_b: b.id,
     paired: cases.length,
-    only_in_a: [...mapA.keys()].filter((k) => !mapB.has(k)).sort(),
-    only_in_b: [...mapB.keys()].filter((k) => !mapA.has(k)).sort(),
+    // Unpaired items are named by the WHOLE key, not by their case: on a two-arm run "u1 is only
+    // in A" would be false of the case and true of one of its arms, which is the confusion
+    // decision 58 exists to end.
+    only_in_a: ia.filter((i) => !mapB.has(keyOf(i))).map(idOf).sort((x, y) => x.case_key.localeCompare(y.case_key)),
+    only_in_b: ib.filter((i) => !mapA.has(keyOf(i))).map(idOf).sort((x, y) => x.case_key.localeCompare(y.case_key)),
+    arms_a: [...armsA].sort(),
+    arms_b: [...armsB].sort(),
+    paired_on,
     cases,
   };
 }

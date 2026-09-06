@@ -70,7 +70,16 @@ export function dependencyHash(params: unknown): string {
 }
 
 /** invalid beats unknown beats verified — the worst outcome across a run's calls wins. */
-const RANK: Record<AttributionStatus, number> = { verified: 0, unknown: 1, invalid: 2 };
+const RANK: Record<AttributionStatus, number> = {
+  verified: 0,
+  // DECISION 65's fourth value is UNREACHABLE HERE by construction: this class only ever notes a
+  // status for a call it actually dispatched, and a replayed item dispatches none. It is ranked
+  // with `verified` rather than with a failure because it is not one — but nothing reads this
+  // entry, and worker.ts is where `replayed` is decided.
+  replayed: 0,
+  unknown: 1,
+  invalid: 2,
+};
 
 export class Gateway {
   private worst: AttributionStatus = 'verified';

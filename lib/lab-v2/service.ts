@@ -15,6 +15,7 @@
  * not enforce it depending on how a client calls; §8's "inputs are validated at dispatch"
  * has to be true regardless, so the Zod schema is applied here where it cannot be skipped.
  */
+import { z } from 'zod';
 import type { Db } from './db';
 import {
   LabError, RUN_DEADLINE_MS, SCOPES_BY_PRINCIPAL, SUPPORTED_ENGINES, ENGINE_SLICE, PROVIDERS, stagesFor,
@@ -40,6 +41,12 @@ import { REPLAY_SCHEMAS, runReplay } from './tools/replay';
 import { EPISODE_SCHEMAS, episodeCheckpointInspect, episodeReplay } from './tools/episode';
 import { freezeIpdEpisode } from './adapters/ipd-episode';
 import { selectIpdCohort, type FrozenIpdCase } from './sources/ipd';
+// Slice B round B3 (§17.6).
+import { COVERAGE_SCHEMAS, coverageReport } from './tools/coverage';
+import { DRIFT_SCHEMAS, driftReport } from './tools/drift';
+import { RETRIEVAL_COMPARE_SCHEMAS, retrievalCompare } from './tools/retrieval-compare';
+import { REPAIR_SCHEMAS, reauditExecute, reauditPlan } from './tools/repair';
+import { GENERATED_ROUTE_VERSIONS, bakedEngineVersion } from './engine-versions.generated';
 import { freezeCohort } from './sources/cohort';
 import { freezeOpdCase, validateFrozenCase } from './sources/opd';
 import { openrouterConfigured, geminiConfigured } from '../llm';
@@ -59,6 +66,39 @@ const DEFAULT_BUDGET_CAP_MICROUSD = 5_000_000;   // $5 per named budget until an
  * the nine observation schemas live beside their handlers, because A2's file contract does not
  * permit editing contracts.ts. Dispatch does not care which side a tool came from.
  */
+/**
+ * §17.6 item 6 — `report_export`, full.
+ *
+ * A2's report carried the run, the experiment, the dataset metadata, the arms, the items and the
+ * call ledger. B3 adds the four things a reader of a Slice B run actually needs beside them: the
+ * comparison the run was for, the replay verdicts that say whether it is reproducible, the
+ * coverage and drift slices that put it in context, and — for a repair — the plan it ran and what
+ * each case did. Every added section is OPTIONAL and null when it does not apply, so an ordinary
+ * Slice A run exports exactly what it exported before plus four nulls.
+ */
+const REPORT_EXPORT_FULL = {
+  input: z.object({
+    run_id: z.string().uuid(),
+    /** Off by default: a full export runs three more reads and a caller should ask for them. */
+    include: z.array(z.enum(['replay', 'coverage', 'drift', 'repair'])).default([]),
+  }),
+  output: z.object({
+    artifact_id: z.string().uuid(),
+    run_id: z.string().uuid(),
+    caveat: z.string(),
+    summary: z.object({
+      items: z.number().int(),
+      execution_status: z.record(z.number()),
+      assessment_status: z.record(z.number()),
+      attribution_status: z.record(z.number()),
+      calls: z.number().int(),
+      replay_exactness: z.string().nullable(),
+    }),
+    /** What was actually attached, so an empty section is never mistaken for an empty result. */
+    sections: z.array(z.string()),
+  }),
+} as const;
+
 interface SchemaPair { input: { safeParse: (v: unknown) => unknown }; output: { safeParse: (v: unknown) => unknown } }
 const SCHEMAS: Record<string, SchemaPair> = {
   ...(toolSchemas as unknown as Record<string, SchemaPair>),
@@ -66,6 +106,15 @@ const SCHEMAS: Record<string, SchemaPair> = {
   ...(COMPARE_SCHEMAS as unknown as Record<string, SchemaPair>),
   ...(REPLAY_SCHEMAS as unknown as Record<string, SchemaPair>),
   ...(EPISODE_SCHEMAS as unknown as Record<string, SchemaPair>),
+  ...(COVERAGE_SCHEMAS as unknown as Record<string, SchemaPair>),
+  ...(DRIFT_SCHEMAS as unknown as Record<string, SchemaPair>),
+  ...(RETRIEVAL_COMPARE_SCHEMAS as unknown as Record<string, SchemaPair>),
+  ...(REPAIR_SCHEMAS as unknown as Record<string, SchemaPair>),
+  // §17.6 item 6 — report_export goes FULL. Its schema is widened here rather than in
+  // tools/observation.ts because §17.6's file contract leaves that file untouched, and this
+  // table is where both rounds' schemas already meet. A later spread wins, so this entry
+  // replaces A2's narrower pair for dispatch and for output validation alike.
+  report_export: REPORT_EXPORT_FULL as unknown as SchemaPair,
 };
 
 function scopesOf(principal: Principal): readonly Scope[] { return SCOPES_BY_PRINCIPAL[principal]; }
@@ -105,6 +154,23 @@ export async function callTool(deps: ServiceDeps, name: string, rawArgs: unknown
   return validated.data;
 }
 
+/**
+ * The version to report: the live one when the source was readable, the baked one when it was not.
+ * A baked value is used ONLY in place of `unavailable`; it can never override a hash the process
+ * actually computed, so a stale generated file cannot mask a route that moved.
+ */
+export function liveOrBakedVersion(engine: string, live: string): string {
+  if (!/@unavailable$/.test(live)) return live;
+  return bakedEngineVersion(engine) ?? live;
+}
+
+export function versionSourceFor(engine: string, live: string): 'source' | 'generated' | 'constant' {
+  // decision 39's shape is `<engine>/route@<hash>`; anything else is an engine with its own constant.
+  if (!/\/route@/.test(live)) return 'constant';
+  if (!/@unavailable$/.test(live)) return 'source';
+  return GENERATED_ROUTE_VERSIONS[engine] ? 'generated' : 'source';
+}
+
 type Handler = (deps: ServiceDeps, args: Record<string, unknown>) => Promise<unknown>;
 
 const HANDLERS: Record<ToolName, Handler> = {
@@ -142,7 +208,12 @@ const HANDLERS: Record<ToolName, Handler> = {
       // §35a — listed WITH the conditional mark, so a caller knows what it must price and what
       // may legitimately never fire.
       stages: supported ? stagesFor(engine).map((st) => ({ name: st.name, conditional: st.conditional })) : [],
-      engine_version: supported ? adapter.engineVersion() : null,
+      // §17.6 item 8 / decision 53. Decision 39 derives five of the seven versions from a route
+      // file's git blob hash, read from disk — exact in a tree and in CI, `unavailable` in the
+      // Vercel bundle, which ships no `.ts`. The baked table is the fallback, and `engine_version_source`
+      // says which one answered rather than leaving a reader to wonder why the hash moved.
+      engine_version: supported ? liveOrBakedVersion(engine, adapter.engineVersion()) : null,
+      engine_version_source: supported ? versionSourceFor(engine, adapter.engineVersion()) : null,
       frozen_inputs: supported ? [...adapter.frozenInputs] : [],
       request_fields: [...requestFieldsFor(engine)],
       // Slice A never freezes retrieval, so 'frozen' is not offered for any engine yet (§4.2).
@@ -581,9 +652,86 @@ const B2_HANDLERS: Record<string, Handler> = {
   },
 };
 
+/** Slice B round B3 (§17.6, decisions 58, 65, 67, 68). */
+const B3_HANDLERS: Record<string, Handler> = {
+  async coverage_report(_deps, args) {
+    return coverageReport(args as never);
+  },
+  async drift_report(_deps, args) {
+    return driftReport(args as never);
+  },
+  async retrieval_compare(_deps, args) {
+    return retrievalCompare(args as never);
+  },
+  async reaudit_plan(deps, args) {
+    return reauditPlan({ db: deps.db, principal: deps.principal }, args as never);
+  },
+  async reaudit_execute(deps, args) {
+    return reauditExecute({ db: deps.db, principal: deps.principal }, args as never);
+  },
+  /**
+   * §17.6 item 6 — report_export, full. It DELEGATES to A2's handler for everything A2 already
+   * exported (that file is untouched this round), then attaches the B3 sections and rewrites the
+   * artifact. The `include` list is explicit because coverage and drift are production reads and a
+   * report should not make them behind the caller's back.
+   */
+  async report_export(deps, args) {
+    const base = await (OBSERVATION_HANDLERS as unknown as Record<string, Handler>)
+      .report_export(deps, { run_id: args.run_id }) as { artifact_id: string; run_id: string; caveat: string; summary: Record<string, unknown> };
+    const include = new Set((args.include as string[] | undefined) ?? []);
+    const artifact = await getObject(deps.db, base.artifact_id);
+    const body = { ...(artifact?.body as Record<string, unknown> ?? {}) };
+    const sections: string[] = ['run', 'experiment', 'dataset', 'arms', 'items', 'calls'];
+
+    const run = await getRun(deps.db, String(args.run_id));
+    const items = await itemsOf(deps.db, String(args.run_id), 1000, 0);
+
+    // Replay verdicts — read off the items this run already carries, never by replaying again.
+    if (include.has('replay')) {
+      body.replay = items.map((i) => ({
+        item_id: i.id, case_key: i.case_key, arm_hash: i.arm_hash, repetition: i.repetition,
+        attribution_status: i.attribution_status,
+        result_hash: (i.result as { result_hash?: string } | null)?.result_hash ?? null,
+        replayed_from: (i.payload as { replay_from?: string })?.replay_from ?? null,
+        equal: (i.result as { summary?: { equal?: boolean } } | null)?.summary?.equal ?? null,
+      }));
+      sections.push('replay');
+    }
+    // The plan and the per-case outcomes for a repair run.
+    if (include.has('repair') && run?.operation === 'reaudit') {
+      const planId = (items[0]?.payload as { plan_id?: string })?.plan_id ?? null;
+      const plan = planId ? await getObject(deps.db, planId) : null;
+      body.repair = {
+        plan_id: planId,
+        plan: plan?.body ?? null,
+        cases: items.map((i) => ({
+          case_key: i.case_key, state: i.state,
+          outcome: (i.result as { summary?: { repair?: unknown } } | null)?.summary?.repair ?? null,
+          error: i.error,
+        })),
+      };
+      sections.push('repair');
+    }
+    const engine = ((items[0]?.payload as { engine?: string })?.engine ?? null) as 'ipd_episode' | 'opd_note_audit' | null;
+    if (include.has('coverage') && (engine === 'ipd_episode' || engine === 'opd_note_audit')) {
+      body.coverage = await coverageReport({ engine, days: 30 });
+      sections.push('coverage');
+    }
+    if (include.has('drift') && (engine === 'ipd_episode' || engine === 'opd_note_audit')) {
+      body.drift = await driftReport({ engine, weeks: 8 });
+      sections.push('drift');
+    }
+    body.sections = sections;
+
+    const { object } = await putObject(deps.db, deps.principal, 'report', body, 'deidentified', null);
+    return { ...base, artifact_id: object.id, sections };
+  },
+};
+
 const ALL_HANDLERS: Record<string, Handler> = {
   ...HANDLERS,
   ...(OBSERVATION_HANDLERS as unknown as Record<string, Handler>),
   ...B1_HANDLERS,
   ...B2_HANDLERS,
+  ...B3_HANDLERS,
 };

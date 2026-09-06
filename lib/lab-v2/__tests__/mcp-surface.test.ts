@@ -60,7 +60,9 @@ test('§15.3: tools/list is scope-filtered for each of the four principals', asy
   // run_replay; budget_reconcile is production_write and is not).
   // lab-v2 decision 49 (§17.5) adds both of B2's: episode_checkpoint_inspect (research_read) and
   // episode_replay (research_write).
-  assert.equal(listed.research.length, 28);
+  // lab-v2 §17.6 adds four research-visible: coverage_report, drift_report, retrieval_compare,
+  // reaudit_plan. reaudit_execute is production_write and is not.
+  assert.equal(listed.research.length, 32);
 
   // The operator holds production_write, so it alone sees worker_control — but it holds
   // no research_write, so the five research-writing tools are hidden from it.
@@ -68,7 +70,7 @@ test('§15.3: tools/list is scope-filtered for each of the four principals', asy
   assert.ok(!listed.operator.includes('dataset_create'));
   // The operator adds budget_reconcile (production_write) on top of the reads it can see, and
   // decision 49's episode_checkpoint_inspect, which is a research READ the operator already holds.
-  assert.equal(listed.operator.length, 23);
+  assert.equal(listed.operator.length, 28);   // §17.6 — all five, reaudit_execute included
   assert.ok(!listed.operator.includes('episode_replay'), 'a replay is a research write; the operator has none');
 
   // reviewer and release hold no research_write: no dataset or experiment creation.
@@ -79,12 +81,14 @@ test('§15.3: tools/list is scope-filtered for each of the four principals', asy
   }
   // reviewer = 3 unrestricted + 2 production reads + 4 research reads, plus decision 49's
   // episode_checkpoint_inspect — a reviewer may read a checkpoint's arithmetic, never replay it.
-  assert.equal(listed.reviewer.length, 21);
+  assert.equal(listed.reviewer.length, 25);   // §17.6 — the four reads, never the repair
   for (const p of ['reviewer', 'release'] as const) {
     assert.ok(!listed[p].includes('episode_replay'), `${p} must not replay a run`);
   }
   // release = 3 unrestricted + 2 production reads + source_freshness. Nothing carries `release`.
-  assert.equal(listed.release.length, 6);
+  // §17.6 — release holds production_read, so the three production reads join it.
+  assert.equal(listed.release.length, 9);
+  assert.ok(!listed.release.includes('reaudit_execute'), 'release must never repair');
   await db.close();
 });
 
@@ -114,7 +118,7 @@ test('§8: a real tool call round-trips through the SDK with structured content'
   assert.equal(body.principal, 'research');
   assert.equal(body.protocol_version, MCP_V2_PROTOCOL_VERSION);
   assert.equal(body.sdk_version, MCP_V2_SDK_VERSION);
-  assert.equal(body.tools.length, 28);   // lab-v2 decision 49 — B2's two
+  assert.equal(body.tools.length, 32);   // lab-v2 §17.6 — B3's four research-visible
   assert.ok(body.pricing_version.startsWith('lab-v2-pricing/'));
   await handler.close();
   await db.close();

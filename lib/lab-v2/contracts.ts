@@ -176,7 +176,19 @@ export const CALL_STATES = ['reserved', 'settled', 'unknown', 'refused'] as cons
 /** §9 — three independent fields, all three set on every finished item. */
 export const EXECUTION_STATUSES = ['succeeded', 'failed', 'partial', 'cancelled', 'expired'] as const;
 export const ASSESSMENT_STATUSES = ['assessed', 'unassessable', 'not_reached'] as const;
-export const ATTRIBUTION_STATUSES = ['verified', 'invalid', 'unknown'] as const;
+/**
+ * §9, plus DECISION 65's fourth value.
+ *
+ * `verified` / `invalid` / `unknown` are verdicts about a call that WAS made: the receipt named the
+ * requested target, named a different one, or did not arrive. A frozen or replayed item makes no
+ * call at all, and calling that `unknown` was the wrong word — nothing is unknown about it. The
+ * models that produced the answer are on the record; they simply produced it earlier.
+ *
+ * ⚠️ `replayed` MAY ONLY BE CLAIMED WHERE NO CALL HAPPENED. The gateway's verdict wins whenever it
+ * saw one, so this value cannot launder a real attribution failure into a reassuring word — which
+ * is the only way a fourth status could do damage.
+ */
+export const ATTRIBUTION_STATUSES = ['verified', 'invalid', 'unknown', 'replayed'] as const;
 export type ExecutionStatus = (typeof EXECUTION_STATUSES)[number];
 export type AssessmentStatus = (typeof ASSESSMENT_STATUSES)[number];
 export type AttributionStatus = (typeof ATTRIBUTION_STATUSES)[number];

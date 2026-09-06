@@ -53,8 +53,24 @@ test('§3.3: Slice A stores and returns only de-identified objects', () => {
   for (const t of REGISTRY) assert.equal(t.classification, 'deidentified', `${t.name} must not be identifying in Slice A`);
 });
 
-test('§8.1: only the two metered tools are metered', () => {
-  assert.deepEqual(REGISTRY.filter((t) => t.cost_class === 'metered').map((t) => t.name).sort(), ['experiment_run', 'run_retry']);
+test('§8.1: only the tools that run an engine are metered', () => {
+  // lab-v2 decision 68 (§17.6): reaudit_execute is the third, and it is metered for the same
+  // reason as the other two — it runs a clinical engine against a provider. It is also the only
+  // one of the three that WRITES A PRODUCTION ROW, which is why it is production_write and not
+  // research_write; the two facts are asserted together so neither can drift alone.
+  assert.deepEqual(REGISTRY.filter((t) => t.cost_class === 'metered').map((t) => t.name).sort(),
+    ['experiment_run', 'reaudit_execute', 'run_retry']);
+  // `t.name` is typed as round 1's union — every later round's tools are cast into it in the
+  // registry — so the comparison is on the string, not on the type.
+  const repair = REGISTRY.find((t) => String(t.name) === 'reaudit_execute')!;
+  assert.deepEqual([...repair.scopes], ['production_write']);
+  assert.equal(repair.effect, 'production_write');
+  // And the production_write set is closed at three. `worker_control` pauses the queue and
+  // `budget_reconcile` moves money between two columns of the v2 store; `reaudit_execute` is the
+  // only one that writes a CLINICAL row, which is why decision 67 exists at all. A fourth would
+  // need its own ruling, and this is where it would be noticed.
+  assert.deepEqual(REGISTRY.filter((t) => t.effect === 'production_write').map((t) => String(t.name)).sort(),
+    ['budget_reconcile', 'reaudit_execute', 'worker_control']);
 });
 
 // ── §15.2 auth ───────────────────────────────────────────────────────────────────────

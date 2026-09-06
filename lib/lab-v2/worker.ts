@@ -23,12 +23,33 @@ import {
 } from './contracts';
 import { Gateway, type StageSpec } from './gateway';
 import {
-  claim, deriveRunState, finish, getObject, getWorker, heartbeat, isCancelRequested,
+  claim, deriveRunState, finish, getObject, getRun, getWorker, heartbeat, isCancelRequested,
   putObject, reap, recordEvent,
 } from './store';
 import type { Transport } from './transport';
 // Round A3 (decision 37): the multi-engine registry, since §17.3 leaves adapters/opd.ts untouched.
 import { ALL_ADAPTERS, type Adapter } from './adapters/types';
+
+/**
+ * Slice B round B3 (§17.6, decision 67) — THE WRITING ADAPTERS, and why they are not in
+ * `ALL_ADAPTERS`.
+ *
+ * A repair adapter runs the same engine as its ordinary twin and then calls the engine's OWN store
+ * writer, under `exitLabExecution`, to land a new production row. That is a real production write
+ * from inside a research platform, so it must be unreachable except through the one door decision
+ * 67 opens. Keeping it out of the global registry means an item can only reach it by being claimed
+ * from a run whose `operation` is 'reaudit'.
+ *
+ * Required lazily, as the six are, so the IPD pipeline and the OPD engine are not pulled into the
+ * module graph of every importer of this file.
+ */
+function repairAdapters(): Record<string, Adapter> {
+  /* eslint-disable @typescript-eslint/no-require-imports */
+  const { makeIpdEpisodeRepairAdapter } = require('./adapters/ipd-episode') as typeof import('./adapters/ipd-episode');
+  const { makeOpdRepairAdapter } = require('./adapters/opd') as typeof import('./adapters/opd');
+  /* eslint-enable @typescript-eslint/no-require-imports */
+  return { ...ALL_ADAPTERS(), ipd_episode: makeIpdEpisodeRepairAdapter(), opd_note_audit: makeOpdRepairAdapter() };
+}
 
 export interface TickOptions {
   db: Db;
@@ -82,7 +103,22 @@ export async function tick(opts: TickOptions): Promise<TickReport> {
     const itemTransport = replayFrom && opts.replayTransportFor
       ? opts.replayTransportFor(item.id, String(replayFrom))
       : transport;
-    const ok = await runItem({ db, transport: itemTransport, item, workerId, adapters: opts.adapters ?? ALL_ADAPTERS() });
+    /**
+     * DECISION 67 — THE ONLY DOOR TO A PRODUCTION WRITE, and it is deliberately narrow.
+     *
+     * `runs.operation` is not a caller-supplied field anywhere in this platform: `experiment_run`
+     * writes 'experiment_run', `run_replay` writes 'run_replay', `run_retry` writes 'run_retry',
+     * and only `reaudit_execute` — production_write, operator only — writes 'reaudit'. So a
+     * research key cannot manufacture a run that reaches the writing adapters, whatever it puts in
+     * a payload or an arm. The check is on the RUN, not on anything the item carries.
+     *
+     * An explicitly injected adapter map (tests, `run_replay`) still wins, so this cannot surprise
+     * a caller that said what it wanted.
+     */
+    const run = opts.adapters ? null : await getRun(db, item.run_id);
+    const repair = run?.operation === 'reaudit';
+    const adapters = opts.adapters ?? (repair ? repairAdapters() : ALL_ADAPTERS());
+    const ok = await runItem({ db, transport: itemTransport, item, workerId, adapters, replayed: Boolean(replayFrom) });
     if (ok) finished += 1;
     await deriveRunState(db, item.run_id);
   }
@@ -96,13 +132,15 @@ interface RunItemArgs {
   item: Awaited<ReturnType<typeof claim>> & object;
   workerId: string;
   adapters: Record<string, Adapter>;
+  /** DECISION 65 — this item ran on stored replies, so nothing was served on its behalf today. */
+  replayed?: boolean;
 }
 
 /**
  * One leased item, start to finish. Always ends by calling `finish` with all three
  * statuses (§9) unless the lease was lost — in which case it deliberately writes nothing.
  */
-async function runItem({ db, transport, item, workerId, adapters }: RunItemArgs): Promise<boolean> {
+async function runItem({ db, transport, item, workerId, adapters, replayed }: RunItemArgs): Promise<boolean> {
   const leaseToken = item.lease_token;
   const controller = new AbortController();
   const payload = item.payload as { engine?: string; frozen?: Record<string, unknown>; arm?: Record<string, unknown>; budget_id?: string };
@@ -203,13 +241,34 @@ async function runItem({ db, transport, item, workerId, adapters }: RunItemArgs)
     return false;
   }
 
+  /**
+   * DECISION 65 — `replayed`, and the two ways an item earns it.
+   *
+   * ONE: it ran on a replay transport (`run_replay`), so its receipts are the SOURCE run's. The
+   * gateway would classify those as `verified`, which reads as "this call was attributed" about a
+   * call nobody made today.
+   * TWO: the adapter declares it, which a frozen IPD case does — it serves the stored checkpoint
+   * and judge outputs and never touches the gateway at all.
+   *
+   * ⚠️ THE GATEWAY STILL WINS WHENEVER IT SAW A CALL. `declared` is consulted only when no call was
+   * made (`sawAnyCall` false ⇒ `attributionStatus()` is `unknown`), so an adapter cannot dress a
+   * real `invalid` — a model that answered instead of the one the arm named — as a replay.
+   */
+  const gatewayVerdict = gateway.attributionStatus();
+  const declared = (result as { summary?: { attribution_status?: unknown } } | null)?.summary?.attribution_status;
+  const attribution = gatewayVerdict !== 'unknown'
+    ? gatewayVerdict
+    : replayed ? 'replayed'
+    : declared === 'replayed' ? 'replayed'
+    : gatewayVerdict;
+
   const wrote = await finish(db, item.id, leaseToken, {
     state,
     result,
     error,
     execution_status: execution,
     assessment_status: assessment,
-    attribution_status: gateway.attributionStatus(),
+    attribution_status: attribution,
     outcome,
   });
   if (wrote) {

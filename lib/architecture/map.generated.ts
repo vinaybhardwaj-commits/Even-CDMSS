@@ -3854,6 +3854,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "lab-v2",
+    "to": "opd-audit-store",
+    "kind": "value"
+  },
+  {
+    "from": "lab-v2",
     "to": "opd-complexity-core",
     "kind": "value"
   },

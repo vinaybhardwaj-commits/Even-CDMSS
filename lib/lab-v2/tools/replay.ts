@@ -13,6 +13,12 @@
  * budget moves by nothing. A replay that could silently spend would be useless for the one job it
  * has, which is to be run often and cheaply.
  *
+ * ⚠️ DECISION 65 — EVERY REPLAYED ITEM IS `attribution_status: 'replayed'`. The stored receipt is
+ * replayed with the reply, so the gateway would have classified it `verified` — a word about a
+ * call that was attributed, said of a call nobody made today. `replayed` is the fourth value, and
+ * `worker.ts` sets it from the fact that the item ran on a replay transport, not from anything an
+ * adapter claims.
+ *
  * ⚠️ AND IT REFUSES RATHER THAN IMPROVISES. A stage whose request hash is not among the stored
  * steps is `REPLAY_DIVERGED`, not a live call and not a skipped stage. The question a replay
  * answers is "is this still the same run", so an unmatched request is the answer, not an obstacle.
@@ -54,6 +60,8 @@ export const REPLAY_SCHEMAS = {
         equal: z.boolean(),
         state: z.string(),
         error: z.string().nullable(),
+        /** DECISION 65 — nothing was served on this item's behalf today; the receipt is the source's. */
+        attribution_status: z.string().nullable(),
       })),
     }),
   },
@@ -149,6 +157,10 @@ export async function runReplay(deps: ReplayDeps, args: { run_id: string; mode: 
       replay_result_hash: replayHash,
       equal: sourceHash != null && sourceHash === replayHash,
       state: r.state,
+      // DECISION 65. Written by worker.ts, which knows the item ran on a replay transport. Reported
+      // here so a reader of a replay never has to infer from `model_calls: 0` that the `verified`
+      // beside it is about a call the source run made, not this one.
+      attribution_status: r.attribution_status ?? null,
       error: r.error ? String((r.error as { message?: string }).message ?? JSON.stringify(r.error)).slice(0, 300) : null,
     };
   });

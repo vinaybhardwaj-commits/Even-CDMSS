@@ -25,6 +25,11 @@ import { COMPARE_SCHEMAS } from './tools/compare';
 import { REPLAY_SCHEMAS } from './tools/replay';
 // Slice B round B2 (§17.5, decision 49). Same pattern again: schemas beside their handlers.
 import { EPISODE_SCHEMAS } from './tools/episode';
+// Slice B round B3 (§17.6). Same pattern once more: schemas beside their handlers.
+import { COVERAGE_SCHEMAS } from './tools/coverage';
+import { DRIFT_SCHEMAS } from './tools/drift';
+import { RETRIEVAL_COMPARE_SCHEMAS } from './tools/retrieval-compare';
+import { REPAIR_SCHEMAS } from './tools/repair';
 
 export interface ToolAnnotations { readOnlyHint: boolean; destructiveHint: boolean; idempotentHint: boolean }
 
@@ -123,6 +128,22 @@ const b2 = (
   slice: 'B-2',
 });
 
+/** Slice B round B3 entries (§17.6). Only `reaudit_execute` is metered — it runs an engine. */
+const B3 = { ...COVERAGE_SCHEMAS, ...DRIFT_SCHEMAS, ...RETRIEVAL_COMPARE_SCHEMAS, ...REPAIR_SCHEMAS } as unknown as Record<string, { input: ZodTypeAny; output: ZodTypeAny }>;
+const b3 = (
+  name: string, description: string, scopes: readonly Scope[], effect: Effect, cost_class: CostClass = 'free',
+): ToolSpec => ({
+  name: name as ToolName,
+  description,
+  inputSchema: B3[name].input,
+  outputSchema: B3[name].output,
+  scopes,
+  effect,
+  classification: 'deidentified',
+  cost_class,
+  slice: 'B-3',
+});
+
 export const REGISTRY: readonly ToolSpec[] = [
   // ── capability discovery ──────────────────────────────────────────────────────────
   t('system_capabilities', 'List the tools this principal can see, the negotiated MCP protocol version, the SDK version, whether LAB_V2_ENABLED is set, and the pricing table version.', ANY, 'read'),
@@ -176,6 +197,13 @@ export const REGISTRY: readonly ToolSpec[] = [
   // ── Slice B round B2 (§17.5, decision 49) ─────────────────────────────────────────
   b2('episode_checkpoint_inspect', 'For one IPD episode case or one replayed item: per checkpoint, the blinded input and its cut-off, what was expected by section and how much of it was cited, the events that fell inside the window by type, the retrieval that grounded it, the caps that could have bitten, and the arithmetic. Reads the v2 store only — never db13.', ['research_read'], 'read'),
   b2('episode_replay', 'run_replay for an ipd_episode run: re-runs each episode through lib/ipd-episode/compute.ts against its frozen course and its stored judge replies, and reports per item whether the result hash is unchanged. Zero model calls. Refuses a run of any other engine.', ['research_write'], 'research_write'),
+
+  // ── Slice B round B3 (§17.6, decisions 58, 65, 67, 68) ────────────────────────────
+  b3('coverage_report', 'Per engine, per day for up to 90 days: examined, qualifying, audited and skipped, with the skip breakdown by reason and THE QUALIFYING DEFINITION IN WORDS. Reads ipd_episode_audits, ipd_episode_skips and opd_note_audits.', ['production_read'], 'read'),
+  b3('drift_report', 'Per engine version, per week: distributions of n_findings and the score, the band histogram, the IPD retrieval_offtopic rate, and a week-over-week delta against the same version. Carries a caveat that a delta is a reason to look, never a result.', ['production_read'], 'read'),
+  b3('retrieval_compare', 'Two candidate configurations (k, bm25 on or off, embedding on or off) or two corpus snapshots (by maximum chunk id) over the same queries: overlap at k, Spearman rank correlation and timings. No reranker, no chat model, one embedding per query shared by both sides.', ['research_read'], 'read'),
+  b3('reaudit_plan', 'Plan a repair: the exact case keys, each one\u2019s current engine version and why it qualifies, the expected writes, an estimated budget, the writer the repair will call, and a source_snapshot_hash that makes the plan refusable once its rows move.', ['production_read'], 'read'),
+  b3('reaudit_execute', 'Run the first N cases of a plan (default 5, max 20) through the engine and write each result with the ENGINE\u2019S OWN store writer \u2014 a new row, never an UPDATE. Stops at N; continuing needs review_passed with a reason, stored as an event. Refuses PLAN_STALE. Submits a job and returns; the cron does the work.', ['production_write'], 'production_write', 'metered'),
 ];
 
 export const BY_NAME: Record<string, ToolSpec> = Object.fromEntries(REGISTRY.map((s) => [s.name, s]));
