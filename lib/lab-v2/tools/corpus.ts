@@ -118,24 +118,59 @@ LIMIT 500`;
  */
 export const STAGED_IDS_SQL = `SELECT id FROM mksap_chunks WHERE source = $1 ORDER BY id LIMIT 500`;
 
-/** The servable set, exactly as `lib/retrieve.ts:167` defines it. Used for the diff's denominators
- *  and for the corpus size a snapshot pins. This one IS about servability, and says so. */
+/**
+ * DECISION 88, AND A CORRECTION TO IT — measured against production Neon, 06 Sep 2026, before a
+ * line was changed:
+ *
+ *     max(id) alone                       178 ms
+ *     count(*) over the servable set   14,223 ms
+ *     count(DISTINCT source)           30,527 ms
+ *     the two counts together          29,451 ms
+ *     the OVERLAP read                     57 ms
+ *
+ * Decision 88 attributes `corpus_diff`'s timeout to the overlap read. It is not the overlap read.
+ * It is THIS statement: `count(DISTINCT source)` over 2,247,994 servable rows takes twice the 15 s
+ * deadline on its own, and `count(*)` is already at it. The overlap read is two orders of magnitude
+ * cheaper. Both are treated below, and the misattribution is flagged in the build report.
+ *
+ * ⚠️ SO THE SNAPSHOT IS ITS OWN STATEMENT. `max(id)` is what the impact estimate REQUIRES — it pins
+ * both candidate sides to one corpus — and it is served by the primary key in 178 ms. Bundling it
+ * with two counts that nothing depends on meant the whole tool died for a number that is decoration.
+ */
+export const MAX_CHUNK_ID_SQL = `SELECT max(id) AS max_chunk_id FROM mksap_chunks`;
+
+/**
+ * The servable set, exactly as `lib/retrieve.ts:167` defines it. REPORTING ONLY — nothing computed
+ * from it feeds the impact estimate, which is why it is allowed to be skipped rather than fatal.
+ */
 export const VISIBLE_SUMMARY_SQL = `SELECT
   count(*) AS visible_chunks,
-  count(DISTINCT source) AS visible_sources,
-  max(id) AS max_chunk_id
+  count(DISTINCT source) AS visible_sources
 FROM mksap_chunks
 WHERE text IS NOT NULL AND visible IS NOT FALSE AND source NOT LIKE 'labq:%'`;
 
-/** Book/chapter overlap between the staged batch and what is already servable — the diff's shape. */
+/**
+ * Book/chapter overlap between the staged batch and what is already servable.
+ *
+ * ⚠️ KEYED TO THE STAGED SET'S BOOKS, BOUND — decision 88. The first shape was a row-comparison
+ * `IN` subquery over `(book, COALESCE(chapter, ''))`, which no index can serve: `mksap_chunks` has
+ * a btree on `book` and nothing on the pair. It measured 57 ms only because neither quarantined
+ * batch on production has a book with a servable twin, so the nested loop had nothing to walk. A
+ * batch staged into a book that already has a hundred thousand servable chunks would have found
+ * that out the hard way. `book = ANY($1)` uses `mksap_chunks_book_idx` and is a bitmap heap scan.
+ *
+ * ⚠️ THE BOOKS ARE THE KEY, THE PAIRS ARE THE FILTER. Binding books alone would report a
+ * (book, chapter) pair the staged set does not have — the same book, a different chapter. The
+ * caller intersects the result with the staged pairs, so the SQL is indexable and the answer is
+ * exact. Doing the pair match in SQL would need a VALUES join built by interpolation, which is a
+ * worse trade than four lines of set arithmetic.
+ */
 export const OVERLAP_SQL = `SELECT
   c.book, c.chapter,
   count(*) AS visible_chunks
 FROM mksap_chunks c
 WHERE c.text IS NOT NULL AND c.visible IS NOT FALSE AND c.source NOT LIKE 'labq:%'
-  AND (c.book, COALESCE(c.chapter, '')) IN (
-    SELECT s.book, COALESCE(s.chapter, '') FROM mksap_chunks s WHERE s.source = $1
-  )
+  AND c.book = ANY($1)
 GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 100`;
 
 /**
@@ -270,7 +305,17 @@ export const CORPUS_SCHEMAS = {
     output: z.object({
       label: z.string(),
       staged: z.object({ chunks: z.number().int(), books: z.array(z.string()), chunk_ids: z.array(z.number().int()) }),
-      visible: z.object({ chunks: z.number().int(), sources: z.number().int(), max_chunk_id: z.number().int() }),
+      visible: z.object({
+        /** Null when the count exceeded the read deadline — see `visible_status`. */
+        chunks: z.number().int().nullable(),
+        sources: z.number().int().nullable(),
+        /** Always present: it is the snapshot both impact sides are pinned to. */
+        max_chunk_id: z.number().int(),
+      }),
+      /** DECISION 88 — `skipped` never means zero, and never means the tool failed. */
+      visible_status: z.enum(['ok', 'skipped']),
+      overlap_status: z.enum(['ok', 'skipped']),
+      skipped_detail: z.record(z.string()).nullable(),
       overlap: z.array(z.object({ book: z.string().nullable(), chapter: z.string().nullable(), visible_chunks: z.number().int() })),
       impact: z.object({
         /** Structurally zero: no chat model and no reranker is reachable from this tool. */
@@ -454,9 +499,43 @@ export async function corpusDiff(
   const stagedIds = asIds(staged);
   const stagedSet = new Set(stagedIds);
 
-  const vis = (await read<Record<string, unknown>>(SOURCE, VISIBLE_SUMMARY_SQL))[0] ?? {};
-  const maxChunkId = Number(vis.max_chunk_id ?? 0);
-  const overlapRows = await read<Record<string, unknown>>(SOURCE, OVERLAP_SQL, [quarantinedSource(label)]);
+  /**
+   * DECISION 88 — REQUIRED, THEN BEST-EFFORT, IN THAT ORDER.
+   *
+   * The snapshot is required: the impact estimate cannot pin its two sides without it, and it costs
+   * 178 ms. The two counts and the overlap are DECORATION on an impact estimate — useful, and not
+   * worth failing the tool for. Each is attempted under the same 15 s deadline and each degrades to
+   * `skipped` on its own, with the reason, so a reader is never shown a zero that means "we could
+   * not count".
+   */
+  const maxRow = (await read<Record<string, unknown>>(SOURCE, MAX_CHUNK_ID_SQL))[0] ?? {};
+  const maxChunkId = Number(maxRow.max_chunk_id ?? 0);
+  if (!maxChunkId) throw new LabError('SOURCE_UNAVAILABLE', 'the corpus reported no max chunk id; the impact estimate cannot be pinned to a snapshot');
+
+  const skipped: Record<string, string> = {};
+  /** A read whose failure is reportable rather than fatal. Only SOURCE_UNAVAILABLE degrades —
+   *  anything else is a bug in the statement and must still surface. */
+  const optional = async <T,>(name: string, statement: string, params: unknown[] = []): Promise<T[] | null> => {
+    try {
+      return await read<T>(SOURCE, statement, params);
+    } catch (e) {
+      const err = e as LabError;
+      if (err.code !== 'SOURCE_UNAVAILABLE') throw err;
+      skipped[name] = `skipped: ${String(err.message).slice(0, 200)}`;
+      return null;
+    }
+  };
+
+  const visRows = await optional<Record<string, unknown>>('visible', VISIBLE_SUMMARY_SQL);
+  const vis = visRows?.[0] ?? null;
+
+  // The books the staged batch touches — the key the overlap read is bound to.
+  const stagedBooks = [...new Set(staged.map((x) => (x.book == null ? '' : String(x.book))).filter(Boolean))];
+  // The exact (book, chapter) pairs, which is what the caller actually asked about.
+  const stagedPairs = new Set(staged.map((x) => `${String(x.book ?? '')}\u0000${String(x.chapter ?? '')}`));
+  const overlapRows = stagedBooks.length
+    ? await optional<Record<string, unknown>>('overlap', OVERLAP_SQL, [stagedBooks])
+    : [];
 
   // ── the queries the impact is measured on ────────────────────────────────────────────
   const queries = args.queries?.length ? args.queries : await freezeQueriesOf(db, args.dataset_id);
@@ -509,15 +588,22 @@ export async function corpusDiff(
       chunk_ids: stagedIds,
     },
     visible: {
-      chunks: Number(vis.visible_chunks ?? 0),
-      sources: Number(vis.visible_sources ?? 0),
+      // ⚠️ NULL, NEVER ZERO, when the count did not run. Zero would read as "the corpus is empty".
+      chunks: vis ? Number(vis.visible_chunks ?? 0) : null,
+      sources: vis ? Number(vis.visible_sources ?? 0) : null,
       max_chunk_id: maxChunkId,
     },
-    overlap: overlapRows.map((r) => ({
-      book: r.book == null ? null : String(r.book),
-      chapter: r.chapter == null ? null : String(r.chapter),
-      visible_chunks: Number(r.visible_chunks ?? 0),
-    })),
+    visible_status: vis ? 'ok' as const : 'skipped' as const,
+    overlap_status: overlapRows ? 'ok' as const : 'skipped' as const,
+    skipped_detail: Object.keys(skipped).length ? skipped : null,
+    // Bound by BOOK in SQL, intersected to the exact staged PAIRS here — see OVERLAP_SQL's header.
+    overlap: (overlapRows ?? [])
+      .filter((r) => stagedPairs.has(`${String(r.book ?? '')}\u0000${String(r.chapter ?? '')}`))
+      .map((r) => ({
+        book: r.book == null ? null : String(r.book),
+        chapter: r.chapter == null ? null : String(r.chapter),
+        visible_chunks: Number(r.visible_chunks ?? 0),
+      })),
     impact: {
       // Structural: nothing in this module can reach `governedChat` or a reranker.
       model_calls: 0,

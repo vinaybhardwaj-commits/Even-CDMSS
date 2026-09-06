@@ -26,8 +26,8 @@ import {
 } from '../store';
 import {
   CHUNK_STATE_SQL, NEAR_DUPLICATE_SQL, OVERLAP_SQL, PG_TRGM_SQL, STAGED_CHUNKS_SQL,
-  STAGED_IDS_SQL, VISIBLE_SUMMARY_SQL, candidateLegs, corpusStage, corpusValidate,
-  quarantinedSource, readStagedIds,
+  STAGED_IDS_SQL, VISIBLE_SUMMARY_SQL, MAX_CHUNK_ID_SQL, candidateLegs, corpusDiff, corpusStage,
+  corpusValidate, quarantinedSource, readStagedIds,
 } from '../tools/corpus';
 import { CORPUS_QUARANTINE_INSERT_SQL, labLabel } from '../../lab';
 import {
@@ -172,6 +172,7 @@ test('§17.7: every inferred mksap_chunks read is a bounded SELECT, and none is 
     ['staged chunks', STAGED_CHUNKS_SQL],
     ['staged ids', STAGED_IDS_SQL],
     ['visible summary', VISIBLE_SUMMARY_SQL],
+    ['max chunk id', MAX_CHUNK_ID_SQL],
     ['overlap', OVERLAP_SQL],
     ['near duplicate', NEAR_DUPLICATE_SQL(0.9)],
     ['pg_trgm', PG_TRGM_SQL],
@@ -186,7 +187,7 @@ test('§17.7: every inferred mksap_chunks read is a bounded SELECT, and none is 
     assert.equal((sql.match(/;/g) ?? []).length, 0, `${name}: a single statement`);
     assert.ok(!/SELECT\s+\*/.test(sql), `${name}: never SELECT *`);
   }
-  for (const [name, sql] of statements.filter(([n]) => !['visible summary', 'pg_trgm'].includes(n))) {
+  for (const [name, sql] of statements.filter(([n]) => !['visible summary', 'max chunk id', 'pg_trgm'].includes(n))) {
     assert.ok(/LIMIT \d+/.test(sql), `${name} must be bounded`);
   }
   // ⚠️ THE SERVABLE PREDICATE IS PRODUCTION'S, WORD FOR WORD (lib/retrieve.ts:167) — and it belongs
@@ -224,8 +225,11 @@ test('§17.7 decision 86: the staged-set reader binds the source and carries NO 
     assert.ok(!/(?:^|\s)(?:s\.)?source = '/m.test(sql), `${name} must not interpolate the staged source`);
     assert.ok(!/visible IS NOT FALSE/.test(sql.split('JOIN')[0]), `${name} must carry no visibility predicate on the STAGED side`);
   }
-  // The overlap statement's subquery is the staged side; its outer half is deliberately servable.
-  assert.match(OVERLAP_SQL, /WHERE s\.source = \$1/);
+  // ⚠️ The overlap read no longer touches the staged source AT ALL — decision 88 rekeyed it to the
+  // staged set's BOOKS, bound, because `mksap_chunks` has a btree on `book` and nothing on the
+  // (book, chapter) pair. It is servable-only by construction, which is the half it asks about.
+  assert.match(OVERLAP_SQL, /AND c\.book = ANY\(\$1\)/);
+  assert.ok(!/source = \$1/.test(OVERLAP_SQL), 'the overlap is keyed by book, not by the staged source');
   // And the value that gets bound is the quarantined source, built once.
   assert.equal(quarantinedSource('c1-batch'), 'labq:c1-batch');
   assert.equal(quarantinedSource('UPPER'), 'labq:upper');
@@ -825,6 +829,164 @@ test('§17.7 decision 86: the reader finds a row v1’s OWN quarantine ingest ju
   // And it is found by the BOUND source, not by a label that happens to match.
   const byBareLabel = await db.query(STAGED_IDS_SQL, [labLabel(label)]);
   assert.equal(byBareLabel.length, 0, 'the bare label matches nothing — which is what the bug did');
+  await db.close();
+});
+
+/**
+ * DECISION 87 — every inferred statement is exercised against a REAL table at least once, with a
+ * fixture written by the production writer.
+ *
+ * ⚠️ THIS IS THE RULE DECISION 86 BOUGHT. `WHERE source = '<label>'` reached production because
+ * every corpus test injected its read: the statements were asserted as STRINGS and never executed.
+ * A string assertion can only check what its author already believed. Running the statement can
+ * check what the data actually is.
+ */
+async function corpusFixture(): Promise<{ db: Db; ids: number[]; source: string; label: string }> {
+  const db = await embedded();
+  // v1's own column list and types, `visible boolean NOT NULL` as production has it. `embedding` is
+  // text here for one reason, stated in the decision 86 test: PGlite 0.5.8 ships no vector.
+  await db.exec(`CREATE TABLE mksap_chunks (
+    id bigserial PRIMARY KEY, source text, book text NOT NULL, chapter text, section text,
+    item_number text, chunk_type text, text text NOT NULL, text_hash text NOT NULL,
+    embedding text NOT NULL, token_count integer, visible boolean NOT NULL,
+    citation_url text, citation_doi text, citation_pmid text, source_release_year integer,
+    license_status text, provenance text, text_tsv tsvector,
+    UNIQUE (book, text_hash))`);
+  const label = 'c87-batch';
+  const source = quarantinedSource(label);
+  const insert = CORPUS_QUARANTINE_INSERT_SQL.replace('$9::vector', '$9');
+  const ids: number[] = [];
+  for (const [i, text] of [
+    'Early antibiotics in suspected sepsis reduce mortality when given within one hour.',
+    'Routine preoperative chest radiography is not indicated in asymptomatic adults.',
+  ].entries()) {
+    const r = await db.query<{ id: string }>(insert, [
+      source, 'Even Protocols', i === 0 ? 'Sepsis' : 'Preoperative', 'lab', String(i + 1), 'note',
+      text, `hash-c87-${i}`, '[0.1,0.2]', 40, null, null, null, null, null, null,
+    ]);
+    ids.push(Number(r[0].id));
+  }
+  // One SERVABLE row in the same book, so the overlap read has something real to find.
+  await db.query(insert.replace(', false,', ', true,'), [
+    'choosing-wisely', 'Even Protocols', 'Sepsis', 'ref', '1', 'note',
+    // Shares the query's terms, so the real bm25 leg has something to rank.
+    'Sepsis antibiotics: a servable passage in the same book and chapter as the staged batch.',
+    'hash-c87-visible', '[0.3,0.4]', 30, null, null, null, null, null, null,
+  ]);
+  await db.exec(`UPDATE mksap_chunks SET text_tsv = to_tsvector('english', text)`);
+  return { db, ids, source, label };
+}
+
+test('§17.7 decision 87: every corpus statement runs against a real table, on a v1-written fixture', async () => {
+  const { db, ids, source, label } = await corpusFixture();
+  const q = async <T,>(statement: string, params: unknown[] = []) => db.query(statement, params) as Promise<T[]>;
+
+  // 1. the staged ids — the statement decision 86 fixed
+  assert.deepEqual((await q<{ id: string }>(STAGED_IDS_SQL, [source])).map((r) => Number(r.id)), ids);
+  // 2. the staged batch, with the derived columns corpus_validate reads
+  const chunks = await q<Record<string, unknown>>(STAGED_CHUNKS_SQL, [source]);
+  assert.equal(chunks.length, 2);
+  assert.equal(chunks[0].has_embedding, true);
+  assert.equal(chunks[0].has_tsv, true, 'to_tsvector ran, and the statement can see it');
+  assert.equal(chunks[0].visible, false, 'v1 writes quarantined rows invisible');
+  assert.ok(Number(chunks[0].text_chars) > 40);
+  assert.equal(String(chunks[0].preview).length <= 240, true);
+  // 3. the snapshot — required by the impact estimate
+  const max = await q<{ max_chunk_id: string }>(MAX_CHUNK_ID_SQL);
+  assert.equal(Number(max[0].max_chunk_id), Math.max(...ids) + 1, 'the servable row is the newest');
+  // 4. the servable counts — the statement that actually blew the deadline on production
+  const vis = await q<Record<string, unknown>>(VISIBLE_SUMMARY_SQL);
+  assert.equal(Number(vis[0].visible_chunks), 1, 'only the servable row; the two quarantined ones are excluded');
+  assert.equal(Number(vis[0].visible_sources), 1);
+  // 5. the overlap — bound to BOOKS, and it finds the servable twin
+  const overlap = await q<Record<string, unknown>>(OVERLAP_SQL, [['Even Protocols']]);
+  assert.equal(overlap.length, 1);
+  assert.equal(overlap[0].book, 'Even Protocols');
+  assert.equal(overlap[0].chapter, 'Sepsis');
+  assert.equal(Number(overlap[0].visible_chunks), 1);
+  // and a book the batch does not touch finds nothing
+  assert.deepEqual(await q(OVERLAP_SQL, [['Some Other Book']]), []);
+  // 6. the predecessor state
+  const state = await q<Record<string, unknown>>(CHUNK_STATE_SQL(ids));
+  assert.deepEqual(state.map((r) => Number(r.id)), ids);
+  assert.ok(state.every((r) => r.source === source && r.visible === false));
+  // 7. pg_trgm — absent here as it is on production, which is decision 83's whole case
+  const trgm = await q<{ installed: boolean }>(PG_TRGM_SQL);
+  assert.equal(trgm[0].installed, false);
+  // 8. the bm25 candidate leg — production's own builder, run for real
+  const bm25 = candidateLegs(null, Math.max(...ids) + 1).bm25;
+  const hits = await q<{ id: string; rank: string }>(bm25.sql, ['sepsis antibiotics', ...bm25.params]);
+  assert.ok(hits.length >= 1, 'the servable row is reachable by the real bm25 leg');
+  assert.ok(!hits.some((h) => ids.includes(Number(h.id))), 'and the quarantined rows are NOT');
+  // 9. side B admits exactly the named batch, through production's own seam
+  const legB = candidateLegs(label, Math.max(...ids) + 1).bm25;
+  const hitsB = await q<{ id: string }>(legB.sql, ['sepsis antibiotics', ...legB.params]);
+  assert.ok(hitsB.some((h) => ids.includes(Number(h.id))), 'side B sees the staged batch');
+
+  // 10. THE ONE WRITE (decision 80a), against a real table.
+  const { deactivateIds: flip } = await import('../releases/corpus-writer');
+  await db.query(`UPDATE mksap_chunks SET source = $1, visible = true WHERE id = ANY($2)`, [`lab:${label}`, ids]);
+  const back = await flip(label, ids, { run: (async (st: string, p: unknown[]) => db.query(st, p)) as never });
+  assert.deepEqual(back.ids.sort((a, b) => a - b), ids);
+  const after = await q<Record<string, unknown>>(CHUNK_STATE_SQL(ids));
+  assert.ok(after.every((r) => r.source === source && r.visible === false),
+    'the inverse returns BOTH flags, on exactly those ids');
+  await db.close();
+});
+
+test('§17.7 decision 88: a count that exceeds the deadline is SKIPPED, and the impact still returns', async () => {
+  const { db, label } = await corpusFixture();
+  /**
+   * ⚠️ MEASURED ON PRODUCTION, 06 Sep 2026, before anything was changed: `count(DISTINCT source)`
+   * over 2,247,994 servable rows takes 30,527 ms and `count(*)` 14,223 ms, against a 15 s deadline.
+   * `max(id)` is 178 ms and the overlap read is 57 ms. Decision 88 attributes the timeout to the
+   * overlap; it is the counts. Both degrade now, and neither takes the tool down with it.
+   */
+  const slow = new LabError('SOURCE_UNAVAILABLE', 'mksap_chunks exceeded the 15000 ms read deadline');
+  const read = (async <T,>(_s: string, statement: string, params: unknown[] = []): Promise<T[]> => {
+    if (statement === VISIBLE_SUMMARY_SQL || statement === OVERLAP_SQL) throw slow;
+    return db.query(statement, params) as Promise<T[]>;
+  }) as never;
+  const out = await corpusDiff(db, { label, queries: ['sepsis antibiotics'], k: 3 }, { read, embed: async () => [0.1, 0.2] });
+
+  assert.equal(out.visible_status, 'skipped');
+  assert.equal(out.overlap_status, 'skipped');
+  // ⚠️ NULL, NEVER ZERO. A zero here would read as "the corpus is empty".
+  assert.equal(out.visible.chunks, null);
+  assert.equal(out.visible.sources, null);
+  assert.deepEqual(out.overlap, []);
+  assert.match(String(out.skipped_detail!.visible), /^skipped: /);
+  assert.match(String(out.skipped_detail!.overlap), /15000 ms/);
+  // The parts that matter still came back.
+  assert.ok(out.visible.max_chunk_id > 0, 'the snapshot is required and is its own fast statement');
+  assert.equal(out.staged.chunks, 2);
+  assert.equal(out.impact.model_calls, 0);
+  assert.equal(out.impact.queries, 1);
+  assert.equal(out.impact.snapshot_max_chunk_id, out.visible.max_chunk_id);
+  await db.close();
+});
+
+test('§17.7 decision 88: the overlap is keyed to the staged books and filtered to the staged pairs', async () => {
+  const { db, label } = await corpusFixture();
+  let boundTo: unknown = null;
+  const read = (async <T,>(_s: string, statement: string, params: unknown[] = []): Promise<T[]> => {
+    if (statement === OVERLAP_SQL) {
+      boundTo = params[0];
+      // The same book, a DIFFERENT chapter: indexable by book, and not a pair the batch has.
+      return [
+        { book: 'Even Protocols', chapter: 'Sepsis', visible_chunks: '1' },
+        { book: 'Even Protocols', chapter: 'Cardiology', visible_chunks: '900' },
+      ] as unknown as T[];
+    }
+    return db.query(statement, params) as Promise<T[]>;
+  }) as never;
+  const out = await corpusDiff(db, { label, queries: ['sepsis'], k: 3 }, { read, embed: async () => [0.1, 0.2] });
+  assert.deepEqual(boundTo, ['Even Protocols'], 'bound by BOOK — the column that has an index');
+  // ⚠️ The pair filter is what keeps the answer exact: `Cardiology` is the same book and is not a
+  // chapter this batch stages, so it is not overlap.
+  assert.deepEqual(out.overlap, [{ book: 'Even Protocols', chapter: 'Sepsis', visible_chunks: 1 }]);
+  assert.equal(out.overlap_status, 'ok');
+  assert.equal(out.skipped_detail, null);
   await db.close();
 });
 
