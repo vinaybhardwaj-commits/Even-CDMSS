@@ -226,7 +226,11 @@ test('§17.3: engine_describe reports all six supported, with conditional marks 
 
 test('§17.3: an engine with no adapter is still supported:false with a reason', async () => {
   const db = await freshDb();
-  const out = await callTool(deps(db), 'engine_describe', { engine: 'readmission' }) as { supported: boolean; reason: string | null; stages: unknown[] };
+  // ⚠️ RULE 1a, §17.8 DECISION 103 AND ITEM 4. This asked about `readmission`, which round D1 wired
+  // — so the EXAMPLE moved and the assertion did not. `ipd_discharge` is the engine decision 103
+  // deliberately holds back for slice D2 (a compute.ts-sized extraction, 22 guard sites), so it is
+  // the one that still proves the rule: no adapter, unsupported, and a reason that says which slice.
+  const out = await callTool(deps(db), 'engine_describe', { engine: 'ipd_discharge' }) as { supported: boolean; reason: string | null; stages: unknown[] };
   assert.equal(out.supported, false);
   assert.match(out.reason ?? '', /slice D/);
   assert.deepEqual(out.stages, []);
@@ -239,8 +243,13 @@ test('§17.3: SUPPORTED_ENGINES and the adapter registry agree', () => {
   // lab-v2 decision 47 (§17.5): the seventh engine. ipd_episode could not be adapted at all until
   // its pipeline moved into lib/ipd-episode/compute.ts, because its first stage was a db13 read
   // through a module import and lib/metabase.ts:115 throws on that inside the fence.
-  assert.equal(registered.length, 7);
+  // ⚠️ RULE 1a, §17.8 DECISION 103 AND ITEM 4 — 7 → 9. `readmission` and `preop` are the eighth
+  // and ninth; `ipd_discharge` stays out until D2, which is what keeps this a count and not a
+  // rubber stamp: SUPPORTED_ENGINES and the registry must still disagree with ENGINE_IDS.
+  assert.equal(registered.length, 9);
   assert.ok(registered.includes('ipd_episode'), 'the extracted IPD pipeline is a registered engine');
+  assert.ok(registered.includes('readmission') && registered.includes('preop'), 'the two Slice D1 engines');
+  assert.ok(!registered.includes('ipd_discharge'), 'and the one decision 103 holds back for D2');
   for (const e of SUPPORTED_ENGINES) assert.ok(ENGINE_STAGES[e], `${e} must declare stages`);
 });
 

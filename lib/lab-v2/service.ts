@@ -20,8 +20,10 @@ import type { Db } from './db';
 import {
   LabError, RUN_DEADLINE_MS, SCOPES_BY_PRINCIPAL, SUPPORTED_ENGINES, ENGINE_SLICE, PROVIDERS, stagesFor,
   armBodySchema, datasetBodySchema, experimentBodySchema, hash, toolSchemas,
-  type Principal, type Scope, type ToolName,
+  type Principal, type Scope, type ToolName, IDENTIFYING_PRINCIPALS_ENV, ENGINE_IDS, type EngineId,
 } from './contracts';
+// §17.8 decision 105 — the data_scope gate lives beside the keys, not beside the tools.
+import { dataScopeFor, identifyingPrincipals, mayUseIdentifyingInput } from '../mcp-v2/auth';
 import { PRICING_VERSION, isSupportedModel, modelsFor } from './pricing';
 import { BY_NAME, visibleTools } from './registry';
 import {
@@ -132,6 +134,28 @@ const SCHEMAS: Record<string, SchemaPair> = {
 
 function scopesOf(principal: Principal): readonly Scope[] { return SCOPES_BY_PRINCIPAL[principal]; }
 
+/**
+ * §17.8 DECISION 105 — does THIS CALL carry an identifier, as opposed to could this tool ever.
+ *
+ * ⚠️ THE TOOL FLAG ALONE WOULD HAVE BEEN FAR TOO BLUNT, and the first run of the suite proved it:
+ * `dataset_create` is the one tool that takes a body, so marking it closed `dataset_create` for the
+ * research key on every engine — including the seven de-identified ones it exists to serve. That is
+ * not what decision 105 says and it is not what decision 101 says either: 101's words are that
+ * `requiresIdentifyingInput` is true for the three D engines *"so dataset_create fails closed for a
+ * principal without data_scope"*. The engine is the discriminator.
+ *
+ * ⚠️ AND AN ABSENT OR UNKNOWN ENGINE FAILS CLOSED. A call to a tool that CAN carry an identifier,
+ * naming no engine this platform recognises, is refused rather than waved through: the alternative
+ * is that a typo becomes a bypass.
+ */
+export function callCarriesIdentifyingInput(rawArgs: unknown): boolean {
+  const engine = (rawArgs && typeof rawArgs === 'object')
+    ? String((rawArgs as Record<string, unknown>).engine ?? '') : '';
+  if (!engine) return true;
+  if (!(ENGINE_IDS as readonly string[]).includes(engine)) return true;
+  return requiresIdentifyingInput(engine as EngineId);
+}
+
 /** §13 — a tool call carrying a `principal` or `reviewer` field has it IGNORED. */
 function stripIdentityFields(args: Record<string, unknown>): Record<string, unknown> {
   const { principal: _p, reviewer: _r, owner: _o, ...rest } = args;
@@ -146,6 +170,25 @@ export async function callTool(deps: ServiceDeps, name: string, rawArgs: unknown
   // this branch is a hidden tool being probed by name.
   if (!spec || !spec.scopes.some((s) => scopes.includes(s))) {
     throw new LabError('SCOPE_DENIED', `principal '${deps.principal}' may not call '${name}'`);
+  }
+  /**
+   * §17.8 DECISION 105 — BEFORE THE HANDLER, AND BEFORE THE INPUT IS EVEN PARSED.
+   *
+   * ⚠️ THE ORDER IS THE POINT. Parsing first would mean a refused caller had already had its
+   * identifier read into this process and, on a schema error, echoed back inside a validation
+   * message. The refusal names the PRINCIPAL and the env list and never the field it was carrying.
+   *
+   * ⚠️ AND THE ERROR IS `CLASSIFICATION_REQUIRED`, NOT `SCOPE_DENIED`, because the two are
+   * different facts and a reader has to be able to tell them apart: the key HAS the scope to call
+   * this tool and is missing the data-scope attribute, which is fixed by an env list rather than by
+   * a different key.
+   */
+  if (spec.identifying_input && callCarriesIdentifyingInput(rawArgs) && !mayUseIdentifyingInput(deps.principal)) {
+    throw new LabError('CLASSIFICATION_REQUIRED',
+      `'${name}' for engine '${String((rawArgs as Record<string, unknown> | null)?.engine ?? 'unknown')}' `
+      + `is sent an identifier that resolves to a person, and principal '${deps.principal}' has `
+      + `data_scope 'deidentified'. It needs production_read and its name in `
+      + `${IDENTIFYING_PRINCIPALS_ENV}; 'research' can never be on that list (decision 105).`);
   }
   const args = stripIdentityFields((rawArgs ?? {}) as Record<string, unknown>);
   const parsed = SCHEMAS[spec.name].input.safeParse(args) as unknown as { success: boolean; data?: unknown; error?: { issues: { path: (string | number)[]; message: string }[] } };
@@ -206,8 +249,14 @@ const HANDLERS: Record<ToolName, Handler> = {
     return {
       principal: deps.principal,
       scopes: [...scopes],
+      // §17.8 decision 105 — this principal's data scope, and the whole list beside it. A caller
+      // refused CLASSIFICATION_REQUIRED should be able to see, in one call, both that its own
+      // scope is 'deidentified' and which principal V actually granted the attribute to.
+      data_scope: dataScopeFor(deps.principal),
+      identifying_principals: [...identifyingPrincipals()],
       tools: visibleTools(scopes).map((s) => ({
         name: s.name, effect: s.effect, cost_class: s.cost_class, classification: s.classification, slice: s.slice,
+        identifying_input: s.identifying_input === true,
       })),
       protocol_version: deps.protocolVersion,
       sdk_version: deps.sdkVersion,
@@ -219,17 +268,26 @@ const HANDLERS: Record<ToolName, Handler> = {
   async engine_describe(_deps, args) {
     const engine = String(args.engine) as (typeof SUPPORTED_ENGINES)[number];
     const adapter = ALL_ADAPTERS()[engine];
-    // DECISION 34 — an engine that cannot run without an identifying field is not supported here,
-    // whatever its adapter can do. None of the six is in that position; the check is the gate,
-    // not a formality, and it fails closed if a future engine's field list gains one.
-    const identifyingBlocked = requiresIdentifyingInput(engine);
-    const supported = SUPPORTED_ENGINES.includes(engine) && !!adapter && !identifyingBlocked;
+    /**
+     * §17.8 DECISION 105 REPLACES DECISION 34's RULE HERE, and the change is deliberate.
+     *
+     * Under decision 34 an engine that could not run without an identifying field was UNSUPPORTED,
+     * whatever its adapter could do — the only tool available then was a blanket refusal. Decision
+     * 105 gives the platform a finer instrument: such an engine is supported, and the TOOLS that
+     * can be handed its identifier are marked `identifying_input` and gated on `production_read`
+     * plus the env list. So `identifyingBlocked` stops deciding support and starts being reported.
+     *
+     * ⚠️ IT IS STILL REPORTED, PROMINENTLY. A caller that reads `supported: true` and sends a
+     * `dedup_key` from the research key gets `CLASSIFICATION_REQUIRED` from `callTool`; telling it
+     * up front which engines will do that is the difference between a gate and a trap.
+     */
+    const identifyingInput = requiresIdentifyingInput(engine);
+    const supported = SUPPORTED_ENGINES.includes(engine) && !!adapter;
     return {
       engine,
       supported,
-      reason: supported ? null
-        : identifyingBlocked ? 'requires identifying input until Slice D'
-        : `not wired yet; arrives in slice ${ENGINE_SLICE[engine] ?? '?'}`,
+      identifying_input: identifyingInput,
+      reason: supported ? null : `not wired yet; arrives in slice ${ENGINE_SLICE[engine] ?? '?'}`,
       slice: ENGINE_SLICE[engine],
       // §35a — listed WITH the conditional mark, so a caller knows what it must price and what
       // may legitimately never fire.

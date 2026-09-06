@@ -50,6 +50,19 @@ export interface ToolSpec {
   scopes: readonly Scope[];
   effect: Effect;
   classification: Classification;
+  /**
+   * §17.8 DECISION 105 — this tool may be sent an identifier that resolves to a person.
+   *
+   * ⚠️ IT IS A PROPERTY OF THE TOOL, NOT OF THE ENGINE, and the difference matters. `dataset_create`
+   * is the one round-1 tool that takes a body, so it is the one that can carry a `dedup_key` or an
+   * `episodeKey`; `run_status` on a readmission run carries none and stays open to every principal
+   * that can read research. Marking the engine would have closed tools that never see an id.
+   *
+   * ⚠️ AND ABSENT MEANS FALSE, NOT UNKNOWN. Every tool declared before D1 is de-identified input by
+   * construction — `freezeRequestCase` refuses an identifying key outright — so the default is the
+   * safe one and a new tool has to say so deliberately.
+   */
+  identifying_input?: boolean;
   cost_class: CostClass;
   slice: string;
 }
@@ -232,7 +245,16 @@ export const REGISTRY: readonly ToolSpec[] = [
   t('worker_status', 'The worker row, its active item and its last heartbeat.', ['production_read'], 'read'),
   t('worker_control', 'Pause or resume the tick worker. Pausing stops new claims; items already running finish.', ['production_write'], 'production_write'),
   // ── datasets ──────────────────────────────────────────────────────────────────────
-  t('dataset_create', 'Freeze one OPD note and its inputs (note text and structured fields, specialty, complexity, LVC rule snapshot) into an immutable, hashed, de-identified dataset object.', ['research_write'], 'research_write'),
+  {
+    /**
+     * §17.8 DECISION 105 — the one round-1 tool that takes a request body, and therefore the one
+     * that can be handed an identifier. Marked here rather than in `t()` because it is the only
+     * entry that needs it, and a fourth parameter on `t()` used once would be a parameter every
+     * future reader has to check the value of on fifteen calls.
+     */
+    ...t('dataset_create', 'Freeze one case and its inputs into an immutable, hashed, de-identified dataset object. For the Slice D engines the identifying input (a dedup_key, an episodeKey) is used to READ the case and is never stored: the object carries a salted member_key and no id column (decisions 99 and 104), and the tool is open only to a principal with data_scope identifying.', ['research_write'], 'research_write'),
+    identifying_input: true,
+  },
   t('dataset_preview', 'Dataset metadata and case keys. Never the frozen clinical text.', ['research_read'], 'read'),
   t('dataset_validate', 'Re-read each case from its live source and report whether the frozen inputs still match.', ['research_read'], 'read'),
   // ── experiments ───────────────────────────────────────────────────────────────────

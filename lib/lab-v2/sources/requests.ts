@@ -27,9 +27,32 @@ import { LabError, type EngineId } from '../contracts';
  * A key that names or resolves to a person. Deliberately broad and deliberately about the KEY,
  * not the value: a value-level PHI detector would be a guess, and decision 34 says do not guess
  * at de-identification. A body that legitimately needs one of these belongs in Slice D.
+ *
+ * ⚠️ DECISION 101 — TEN KEYS IT DID NOT CATCH, AND THEY WERE THE ONES SLICE D RUNS ON.
+ * Measured by the Slice D survey on `c0f59fd0`: `memberId`, `member_id`, `encounter_id` and
+ * `uhid` matched, and `documentId`, `document_id`, `ipUid`, `ip_uid`, `dedup_key`, `dedupKey`,
+ * `episodeKey`, `episode_key`, `individualUid` and `individual_uid` did NOT. So
+ * `freezeRequestCase` would have accepted a body carrying a discharge document id, a
+ * readmission pair key or a surgery episode key and stored it in a de-identified research
+ * object, for ever. That is exactly the hole §3.3 exists to close, and it was live.
+ *
+ * What was added, and why each is identifying:
+ *   · `document|dedup` joined the `encounter|consult|visit|admission|episode|prescription`
+ *     alternation, which also gained `key` as a suffix — `episodeKey` is the `surgery_cases`
+ *     document id and resolves to a member and a UHID; `dedup_key` keys a pair of encounters
+ *     that resolve to one member; `documentId` resolves to an `ipUid` and a `memberId`.
+ *   · `individual` joined the `member|patient|person|…` alternation: `individualUid` is db13's
+ *     own person key.
+ *   · `ip_?uid` is its own alternative because `ipUid` fits no `<thing>_<suffix>` shape — the
+ *     whole key is the identifier.
+ *
+ * ⚠️ `key` AS A SUFFIX IS DELIBERATELY NARROW. It was added to the encounter/episode group and
+ * NOT to the person group, which already had it. A bare `key` or a `case_key` is not matched,
+ * and must not be: `case_key` is this platform's own de-identified handle and appears on every
+ * frozen case.
  */
 const IDENTIFYING_KEY =
-  /^(.*_)?(member|patient|person|subject|doctor|clinician|provider)_?(id|uid|uuid|key|no|number)$|^(uhid|mrn|nric|aadhaar|ssn)$|^(.*_)?(encounter|consult|visit|admission|episode|prescription)_?(id|uid|no)$|^(.*_)?(name|full_?name|first_?name|last_?name|surname)$|^(.*_)?(phone|mobile|msisdn|email|address|dob|date_?of_?birth)$/i;
+  /^(.*_)?(member|patient|person|subject|doctor|clinician|provider|individual)_?(id|uid|uuid|key|no|number)$|^(uhid|mrn|nric|aadhaar|ssn)$|^(.*_)?(encounter|consult|visit|admission|episode|prescription|document|dedup)_?(id|uid|no|key)$|^ip_?uid$|^(.*_)?(name|full_?name|first_?name|last_?name|surname)$|^(.*_)?(phone|mobile|msisdn|email|address|dob|date_?of_?birth)$/i;
 
 /** Every key in a body, at every depth. Arrays are walked; their indices are not keys. */
 export function allKeys(value: unknown, out: string[] = [], depth = 0): string[] {
@@ -126,13 +149,51 @@ export const REQUEST_FIELDS: Partial<Record<EngineId, readonly RequestField[]>> 
     { name: 'extracted.verbatimSections', identifying: false, note: 'copied clinical blocks, de-identified upstream' },
     { name: 'providerOverride', identifying: false },
   ],
+  /**
+   * ⚠️ DECISION 101 — THE THREE SLICE D ENGINES, DECLARED SO THEY FAIL CLOSED.
+   *
+   * Each of these engines is a cron sweep keyed on an identifier and none of them can run
+   * without one (Slice D survey, §3–§5). Declaring the key `identifying: true` makes
+   * `requiresIdentifyingInput` true, which is what `dataset_create` and the decision 105 check
+   * read. The entries are the fields the HANDLERS actually read, taken from the survey's route
+   * tables, not a guess at what they might want.
+   *
+   * ⚠️ AND THE NON-IDENTIFYING FIELDS ARE LISTED TOO. A list of only the dangerous fields would
+   * be a list nobody could check: `engine_describe` reports this, and the evidence decision 34
+   * asks for is the WHOLE read set, including the parts that are fine.
+   */
+  ipd_discharge: [
+    { name: 'documentId', identifying: true, note: 'resolves to ipUid and memberId (app/api/admin/ipd-audit-now/route.ts:42)' },
+    { name: 'ipUid', identifying: true, note: 'the inpatient episode key' },
+    { name: 'memberId', identifying: true },
+    { name: 'pdfUrl', identifying: true, note: 'points at one person’s discharge PDF' },
+  ],
+  readmission: [
+    { name: 'dedup_key', identifying: true, note: 'keys the index/readmit encounter pair, which resolves to one member' },
+    { name: 'question', identifying: false, note: 'free clinical text on the ask route; not an identifier' },
+    { name: 'lane', identifying: false },
+    { name: 'day', identifying: false, note: 'the IST day of the readmit admission — a window, not a person' },
+  ],
+  preop: [
+    { name: 'episodeKey', identifying: true, note: 'the surgery_cases document id; resolves to a member and a UHID' },
+    { name: 'horizon', identifying: false },
+    { name: 'rails', identifying: false },
+    { name: 'dry_run', identifying: false },
+  ],
 };
 
 export function requestFieldsFor(engine: EngineId): readonly RequestField[] {
   return REQUEST_FIELDS[engine] ?? [];
 }
 
-/** True when the engine cannot run at all without an identifying field (§34). None of the five. */
+/**
+ * True when the engine cannot run at all without an identifying field (§34).
+ *
+ * ⚠️ DECISION 105 CHANGED WHAT THIS MEANS, NOT WHAT IT COMPUTES. Under decision 34 a true here
+ * made the engine UNSUPPORTED. Under 105 it makes the engine's tools `identifying_input`, which
+ * requires `production_read` AND a principal on `LAB_V2_IDENTIFYING_PRINCIPALS`. The three
+ * Slice D engines are true; the seven before them are false, and a test asserts that.
+ */
 export function requiresIdentifyingInput(engine: EngineId): boolean {
   return requestFieldsFor(engine).some((f) => f.identifying);
 }

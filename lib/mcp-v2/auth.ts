@@ -17,7 +17,11 @@
  * cannot reach v2's write tools.
  */
 import { timingSafeEqual } from 'crypto';
-import { KEY_ENV_BY_PRINCIPAL, PRINCIPALS, SCOPES_BY_PRINCIPAL, type Principal, type Scope } from '../lab-v2/contracts';
+import {
+  IDENTIFYING_PRINCIPALS_ENV, KEY_ENV_BY_PRINCIPAL, NEVER_IDENTIFYING, PRINCIPALS,
+  SCOPES_BY_PRINCIPAL, type DataScope, type Principal, type Scope,
+} from '../lab-v2/contracts';
+import { LabError } from '../lab-execution-context';
 
 function safeEq(a: string, b: string): boolean {
   const ab = Buffer.from(a);
@@ -52,4 +56,61 @@ export function principalFor(presented: string | null | undefined): Principal | 
 
 export function scopesFor(principal: Principal): readonly Scope[] {
   return SCOPES_BY_PRINCIPAL[principal];
+}
+
+// ── §17.8 DECISION 105 — data_scope ──────────────────────────────────────────────────
+
+/**
+ * The principals allowed to send an identifying input, from `LAB_V2_IDENTIFYING_PRINCIPALS`.
+ *
+ * ⚠️ READ ON EVERY CALL, NOT CACHED AT MODULE LOAD. "Refuses `research` at load" is about the
+ * moment the list is READ, and on Vercel a module's top-level code runs once per cold start
+ * while the environment can change between deployments. Reading per call means a deployment that
+ * adds `research` is refused by the very next request rather than by whichever instance happens
+ * to restart, and it makes the function testable without module cache games.
+ *
+ * ⚠️ AND AN UNKNOWN NAME IS REFUSED TOO. A typo — `operater`, `ops` — would otherwise grant
+ * nothing and look exactly like a correctly-empty list, so the deployment would silently not
+ * work and nobody would know which of the two it was.
+ *
+ * @throws LabError CLASSIFICATION_REQUIRED when the list names `research`, or a name that is not
+ *         a principal at all.
+ */
+export function identifyingPrincipals(env: Record<string, string | undefined> = process.env): readonly Principal[] {
+  const raw = env[IDENTIFYING_PRINCIPALS_ENV];
+  if (!raw || !raw.trim()) return [];
+  const names = raw.split(',').map((n) => n.trim()).filter((n) => n.length > 0);
+  const out: Principal[] = [];
+  for (const name of names) {
+    if ((NEVER_IDENTIFYING as readonly string[]).includes(name)) {
+      throw new LabError('CLASSIFICATION_REQUIRED',
+        `${IDENTIFYING_PRINCIPALS_ENV} names '${name}', which may never hold data_scope 'identifying': `
+        + 'the research key exists to be handed to people who analyse de-identified data, and this '
+        + 'platform\u2019s guarantee is that it cannot reach a person. Remove it from the list.');
+    }
+    if (!(PRINCIPALS as readonly string[]).includes(name)) {
+      throw new LabError('CLASSIFICATION_REQUIRED',
+        `${IDENTIFYING_PRINCIPALS_ENV} names '${name}', which is not a principal. `
+        + `The four are ${PRINCIPALS.join(', ')}. A typo here grants nothing and looks exactly like an empty list.`);
+    }
+    if (!out.includes(name as Principal)) out.push(name as Principal);
+  }
+  return out;
+}
+
+/** §17.8 decision 105 — one principal's data scope. `identifying` only by being on the list. */
+export function dataScopeFor(principal: Principal, env: Record<string, string | undefined> = process.env): DataScope {
+  return identifyingPrincipals(env).includes(principal) ? 'identifying' : 'deidentified';
+}
+
+/**
+ * The decision 105 gate, in one place so `service.ts` and `system_capabilities` cannot disagree.
+ *
+ * ⚠️ BOTH CONDITIONS, AND `production_read` IS THE ONE THAT IS NOT ABOUT THE LIST. A principal on
+ * the list that could not already read production would be being granted something new by an env
+ * variable, which is precisely the "header a client can set to claim a role" that decision 5 exists
+ * to prevent. The list narrows an existing authority; it never widens one.
+ */
+export function mayUseIdentifyingInput(principal: Principal, env: Record<string, string | undefined> = process.env): boolean {
+  return scopesFor(principal).includes('production_read') && dataScopeFor(principal, env) === 'identifying';
 }

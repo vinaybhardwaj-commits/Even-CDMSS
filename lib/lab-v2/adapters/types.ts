@@ -314,6 +314,11 @@ export function allAdapters(): Record<string, Adapter> {
   // route engines are: this module's types are imported by the observation tools, which must not
   // drag the IPD pipeline and its prompts into their module graph.
   const { makeIpdEpisodeAdapter } = require('./ipd-episode') as typeof import('./ipd-episode');
+  // §17.8 round D1 — the eighth and ninth. Lazily required for the same reason as the rest, and
+  // with one more: both drag a whole clinical engine's module graph, and `readmission/run.ts`
+  // carries a source-text sha pin that nothing here may disturb.
+  const { makeReadmissionAdapter } = require('./readmission') as typeof import('./readmission');
+  const { makePreopAdapter } = require('./preop') as typeof import('./preop');
   /* eslint-enable @typescript-eslint/no-require-imports */
   return {
     opd_note_audit: opdAdapter,
@@ -323,6 +328,8 @@ export function allAdapters(): Record<string, Adapter> {
     appropriateness: makeAppropriatenessAdapter(),
     pathway: makePathwayAdapter(),
     doc_audit: makeDocAuditAdapter(),
+    readmission: makeReadmissionAdapter(),
+    preop: makePreopAdapter(),
   };
 }
 

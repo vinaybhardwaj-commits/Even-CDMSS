@@ -40,6 +40,29 @@ export const SCOPES_BY_PRINCIPAL: Record<Principal, readonly Scope[]> = {
   release: ['release', 'production_read'],
 };
 
+/**
+ * §17.8 DECISION 105 — `data_scope`, the one attribute that lets a principal send an identifier.
+ *
+ * ⚠️ IT IS NOT A SCOPE AND NOT A KEY, DELIBERATELY. A fifth scope would have had to be granted
+ * by a fifth env key, and a fifth key is a fifth thing to rotate and to leak. `data_scope` is an
+ * ATTRIBUTE of an existing principal, set by naming that principal in one env list, and it grants
+ * nothing on its own: a tool marked `identifying_input` needs `production_read` AND the attribute,
+ * so the scope table still decides what a key can do and the list only decides what it may SEE.
+ *
+ * ⚠️ AND `research` MAY NEVER HOLD IT. The research key exists to be handed to people who analyse
+ * de-identified data; the whole platform's guarantee is that it cannot reach a person. The loader
+ * refuses the name at load rather than filtering it silently, because a deployment that asked for
+ * something impossible should be told, not quietly corrected.
+ */
+export const DATA_SCOPES = ['deidentified', 'identifying'] as const;
+export type DataScope = (typeof DATA_SCOPES)[number];
+
+/** The env list decision 105 names. Comma-separated principal names, empty by default. */
+export const IDENTIFYING_PRINCIPALS_ENV = 'LAB_V2_IDENTIFYING_PRINCIPALS';
+
+/** The principal this platform will never grant `identifying` to, whatever the env says. */
+export const NEVER_IDENTIFYING: readonly Principal[] = ['research'];
+
 /** §3.1 — one env var per principal. LAB_API_KEY (v1) is deliberately absent. */
 export const KEY_ENV_BY_PRINCIPAL: Record<Principal, string> = {
   research: 'LAB_API_KEY_RESEARCH',
@@ -62,6 +85,17 @@ export const SUPPORTED_ENGINES: readonly EngineId[] = [
   // §17.5 decision 47 — the seventh, and the first whose pipeline had to be extracted before it
   // could run inside the fence at all. lib/ipd-episode/compute.ts.
   'ipd_episode',
+  /**
+   * §17.8 round D1, decisions 103-105 — the first two engines that CANNOT RUN without an
+   * identifying input, and the reason decision 105 exists. Under decision 34 an engine like this
+   * was simply unsupported; under 105 it is supported, its tools are marked `identifying_input`,
+   * and the identifier is used in the request and never written to `lab_v2` (decision 99).
+   *
+   * ⚠️ `ipd_discharge` IS DELIBERATELY ABSENT and stays "not wired yet; arrives in slice D2". Its
+   * extraction is a `compute.ts`-sized one with 22 source-text guard sites and an unfenced
+   * multimodal read (decision 102, fixed this round); decision 103 splits it out for that reason.
+   */
+  'readmission', 'preop',
 ];
 
 /**
@@ -124,6 +158,40 @@ export const ENGINE_STAGES: Partial<Record<EngineId, readonly EngineStage[]>> = 
     { name: 'checkpoint', conditional: false },
     { name: 'divergence', conditional: false },
     { name: 'fidelity', conditional: false },
+  ],
+  /**
+   * §17.8 — `lib/readmission/run.ts:144` (`vertexPass`), the four labels `runReconSequence`
+   * passes at `:452`, `:466`, `:486` and `:494`.
+   *
+   * ⚠️ ALL FOUR ARE CONDITIONAL, AND THAT IS THE HONEST MARKING RATHER THAN A CAUTIOUS ONE.
+   * Exactly one of three paths fires per finding: out-of-network takes `readmit_oon` alone
+   * (decision 13, index side only); lane `other` takes `readmit_condition` and is promoted to the
+   * full pair only on a `same` verdict (decision 9); every other lane takes `readmit_recon_a` then
+   * `readmit_recon_b` (the two-pass money verdict). So no single label fires on every finding,
+   * and §35a still requires every one of them to be PRICED — an arm that priced only the recon
+   * pair would refuse the first out-of-network case it met.
+   *
+   * ⚠️ `readmit_narrative` IS NOT A STAGE OF THIS ENGINE IN D1. Decision 104 puts the narrative
+   * leg (`run.ts:545`) out of scope, and the adapter never reaches it. Pricing a call the engine
+   * cannot make is the decision 11 lesson.
+   */
+  readmission: [
+    { name: 'readmit_oon', conditional: true },
+    { name: 'readmit_condition', conditional: true },
+    { name: 'readmit_recon_a', conditional: true },
+    { name: 'readmit_recon_b', conditional: true },
+  ],
+  /**
+   * §17.8 — `lib/preop/suggest.ts:78` and `lib/preop/narrative.ts:44`.
+   *
+   * ⚠️ BOTH ARE CONDITIONAL BECAUSE BOTH SIT BEHIND FLAGS, and in the lab those flags come from
+   * the ARM, not from the environment (decision 104). With neither enabled a preop tick makes no
+   * model call at all and still produces a tier for every episode — the deterministic score is
+   * the engine, and the two legs are additions to it.
+   */
+  preop: [
+    { name: 'preop_suggest', conditional: true },
+    { name: 'preop_narrative', conditional: true },
   ],
   // lib/doc-audit.ts:199, :309/310, :423, :433, :443.
   doc_audit: [
@@ -413,7 +481,15 @@ export const toolSchemas = {
     output: z.object({
       principal: z.enum(PRINCIPALS),
       scopes: z.array(z.enum(SCOPES)),
-      tools: z.array(z.object({ name: z.string(), effect: z.enum(EFFECTS), cost_class: z.enum(COST_CLASSES), classification: z.enum(CLASSIFICATIONS), slice: z.string() })),
+      /** §17.8 decision 105 — THIS principal's scope, and the whole list, so a caller can see why. */
+      data_scope: z.enum(DATA_SCOPES),
+      identifying_principals: z.array(z.enum(PRINCIPALS)),
+      tools: z.array(z.object({
+        name: z.string(), effect: z.enum(EFFECTS), cost_class: z.enum(COST_CLASSES),
+        classification: z.enum(CLASSIFICATIONS), slice: z.string(),
+        /** §17.8 decision 105 — true when this tool may be sent an identifier. */
+        identifying_input: z.boolean(),
+      })),
       protocol_version: z.string(),
       sdk_version: z.string(),
       lab_v2_enabled: z.boolean(),
@@ -425,6 +501,11 @@ export const toolSchemas = {
     output: z.object({
       engine: z.enum(ENGINE_IDS),
       supported: z.boolean(),
+      /**
+       * §17.8 decision 105 — true when the engine cannot run without an identifying field, so a
+       * caller knows before it sends one which key it will need. It no longer decides `supported`.
+       */
+      identifying_input: z.boolean(),
       /** §34 — set only when supported is false. */
       reason: z.string().nullable(),
       slice: z.string(),

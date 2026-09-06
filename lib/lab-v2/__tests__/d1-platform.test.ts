@@ -1,0 +1,194 @@
+/**
+ * LAB-MCP-V2 §17.8 round D1 — the platform half: `data_scope` (decision 105), the denylist gap
+ * (decision 101), the unfenced document read (decision 102) and the two new engines (item 4).
+ *
+ * ⚠️ TWO OF THESE TEST THINGS THAT WERE LIVE AND WRONG, not things this round designed.
+ * Decision 101's ten keys were accepted by `freezeRequestCase` on `c0f59fd0` and would have been
+ * stored in a de-identified research object; decision 102's `generateFromDocument` would have made
+ * a real, unmetered Vertex call on a patient's discharge PDF from inside a research context. Both
+ * are asserted against the shipped code, not against a description of it.
+ */
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import {
+  ENGINE_STAGES, IDENTIFYING_PRINCIPALS_ENV, LabError, NEVER_IDENTIFYING, SUPPORTED_ENGINES,
+} from '../contracts';
+import { dataScopeFor, identifyingPrincipals, mayUseIdentifyingInput } from '../../mcp-v2/auth';
+import { callCarriesIdentifyingInput } from '../service';
+import { freezeRequestCase, identifyingKeys, requiresIdentifyingInput } from '../sources/requests';
+import { withLabExecution, labExecution } from '../../lab-execution-context';
+import { generateFromDocument } from '../../gemini-multimodal';
+import { ALL_ADAPTERS } from '../adapters/types';
+import { BY_NAME } from '../registry';
+
+const ROOT = process.cwd();
+const EDGES = { chat: async () => ({}), retrieve: async () => ({ hits: [] }), event: () => {} };
+
+// ═════════════════════════════════════════════════════════════════════════════════════
+// DECISION 105 — data_scope
+// ═════════════════════════════════════════════════════════════════════════════════════
+
+test('§17.8 decision 105: the list is empty by default and grants nothing', () => {
+  assert.deepEqual([...identifyingPrincipals({})], []);
+  assert.deepEqual([...identifyingPrincipals({ [IDENTIFYING_PRINCIPALS_ENV]: '' })], []);
+  assert.deepEqual([...identifyingPrincipals({ [IDENTIFYING_PRINCIPALS_ENV]: '   ' })], []);
+  for (const p of ['research', 'operator', 'reviewer', 'release'] as const) {
+    assert.equal(dataScopeFor(p, {}), 'deidentified', `${p} starts de-identified`);
+    assert.equal(mayUseIdentifyingInput(p, {}), false);
+  }
+});
+
+test('§17.8 decision 105: `research` in the list is REFUSED at load, by name', () => {
+  const env = { [IDENTIFYING_PRINCIPALS_ENV]: 'operator,research' };
+  assert.throws(() => identifyingPrincipals(env), (e: LabError) => (
+    e.code === 'CLASSIFICATION_REQUIRED'
+    && e.message.includes('research')
+    && /may never hold data_scope/.test(e.message)
+  ));
+  // ⚠️ REFUSED, NOT FILTERED. A deployment that asked for something impossible is told so; quietly
+  // dropping the name would leave V believing the research key had been granted something.
+  assert.throws(() => dataScopeFor('operator', env));
+  assert.deepEqual([...NEVER_IDENTIFYING], ['research']);
+});
+
+test('§17.8 decision 105: an unknown name is refused too, so a typo is not a silent no-op', () => {
+  assert.throws(() => identifyingPrincipals({ [IDENTIFYING_PRINCIPALS_ENV]: 'operater' }),
+    (e: LabError) => e.code === 'CLASSIFICATION_REQUIRED' && /is not a principal/.test(e.message));
+});
+
+test('§17.8 decision 105: `operator` on the list passes; off it, refused with the name', () => {
+  const on = { [IDENTIFYING_PRINCIPALS_ENV]: 'operator' };
+  assert.deepEqual([...identifyingPrincipals(on)], ['operator']);
+  assert.equal(dataScopeFor('operator', on), 'identifying');
+  assert.equal(mayUseIdentifyingInput('operator', on), true);
+  // ⚠️ BOTH CONDITIONS. `reviewer` holds production_read and is not on the list; `release` holds it
+  // and is not on the list either. The env narrows an existing authority, it never grants one.
+  assert.equal(mayUseIdentifyingInput('reviewer', on), false);
+  assert.equal(dataScopeFor('operator', {}), 'deidentified', 'and off the list it is back to de-identified');
+});
+
+test('§17.8 decision 105: the gate is per CALL, not per tool — a de-identified engine is open', () => {
+  // ⚠️ THE BLUNT VERSION OF THIS CHECK CLOSED dataset_create FOR EVERY ENGINE, and the suite said
+  // so on its first run. Decision 101's words are that the ENGINE decides.
+  assert.equal(callCarriesIdentifyingInput({ engine: 'ask' }), false);
+  assert.equal(callCarriesIdentifyingInput({ engine: 'opd_note_audit' }), false);
+  assert.equal(callCarriesIdentifyingInput({ engine: 'readmission' }), true);
+  assert.equal(callCarriesIdentifyingInput({ engine: 'preop' }), true);
+  assert.equal(callCarriesIdentifyingInput({ engine: 'ipd_discharge' }), true);
+  // Fails closed on absence and on a name this platform does not know.
+  assert.equal(callCarriesIdentifyingInput({}), true);
+  assert.equal(callCarriesIdentifyingInput({ engine: 'not_an_engine' }), true);
+  assert.equal(callCarriesIdentifyingInput(null), true);
+});
+
+test('§17.8 decision 105: dataset_create is the tool that declares identifying_input', () => {
+  assert.equal(BY_NAME.dataset_create.identifying_input, true);
+  // ⚠️ AND IT IS THE ONLY ONE. Every other tool takes ids this platform generated; marking more
+  // would close tools that never see a person and make the flag mean nothing.
+  const marked = Object.values(BY_NAME).filter((s) => s.identifying_input === true).map((s) => s.name);
+  assert.deepEqual(marked, ['dataset_create']);
+});
+
+// ═════════════════════════════════════════════════════════════════════════════════════
+// DECISION 101 — the ten keys
+// ═════════════════════════════════════════════════════════════════════════════════════
+
+const DECISION_101_KEYS = [
+  'documentId', 'document_id', 'ipUid', 'ip_uid', 'dedup_key', 'dedupKey',
+  'episodeKey', 'episode_key', 'individualUid', 'individual_uid',
+] as const;
+
+test('§17.8 decision 101: each of the ten keys, alone in a body, is refused', () => {
+  for (const key of DECISION_101_KEYS) {
+    assert.deepEqual(identifyingKeys({ [key]: 'x' }), [key], `${key} must be on the denylist`);
+    assert.throws(() => freezeRequestCase('ask', { [key]: 'x' }), (e: LabError) => (
+      e.code === 'CLASSIFICATION_REQUIRED' && e.message.includes(key)
+    ), `${key} must be refused by freezeRequestCase`);
+  }
+  // Nested, at depth, and inside an array — the walk was already right and must stay right.
+  assert.deepEqual(identifyingKeys({ a: { b: [{ dedup_key: 1 }] } }), ['dedup_key']);
+});
+
+test('§17.8 decision 101: the four that already matched still match, and the safe ones still do not', () => {
+  for (const key of ['memberId', 'member_id', 'encounter_id', 'uhid']) {
+    assert.deepEqual(identifyingKeys({ [key]: 'x' }), [key]);
+  }
+  // ⚠️ `key` WAS ADDED AS A SUFFIX ONLY TO THE ENCOUNTER GROUP, and this is why. `case_key` is this
+  // platform's own de-identified handle and rides on every frozen case; widening the pattern to a
+  // bare `key` would have refused every dataset the platform has ever made.
+  for (const safe of ['case_key', 'key', 'arm_hash', 'run_id', 'item_id', 'engine', 'question']) {
+    assert.deepEqual(identifyingKeys({ [safe]: 'x' }), [], `${safe} must NOT be on the denylist`);
+  }
+});
+
+test('§17.8 decision 101: the three D engines require identifying input; the seven wired before do not', () => {
+  for (const e of ['ipd_discharge', 'readmission', 'preop'] as const) {
+    assert.equal(requiresIdentifyingInput(e), true, `${e} cannot run without an identifier`);
+  }
+  for (const e of ['opd_note_audit', 'ask', 'ddx', 'appropriateness', 'pathway', 'doc_audit', 'ipd_episode'] as const) {
+    assert.equal(requiresIdentifyingInput(e), false, `${e} must stay open to the research key`);
+  }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════════════
+// DECISION 102 — the unfenced document read
+// ═════════════════════════════════════════════════════════════════════════════════════
+
+test('§17.8 decision 102: generateFromDocument throws LAB_IO_FORBIDDEN inside the fence', async () => {
+  await withLabExecution(EDGES, async () => {
+    await assert.rejects(
+      () => generateFromDocument('sys', 'user', 'YmFzZTY0', 'application/pdf'),
+      (e: LabError) => e instanceof LabError && e.code === 'LAB_IO_FORBIDDEN',
+    );
+  });
+  // ⚠️ AND IT THROWS RATHER THAN RETURNING NULL, even though every caller reads null as
+  // "unreadable". A null would be indistinguishable from a PDF that could not be read, so a lab
+  // run would have produced a case with no extract and scored it.
+  assert.equal(labExecution(), undefined, 'and outside a context it is its ordinary self');
+});
+
+test('§17.8 decision 102: the static isolation list carries all three guarded functions', () => {
+  const guarded: [string, string][] = [
+    ['lib/db.ts', 'production sql inside lab execution'],
+    ['lib/metabase.ts', 'db13 read inside lab execution'],
+    ['lib/gemini-multimodal.ts', 'document read inside lab execution'],
+  ];
+  for (const [file, message] of guarded) {
+    const src = readFileSync(join(ROOT, file), 'utf8');
+    assert.ok(src.includes(`if (labExecution()) throw new LabError('LAB_IO_FORBIDDEN', '${message}')`),
+      `${file} must carry the §7 guard verbatim`);
+  }
+  // The survey's finding, pinned: this was the ONE model path in the three D engines that did not
+  // go through lib/trace.ts. If a fourth appears, it belongs on this list the day it is written.
+  const doc = readFileSync(join(ROOT, 'lib/doc-audit.ts'), 'utf8');
+  assert.ok(doc.includes('generateFromDocument'), 'lib/doc-audit.ts is still the caller the guard protects');
+});
+
+// ═════════════════════════════════════════════════════════════════════════════════════
+// ITEM 4 — the two engines
+// ═════════════════════════════════════════════════════════════════════════════════════
+
+test('§17.8 item 4: readmission and preop are supported, adapted and priced; ipd_discharge is not', () => {
+  for (const e of ['readmission', 'preop'] as const) {
+    assert.ok(SUPPORTED_ENGINES.includes(e), `${e} is supported`);
+    assert.ok(ALL_ADAPTERS()[e], `${e} has an adapter`);
+    assert.ok((ENGINE_STAGES[e] ?? []).length > 0, `${e} declares stages`);
+  }
+  assert.ok(!SUPPORTED_ENGINES.includes('ipd_discharge'), 'decision 103 holds it for D2');
+  assert.ok(!ALL_ADAPTERS().ipd_discharge);
+
+  assert.deepEqual((ENGINE_STAGES.readmission ?? []).map((s) => s.name),
+    ['readmit_oon', 'readmit_condition', 'readmit_recon_a', 'readmit_recon_b']);
+  assert.deepEqual((ENGINE_STAGES.preop ?? []).map((s) => s.name), ['preop_suggest', 'preop_narrative']);
+  // ⚠️ EVERY ONE OF THE SIX IS CONDITIONAL, AND THAT IS THE HONEST MARKING. Exactly one of three
+  // readmission paths fires per finding, and both preop legs sit behind flags. §35a still requires
+  // an arm to price all of them: an arm that priced only the recon pair would refuse the first
+  // out-of-network case it met.
+  for (const e of ['readmission', 'preop'] as const) {
+    for (const st of ENGINE_STAGES[e] ?? []) assert.equal(st.conditional, true, `${e}.${st.name}`);
+  }
+  // Decision 104 — the narrative leg is out of scope for D1, so it is NOT priced.
+  assert.ok(!(ENGINE_STAGES.readmission ?? []).some((s) => s.name === 'readmit_narrative'));
+});

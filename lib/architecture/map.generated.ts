@@ -3469,6 +3469,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "gemini-multimodal",
+    "to": "lab-execution-context",
+    "kind": "value"
+  },
+  {
+    "from": "gemini-multimodal",
     "to": "llm",
     "kind": "value"
   },
@@ -3869,6 +3874,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "lab-v2",
+    "to": "mcp-v2",
+    "kind": "value"
+  },
+  {
+    "from": "lab-v2",
     "to": "metabase",
     "kind": "value"
   },
@@ -3895,6 +3905,31 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "lab-v2",
     "to": "opd-note-audit-core",
+    "kind": "value"
+  },
+  {
+    "from": "lab-v2",
+    "to": "preop",
+    "kind": "value"
+  },
+  {
+    "from": "lab-v2",
+    "to": "preop-tier-core",
+    "kind": "value"
+  },
+  {
+    "from": "lab-v2",
+    "to": "readmission",
+    "kind": "type"
+  },
+  {
+    "from": "lab-v2",
+    "to": "readmission",
+    "kind": "value"
+  },
+  {
+    "from": "lab-v2",
+    "to": "readmission-prompts",
     "kind": "value"
   },
   {
@@ -4285,6 +4320,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "mcp-tools",
     "to": "trace",
+    "kind": "value"
+  },
+  {
+    "from": "mcp-v2",
+    "to": "lab-execution-context",
     "kind": "value"
   },
   {
