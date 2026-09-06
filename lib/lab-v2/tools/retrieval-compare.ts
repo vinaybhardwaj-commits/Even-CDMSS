@@ -158,17 +158,48 @@ export function fuse(legs: { id: number; rank: number }[][], k: number): number[
 /**
  * Spearman's rank correlation over the ids present in BOTH lists.
  *
- * Null under two shared ids, because a correlation computed on one point is not a correlation —
- * and reporting 1.0 for "they both returned the same single chunk" would be the kind of number
- * that gets quoted.
+ * Null under three shared ids, because a correlation computed on two points is not a correlation —
+ * and reporting 1.0 for "they both returned the same two chunks" would be the kind of number that
+ * gets quoted.
+ *
+ * ⚠️ DECISION 98 — THE RANKS ARE THE SHARED IDS' RANKS AMONG THEMSELVES, AND THEY HAVE TO BE.
+ *
+ * As first written this took `ra` and `rb` from each id's position in the FULL top-k list, 0..k−1,
+ * while `n` was the count of SHARED ids. Spearman's `1 − 6Σd²/(n(n²−1))` is derived on the
+ * assumption that both rankings are permutations of the same 1..n; with k = 10 and n = 5 the
+ * numerator ranges over positions up to 9 while the denominator is 120, and the formula simply
+ * stops being bounded. Production returned **−3.35, −1.75 and −0.971, mean −2.02** on three prose
+ * queries — numbers outside [−1, 1] that a reader would take as "strongly anticorrelated" when the
+ * true values are 0, 0.4 and 0.429, i.e. mildly POSITIVE. The sign was wrong, not just the scale.
+ *
+ * So the shared ids are ranked 0..n−1 by their order in `a`, and again 0..n−1 by their order in
+ * `b`, and the same formula is applied to those. Both rankings are then permutations of the same
+ * n values, which is the condition the formula was always asking for.
+ *
+ * ⚠️ AND THE UNSHARED IDS ARE NOT PENALISED HERE, DELIBERATELY. How much the two lists overlap is
+ * `overlap_at_k` and `overlap_pct`; this number answers a different question — of the chunks both
+ * configurations found, do they agree on the ORDER. Folding disagreement about membership into a
+ * correlation about ordering is exactly the conflation that produced −3.35.
+ *
+ * `fuse` returns each id once, so `a` and `b` carry no duplicates; the `seen` guard keeps that an
+ * invariant of this function rather than an assumption about its caller.
  */
 export function rankCorrelation(a: number[], b: number[]): number | null {
-  const rankB = new Map(b.map((id, i) => [id, i]));
-  const shared = a.map((id, i) => ({ ra: i, rb: rankB.get(id) })).filter((x): x is { ra: number; rb: number } => x.rb != null);
+  const posB = new Map(b.map((id, i) => [id, i]));
+  const seen = new Set<number>();
+  const shared: number[] = [];
+  for (const id of a) {
+    if (posB.has(id) && !seen.has(id)) { seen.add(id); shared.push(id); }
+  }
   const n = shared.length;
   if (n < 3) return null;
+  // 0..n−1 by a's order, which `shared` is already in; then 0..n−1 by b's order.
+  const rankInA = new Map(shared.map((id, i) => [id, i]));
+  const rankInB = new Map([...shared]
+    .sort((x, y) => (posB.get(x) as number) - (posB.get(y) as number))
+    .map((id, i) => [id, i]));
   let d2 = 0;
-  for (const s of shared) d2 += (s.ra - s.rb) ** 2;
+  for (const id of shared) d2 += ((rankInA.get(id) as number) - (rankInB.get(id) as number)) ** 2;
   const rho = 1 - (6 * d2) / (n * (n * n - 1));
   return Math.round(rho * 1000) / 1000;
 }
