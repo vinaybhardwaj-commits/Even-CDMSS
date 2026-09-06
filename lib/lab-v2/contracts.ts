@@ -190,6 +190,22 @@ export const ROLLBACK_CAVEAT =
   + 'live, does not rewrite any finding, and does not revoke any human action taken on them. '
   + 'Anything produced under the rolled-back artifact stands and carries its own engine version.';
 
+/**
+ * §11's caveat for the `rules` target (§17.7 C2, decision 90). The corpus wording is about chunks
+ * returning to quarantine and would be simply wrong on a rulebook row.
+ *
+ * ⚠️ IT SAYS "RETIRED, NOT DELETED" FIRST, because that is the part a reader will otherwise assume
+ * the other way round, and the part that makes every historical `rule_ref` still resolve.
+ */
+export const RULES_ROLLBACK_CAVEAT =
+  'This rollback RETIRES the promoted recommendation — it sets status, which is the one thing the '
+  + "engine's `WHERE status = 'active'` selection reads — and it never deletes the row. The "
+  + 'statement, its citation and its ratifier stay on the record, so every audit already stamped '
+  + 'with that rule_ref still resolves to the rule it was stamped with. It does NOT delete audits '
+  + 'written while the rule was live, does not rewrite any finding, does not re-run any note, and '
+  + 'does not revoke any human action taken on one. Anything produced under the rolled-back '
+  + 'artifact stands and carries its own engine version.';
+
 export const REPLAY_EXACTNESS = ['frozen', 'mutable_source'] as const;
 
 // ── Lifecycle (§5.1, §9) ─────────────────────────────────────────────────────────────

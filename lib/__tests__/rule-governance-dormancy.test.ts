@@ -321,10 +321,30 @@ const REGISTRY_SQL_ADDED_BY_LVC_RULE_MERGE: Record<string, string[]> = {
   ],
 };
 
+/**
+ * LAB-MCP-V2 §17.7 round C2, decisions 82/89/90 — the second authorised addition, same pattern as
+ * the merge surface above.
+ *
+ * ⚠️ ALL THREE ARE SELECTs, AND THAT IS THE WHOLE POINT OF LISTING THEM. The Lab MCP v2 rules
+ * release target writes `lvc_recommendations` through v1's own code and only v1's: `lvcRatify`
+ * (decision 89) forward and `RETIREMENT_UPDATE_SQL` (decision 90) back, both reached by import, so
+ * neither appears here — v2 contributes no write statement of its own in either direction.
+ * `lib/lab-v2/__tests__/c2-rules.test.ts` asserts that these three are read-only and greps the whole
+ * v2 release tree for a fourth.
+ */
+const REGISTRY_SQL_ADDED_BY_LAB_V2_C2: Record<string, string[]> = {
+  "lib/lab-v2/releases/rules-target.ts": [
+    "SELECT id FROM lvc_recommendations WHERE status = 'active' ORDER BY id LIMIT 500",
+    "SELECT id, statement, society, category, keywords, status FROM lvc_recommendations WHERE status = 'active' ORDER BY id LIMIT 500",
+    "SELECT id, statement, society, category, keywords, status, ratified_by, ratified_at FROM lvc_recommendations WHERE id = ${recIdLit(id, 'recommendation_id')} LIMIT 1",
+  ],
+};
+
 /** What proof 3 compares against: the frozen baseline plus every authorised addition since. */
 const REGISTRY_SQL_EXPECTED: Record<string, string[]> = {
   ...REGISTRY_SQL_AT_F800B45,
   ...REGISTRY_SQL_ADDED_BY_LVC_RULE_MERGE,
+  ...REGISTRY_SQL_ADDED_BY_LAB_V2_C2,
 };
 
 function scanRegistrySql(): Record<string, string[]> {

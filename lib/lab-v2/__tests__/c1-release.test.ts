@@ -681,12 +681,17 @@ test('§17.7: prepare refuses a chunk that is already live, and records the pred
   await db.close();
 });
 
-test('§17.7: prepare refuses the rules target in C1, by name', async () => {
+test('§17.7: prepare refuses a target this staged set is not for, by name', async () => {
   const db = await releaseDb();
   const staged = await stageFixture(db);
+  // ⚠️ ROUND C2 EDIT, RULE 1a. This asserted `ENGINE_UNSUPPORTED … arrives in round C2` while the
+  // rules target had no prepare path. C2 built that path, so the round-boundary pin is replaced by
+  // the check that outlives it: a CORPUS staged set may not be released as `rules`. A corpus set
+  // prepared as a rulebook change would produce an artifact whose predecessor described a different
+  // thing entirely, so this is the stronger assertion, not merely the surviving one.
   await assert.rejects(
     () => releasePrepare(db, 'release', { target: 'rules', staged_set_id: staged.staged_set_id, idempotency_key: 'p2' }, {}),
-    (e: { code?: string; message?: string }) => e.code === 'ENGINE_UNSUPPORTED' && /C2/.test(String(e.message)),
+    (e: { code?: string; message?: string }) => e.code === 'INVALID_INPUT' && /is a 'corpus' set/.test(String(e.message)),
   );
   await assert.rejects(
     () => releasePrepare(db, 'release', { target: 'config:opd', staged_set_id: staged.staged_set_id, idempotency_key: 'p3' } as never, {}),

@@ -3854,6 +3854,16 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "lab-v2",
+    "to": "lvc-ratified-wording",
+    "kind": "value"
+  },
+  {
+    "from": "lab-v2",
+    "to": "mcp-tools",
+    "kind": "value"
+  },
+  {
+    "from": "lab-v2",
     "to": "metabase",
     "kind": "value"
   },

@@ -1244,7 +1244,7 @@ async function lvcPropose(a: Record<string, unknown>): Promise<ToolResult> {
   } catch (e) { return err(`propose failed: ${String((e as Error).message).slice(0, 200)}`); }
 }
 
-async function lvcRatify(a: Record<string, unknown>): Promise<ToolResult> {
+export async function lvcRatify(a: Record<string, unknown>): Promise<ToolResult> {
   await ensureLvcProposalTables().catch(() => {});
   const parsed = parseRatifyArgs(a);
   if (!parsed.ok) return err(parsed.error);

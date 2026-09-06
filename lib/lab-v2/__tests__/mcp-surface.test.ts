@@ -64,7 +64,8 @@ test('§15.3: tools/list is scope-filtered for each of the four principals', asy
   // reaudit_plan. reaudit_execute is production_write and is not.
   // lab-v2 §17.7 adds four research-visible: corpus_stage, corpus_validate, corpus_diff and
   // release_status. The three `release` tools and review_submit carry scopes research has not.
-  assert.equal(listed.research.length, 36);
+  // lab-v2 §17.7 C2 adds two: rule_propose (research_write) and rule_simulate (research_read).
+  assert.equal(listed.research.length, 38);
 
   // The operator holds production_write, so it alone sees worker_control — but it holds
   // no research_write, so the five research-writing tools are hidden from it.
@@ -72,7 +73,9 @@ test('§15.3: tools/list is scope-filtered for each of the four principals', asy
   assert.ok(!listed.operator.includes('dataset_create'));
   // The operator adds budget_reconcile (production_write) on top of the reads it can see, and
   // decision 49's episode_checkpoint_inspect, which is a research READ the operator already holds.
-  assert.equal(listed.operator.length, 31);   // §17.6 five, then §17.7's three research reads + release_status
+  // §17.6 five, then §17.7's three research reads + release_status, then C2's rule_simulate
+  // (research_read). rule_propose is research_write and the operator holds none.
+  assert.equal(listed.operator.length, 32);
   assert.ok(!listed.operator.includes('episode_replay'), 'a replay is a research write; the operator has none');
 
   // reviewer and release hold no research_write: no dataset or experiment creation.
@@ -83,7 +86,8 @@ test('§15.3: tools/list is scope-filtered for each of the four principals', asy
   }
   // reviewer = 3 unrestricted + 2 production reads + 4 research reads, plus decision 49's
   // episode_checkpoint_inspect — a reviewer may read a checkpoint's arithmetic, never replay it.
-  assert.equal(listed.reviewer.length, 29);   // §17.7 — the reads, release_status, and review_submit
+  // §17.7 — the reads, release_status, and review_submit; C2 adds rule_simulate (research_read).
+  assert.equal(listed.reviewer.length, 30);
   for (const p of ['reviewer', 'release'] as const) {
     assert.ok(!listed[p].includes('episode_replay'), `${p} must not replay a run`);
   }
@@ -130,7 +134,7 @@ test('§8: a real tool call round-trips through the SDK with structured content'
   assert.equal(body.principal, 'research');
   assert.equal(body.protocol_version, MCP_V2_PROTOCOL_VERSION);
   assert.equal(body.sdk_version, MCP_V2_SDK_VERSION);
-  assert.equal(body.tools.length, 36);   // lab-v2 §17.7 — C1's four research-visible
+  assert.equal(body.tools.length, 38);   // lab-v2 §17.7 — C1's four, then C2's two
   assert.ok(body.pricing_version.startsWith('lab-v2-pricing/'));
   await handler.close();
   await db.close();

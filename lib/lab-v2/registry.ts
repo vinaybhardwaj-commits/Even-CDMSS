@@ -33,6 +33,8 @@ import { REPAIR_SCHEMAS } from './tools/repair';
 // Slice C round C1 (§17.7). Same pattern: schemas beside their handlers.
 import { CORPUS_SCHEMAS } from './tools/corpus';
 import { RELEASE_SCHEMAS } from './tools/release';
+// Slice C round C2 (§17.7, decisions 82, 89, 90). Same pattern: schemas beside their handlers.
+import { RULES_SCHEMAS } from './tools/rules';
 
 export interface ToolAnnotations { readOnlyHint: boolean; destructiveHint: boolean; idempotentHint: boolean }
 
@@ -171,6 +173,28 @@ const c1 = (
   slice: 'C-1',
 });
 
+/**
+ * Slice C round C2 entries (§17.7, decisions 82, 89, 90). Both free, and `rule_simulate` is free in
+ * the strong sense: decision 82 measured that LVC rules never reach the model, so a simulation is an
+ * exact replay against stored replies with the live transport wired to throw. `rule_propose` is
+ * `research_write` and not `release` — it stages a row in `lvc_recommendation_proposals` and cannot
+ * touch `lvc_recommendations`, which only `release_apply` reaches, holding the `release` scope.
+ */
+const C2 = { ...RULES_SCHEMAS } as unknown as Record<string, { input: ZodTypeAny; output: ZodTypeAny }>;
+const c2 = (
+  name: string, description: string, scopes: readonly Scope[], effect: Effect,
+): ToolSpec => ({
+  name: name as ToolName,
+  description,
+  inputSchema: C2[name].input,
+  outputSchema: C2[name].output,
+  scopes,
+  effect,
+  classification: 'deidentified',
+  cost_class: 'free',
+  slice: 'C-2',
+});
+
 export const REGISTRY: readonly ToolSpec[] = [
   // ── capability discovery ──────────────────────────────────────────────────────────
   t('system_capabilities', 'List the tools this principal can see, the negotiated MCP protocol version, the SDK version, whether LAB_V2_ENABLED is set, and the pricing table version.', ANY, 'read'),
@@ -241,6 +265,10 @@ export const REGISTRY: readonly ToolSpec[] = [
   c1('release_apply', 'Apply an approved release: check the approval is present, unexpired, on this exact artifact hash and not from the preparer; re-read the staged ids and refuse if they moved; compare-and-swap the target revision; then call v1\u2019s own activation and verify it moved exactly the reviewed set. Idempotent \u2014 a second apply returns the first receipt.', ['release'], 'release'),
   c1('release_status', 'Per target: the revision in force, its artifact, and its predecessor. Plus the last receipts and every prepared release that has not been applied, each with WHY it is still waiting \u2014 unreviewed, rejected, expired, or bound to a superseded hash.', ['production_read'], 'read'),
   c1('release_rollback', 'Return exactly the chunk ids the apply receipt recorded to quarantine and record a new activation with the predecessor as the artifact in force. It does not delete audits, rewrite findings or revoke human actions, and the receipt says so.', ['release'], 'release'),
+
+  // ── Slice C round C2 (§17.7, decisions 82, 89, 90) ────────────────────────────────
+  c2('rule_propose', 'Stage an LVC rule through v1\u2019s own lvc_propose path \u2014 its citation gate and its mandatory duplicate check, refusals passed through in v1\u2019s words \u2014 and record the proposal id and a hash over the statement and its citation as the staged set a release is prepared against. lvc_recommendations is never touched.', ['research_write'], 'research_write'),
+  c2('rule_simulate', 'Replay a frozen OPD cohort\u2019s baseline run against its stored model replies with the proposed rule added to the frozen lvc_rules, and report per case which findings\u2019 rule_ref or lvc_category moved. Zero model calls: decision 82 measured that a rule cannot reach the prompt, so this is the same computation, not an approximation. Names its denominator and says in words that it measures stamps and never a score.', ['research_read'], 'read'),
 ];
 
 export const BY_NAME: Record<string, ToolSpec> = Object.fromEntries(REGISTRY.map((s) => [s.name, s]));

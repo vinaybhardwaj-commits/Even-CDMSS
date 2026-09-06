@@ -28,6 +28,24 @@
  * ⚠️ THE REVISION IS BUMPED BEFORE THE WRITE AND STAYS BUMPED ON DRIFT. That is deliberate: rows
  * moved, so the corpus is not what revision N described any more, and a revision that rolled back
  * to N would say it was. The receipt carries the truth; the revision carries "something happened".
+ *
+ * ⚠️ ROUND C2 — THE `rules` TARGET RUNS THE SAME SEVEN STEPS, and steps 1 and 2 are literally the
+ * same code. Decision 81's refusals are about the RELEASE, not about what is being released, so
+ * sharing them is what makes "the same checks apply to rules exactly as to corpus" a fact rather
+ * than a claim two functions each make separately. Only steps 3 to 6 differ, because what a rules
+ * release changes is one row in `lvc_recommendations` rather than a set of chunks:
+ *
+ *   3'. THE PROPOSAL IS RE-READ. Still `proposed`, and still the same statement. If v1's own
+ *       `lvc_ratify` promoted it in the meantime, this is `STAGED_SET_CHANGED` for the same reason
+ *       a chunk appearing under a label is: the reviewed thing is not the thing that would land.
+ *   5'. THE PROMOTION — v1's `lvcRatify`, imported through `releases/rules-target.ts`.
+ *       ⚠️ `ratified_by` IS THE APPROVING PRINCIPAL AND THE RATIONALE IS THE REVIEW'S OWN. v1
+ *       requires a ratifier that is not the default author because "a ratification has to name a
+ *       person, or the append-only ledger records nothing accountable"; decision 5 says the
+ *       reviewer key is the accountable one. So `lvc_ratifications` records the key that approved
+ *       this release and the words it was approved with, and neither was typed twice.
+ *   6'. THE POST-CHECK reads the promoted row back by id and requires it active. A promotion that
+ *       returned an id naming no active row is `ACTIVATION_DRIFT`, receipted, and stops.
  */
 import {
   APPROVAL_TTL_MS, LabError, hash, type ReleaseTarget,
@@ -37,9 +55,14 @@ import {
 } from '../store';
 import { activateLabel, type CorpusWriterDeps } from './corpus-writer';
 import { readStagedIds } from '../tools/corpus';
+import {
+  RECOMMENDATION_SQL, promoteProposal, readProposal, type RulesDeps,
+} from './rules-target';
+import { boundedRead } from '../sources/read';
+import type { ReviewRow } from '../store';
 import type { Db } from '../db';
 
-export interface ApplyDeps extends CorpusWriterDeps {
+export interface ApplyDeps extends CorpusWriterDeps, RulesDeps {
   stagedIds?: (label: string) => Promise<number[]>;
   now?: () => number;
 }
@@ -48,6 +71,9 @@ export interface ReleaseArtifact {
   kind?: string; target?: ReleaseTarget; label?: string; chunk_ids?: number[];
   staged_set_id?: string; predecessor_visible_hash?: string; predecessor_id?: string | null;
   impact_ref?: string | null; expected_revision?: number;
+  /** The `rules` target (C2). Absent on a corpus release. */
+  proposal_id?: string; proposal_hash?: string; statement?: string;
+  simulation_ref?: string | null; predecessor_rule_ids?: string[];
 }
 
 /** Sorted, so two id lists that differ only in order are the SAME set. */
@@ -69,13 +95,6 @@ export async function releaseApply(
   const existing = await getReceipt(db, release.id, 'apply');
   if (existing) {
     return { ...receiptOut(existing), replayed_receipt: true };
-  }
-
-  if (target !== 'corpus') {
-    throw new LabError('ENGINE_UNSUPPORTED', `the '${target}' target arrives in round C2; C1 applies the corpus`);
-  }
-  if (!label || !recorded.length) {
-    throw new LabError('INVALID_INPUT', `release ${release.id} carries no label or no chunk ids`);
   }
 
   // ── 2. the approval ─────────────────────────────────────────────────────────────────
@@ -104,6 +123,15 @@ export async function releaseApply(
   if (approval.reviewer === release.owner) {
     throw new LabError('REVIEWER_IS_PREPARER',
       `principal '${release.owner}' both prepared and approved this release; the two keys must differ (decision 5)`);
+  }
+
+  // ── the one fork: everything above is decision 81 and is shared verbatim ────────────
+  if (target === 'rules') return applyRules(db, principal, release, artifact, approval, deps, now);
+  if (target !== 'corpus') {
+    throw new LabError('ENGINE_UNSUPPORTED', `'${target}' has no apply path`);
+  }
+  if (!label || !recorded.length) {
+    throw new LabError('INVALID_INPUT', `release ${release.id} carries no label or no chunk ids`);
   }
 
   // ── 3. the staged set (decision 79a) ────────────────────────────────────────────────
@@ -233,4 +261,134 @@ export function receiptOut(r: { id: string; release_id: string; target: string; 
     body,
     created_at: String(r.created_at),
   };
+}
+
+/**
+ * THE `rules` TARGET (§17.7 C2, decisions 89 and 90). Steps 3' to 7 — steps 1 and 2 already ran in
+ * `releaseApply` and are the same code for both targets.
+ */
+async function applyRules(
+  db: Db, principal: string,
+  release: { id: string; hash: string; owner: string },
+  artifact: ReleaseArtifact,
+  approval: ReviewRow,
+  deps: ApplyDeps,
+  now: () => number,
+) {
+  const proposalId = String(artifact.proposal_id ?? '');
+  if (!proposalId) {
+    throw new LabError('INVALID_INPUT', `release ${release.id} is a rules release that names no proposal`);
+  }
+
+  // ── 3'. the proposal, re-read ───────────────────────────────────────────────────────
+  const proposal = await readProposal(proposalId, deps);
+  if (proposal.status !== 'proposed') {
+    throw new LabError('STAGED_SET_CHANGED',
+      `proposal ${proposalId} is now '${proposal.status}'${proposal.promoted_id ? ` and was promoted as ${proposal.promoted_id}` : ''}; `
+      + 'it was prepared and reviewed as a staged proposal — re-run release_prepare so the review names what would actually be promoted');
+  }
+  if (artifact.statement != null && String(artifact.statement) !== proposal.statement) {
+    throw new LabError('STAGED_SET_CHANGED',
+      `proposal ${proposalId}'s statement has changed since this release was prepared; the approval on record is about text that is no longer in the table`);
+  }
+
+  // ── 4. the compare-and-swap ─────────────────────────────────────────────────────────
+  const t = await getTarget(db, 'rules');
+  if (!t) throw new LabError('STORE_UNAVAILABLE', "target 'rules' is missing; apply 0002_releases.sql");
+  const expected = Number(artifact.expected_revision ?? -1);
+  const revision = await advanceTarget(db, 'rules', expected, {
+    artifact_id: release.id, predecessor_id: t.artifact_id, release_id: release.id,
+  });
+  if (revision == null) {
+    throw new LabError('REVISION_MISMATCH',
+      `target 'rules' is at revision ${t.revision}; this release was prepared against ${expected}. Another release landed first — re-prepare against what is in force.`);
+  }
+
+  // ── 5'. the promotion: v1's lvcRatify, imported ─────────────────────────────────────
+  let promoted: { promoted_id: string; raw: unknown };
+  try {
+    promoted = await promoteProposal({
+      proposal_id: proposalId,
+      // ⚠️ Decision 5, and v1's own requirement, satisfied by the same fact. See the header note.
+      ratified_by: approval.reviewer,
+      rationale: approval.rationale,
+    }, deps);
+  } catch (e) {
+    const body = {
+      kind: 'apply', outcome: 'failed', release_id: release.id, artifact_hash: release.hash,
+      target: 'rules', label: artifact.label ?? `rule:${proposalId}`,
+      approval: { review_id: approval.id }, preparer: release.owner,
+      proposal_id: proposalId, promoted_id: null,
+      error: String((e as Error).message).slice(0, 500),
+      note: 'the revision was already advanced when the promotion failed; nothing was promoted',
+    };
+    const receipt = await putReceipt(db, { release_id: release.id, target: 'rules', revision, kind: 'apply', body });
+    await recordEvent(db, principal, release.id, 'release_apply_failed', {
+      release_id: release.id, error: String((e as Error).message).slice(0, 300),
+    }).catch(() => {});
+    return { ...receiptOut(receipt), replayed_receipt: false };
+  }
+
+  // ── 6'. the post-check ──────────────────────────────────────────────────────────────
+  // ⚠️ READ BACK, NEVER ASSUME. `lvcRatify` returns the id its own INSERT produced; whether that row
+  // is ACTIVE — the only thing that puts it in `getLvcRules`' `WHERE status = 'active'` — is a
+  // separate fact, and this is the round that stopped assuming such things (decision 87).
+  const read = deps.read ?? (<T>(source: string, statement: string, params: unknown[] = []) => boundedRead<T>(source, statement, params, 500));
+  const rows = await read<Record<string, unknown>>('lvc_recommendations', RECOMMENDATION_SQL(promoted.promoted_id))
+    .catch(() => [] as Record<string, unknown>[]);
+  const landed = rows[0] ?? null;
+  const status = landed == null ? null : String(landed.status ?? '');
+  const drifted = landed == null || status !== 'active';
+
+  // ── 7. the receipt, always ──────────────────────────────────────────────────────────
+  const body = {
+    kind: 'apply',
+    outcome: drifted ? 'activation_drift' : 'applied',
+    release_id: release.id,
+    artifact_hash: release.hash,
+    target: 'rules',
+    label: artifact.label ?? `rule:${proposalId}`,
+    revision,
+    previous_revision: expected,
+    approval: { review_id: approval.id, reviewer: approval.reviewer, expires_at: approval.expires_at },
+    preparer: release.owner,
+    // Named, not restated — the same rule the corpus receipt follows, and the reason the decision 79
+    // grep passes over this file.
+    writer: 'lib/mcp-tools.ts lvcRatify (v1), imported (decision 89)',
+    proposal_id: proposalId,
+    // ⚠️ THE ID A ROLLBACK WILL RETIRE. Decision 90 retires exactly this and nothing else, so if it
+    // were absent the release would be unrollbackable — which is why promoteProposal refuses a
+    // success that carries no id rather than receipting a null.
+    promoted_id: promoted.promoted_id,
+    ratified_by: approval.reviewer,
+    statement: proposal.statement,
+    simulation_ref: artifact.simulation_ref ?? artifact.impact_ref ?? null,
+    predecessor_rule_ids: artifact.predecessor_rule_ids ?? [],
+    predecessor_id: artifact.predecessor_id ?? null,
+    recorded_chunk_ids: [] as number[],
+    activated_chunk_ids: [] as number[],
+    applied_at: new Date(now()).toISOString(),
+    ...(drifted
+      ? {
+        drift: {
+          promoted_id: promoted.promoted_id,
+          status_now: status,
+          note: landed == null
+            ? 'lvc_ratify reported an id that lvc_recommendations does not return; the release STOPPED here and nothing was repaired automatically'
+            : `the promoted row is '${status}', not 'active', so it is not in the engine's selection; the release STOPPED here`,
+        },
+      }
+      : {}),
+  };
+  const receipt = await putReceipt(db, { release_id: release.id, target: 'rules', revision, kind: 'apply', body });
+  await recordEvent(db, principal, release.id, drifted ? 'release_activation_drift' : 'release_applied', {
+    release_id: release.id, target: 'rules', revision, promoted_id: promoted.promoted_id,
+  }).catch(() => {});
+
+  if (drifted) {
+    throw new LabError('ACTIVATION_DRIFT',
+      `lvc_ratify promoted ${promoted.promoted_id} and the row reads '${status ?? 'absent'}' rather than 'active'; receipt ${receipt.id} records it and the release stopped`,
+      { receipt_id: receipt.id, promoted_id: promoted.promoted_id, status });
+  }
+  return { ...receiptOut(receipt), replayed_receipt: false };
 }
