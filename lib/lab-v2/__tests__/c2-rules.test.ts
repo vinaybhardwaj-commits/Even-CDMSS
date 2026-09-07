@@ -343,13 +343,19 @@ const gitShow = (rev: string) => {
   }
 };
 
-test('§17.7 decision 89: the export surface of lib/mcp-tools.ts is C1’s plus exactly lvcRatify', () => {
+test('§17.7 decision 89 + §17.11 decision 149: the export surface of lib/mcp-tools.ts is C1’s plus exactly lvcRatify and RETIRED_TOOLS', () => {
   const before = exportedSymbols(gitShow('6f5cfa81'));
   const now = exportedSymbols(MCP_TOOLS);
-  assert.deepEqual(now, [...before, 'lvcRatify'].sort(),
-    'lib/mcp-tools.ts exports something decision 89 did not authorise');
+  // ⚠️ RULE 1a, §17.11 DECISION 149. This allow-list gained ONE symbol. Decision 149 orders the
+  // constant verbatim — `export const RETIRED_TOOLS = [...] as const` — and `lib/mcp-server.ts`
+  // must import it to consult it at the name gate, so the export is the ruling, not a choice made
+  // here. The list is still exhaustive: anything else added to the frozen file still fails.
+  assert.deepEqual(now, [...before, 'lvcRatify', 'RETIRED_TOOLS'].sort(),
+    'lib/mcp-tools.ts exports something decisions 89 and 149 did not authorise');
   assert.ok(MCP_TOOLS.includes('export async function lvcRatify('), 'the token is actually there');
   assert.ok(!before.includes('lvcRatify'), 'and it was not there before');
+  assert.ok(MCP_TOOLS.includes('export const RETIRED_TOOLS = ['), 'decision 149’s constant is there');
+  assert.ok(!before.includes('RETIRED_TOOLS'), 'and it was not there before either');
 });
 
 test('§17.7 C2.1 decision 94: every line it changed in the frozen file is inside its own scope', () => {
@@ -374,12 +380,29 @@ test('§17.7 C2.1 decision 94: every line it changed in the frozen file is insid
    * imports from `lib/lab.ts` and turn a two-line retirement into a fourth region in a frozen file.
    * It is now unreachable, and `lab_analyses` — every row it ever listed — is still readable
    * through `audit_query`.
+   *
+   * ⚠️ RULE 1a, §17.11 DECISION 149 — REGION 3c, AND IT WIDENS THIS TEST'S AUTHORISATION. Decision
+   * 143's dispatch arm was unreachable over the wire: `dispatchMcp`'s name gate tests `LAB_TOOLS`,
+   * which no longer holds `lab_query`, so a stale client got "unknown tool" — the very answer the
+   * retirement existed to replace. The gate now also consults `RETIRED_TOOLS`, and that constant
+   * has to live somewhere. Region 3a is an interval strictly INSIDE the `LAB_TOOLS` array literal,
+   * so no top-level declaration can be placed there; decision 149 ruled the constant sits
+   * immediately after the array closes, and authorised this fifth region for it:
+   *
+   *   3c  the `RETIRED_TOOLS` constant, between `LAB_TOOLS`'s closing `] as const;` and the
+   *       dispatch banner — the tightest bracket the placement allows, containing that constant
+   *       and its comment and nothing else.
+   *
+   * This is a rule 1a edit to a file outside decision 149's kickoff contract, and it is NOT a
+   * mechanical one: it enlarges the set of changes this test permits. It is recorded as such in
+   * the round report rather than filed quietly as a pin.
    */
   const regions: [number, number][] = [
     [lineOf("name: 'lvc_propose',"), lineOf("name: 'lvc_ratify',")],
     [lineOf('async function lvcPropose('), lineOf('async function lvcGaps(')],
     [lineOf("name: 'lab_case_audit',"), lineOf("name: 'audit_query',")],
     [lineOf("case 'lab_retrieve':"), lineOf("case 'audit_query':")],
+    [lineOf('] as const;'), lineOf('// ── dispatch ─')],
   ];
   const diff = execFileSync('git', ['diff', '--unified=0', '9c440fcc', '--', 'lib/mcp-tools.ts'],
     { cwd: ROOT, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });

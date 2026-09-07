@@ -410,3 +410,102 @@ test('§17.11: an unfenced import has not crept in — the case readers stay und
     assert.ok(!new RegExp(`\\b${word}\\b`).test(src.replace(/\/\*[\s\S]*?\*\//g, '')), `case-readers.ts contains ${word}`);
   }
 });
+
+// ═════════════════════════════════════════════════════════════════════════════════════
+// Decision 149 — the retirement OVER THE WIRE
+//
+// ⚠️ WHY THIS SECTION EXISTS. Decision 143's dispatch arm was asserted through `callLabTool`,
+// which is one layer BELOW the surface a client touches. `dispatchMcp`'s name gate sits above it
+// and tested `LAB_TOOLS.some(...)` — a list `lab_query` had just been removed from — so every real
+// call was refused `-32602 unknown tool: lab_query` before the arm could answer. The retirement
+// was correct in the file and absent on the wire, and nothing caught it because `dispatchMcp` had
+// no test of any kind. These tests drive the real handler with the real JSON-RPC request shape.
+// ═════════════════════════════════════════════════════════════════════════════════════
+
+/** The shape both routes send, after they have checked the key. */
+const rpc = (id: number, method: string, params?: unknown) =>
+  ({ jsonrpc: '2.0' as const, id, method, ...(params === undefined ? {} : { params }) });
+
+test('§17.11 decision 149: the key gate both routes use accepts the key and nothing else', async () => {
+  const { labKeyConfigured, labKeyMatches } = await import('../../mcp-server');
+  const saved = process.env.LAB_API_KEY;
+  process.env.LAB_API_KEY = 'test-lab-key-149';
+  try {
+    assert.equal(labKeyConfigured(), true);
+    assert.equal(labKeyMatches('test-lab-key-149'), true, 'the presented key is the configured one');
+    assert.equal(labKeyMatches('test-lab-key-14'), false, 'a shorter key is refused');
+    assert.equal(labKeyMatches('test-lab-key-150'), false, 'a same-length wrong key is refused');
+    assert.equal(labKeyMatches(null), false);
+    assert.equal(labKeyMatches(''), false);
+  } finally {
+    if (saved === undefined) delete process.env.LAB_API_KEY; else process.env.LAB_API_KEY = saved;
+  }
+});
+
+test('§17.11 decision 149: tools/call lab_query returns the RETIRED object as a result, not an error', async () => {
+  const { dispatchMcp } = await import('../../mcp-server');
+  const { V1_DEPRECATIONS } = await import('../contracts');
+  const saved = process.env.LAB_API_KEY;
+  process.env.LAB_API_KEY = 'test-lab-key-149';
+  try {
+    const reply = await dispatchMcp(rpc(1, 'tools/call', { name: 'lab_query', arguments: {} }));
+    assert.equal(reply.status, 200);
+    const body = reply.body as { jsonrpc: string; id: number; result?: { content: { text: string }[]; isError?: boolean }; error?: unknown };
+    // ⚠️ A RESULT, NOT AN ERROR. This is the whole ruling: the JSON-RPC envelope carries `result`,
+    // and the tool result is not flagged `isError`. Before decision 149 this was
+    // `error: { code: -32602, message: 'unknown tool: lab_query' }`.
+    assert.equal(body.error, undefined, `the gate refused a retired name: ${JSON.stringify(body.error)}`);
+    assert.ok(body.result, 'a retirement is an answer');
+    assert.notEqual(body.result.isError, true, 'and it is not an error result either');
+    assert.equal(body.id, 1, 'the id is echoed');
+
+    const payload = JSON.parse(body.result.content[0].text);
+    assert.deepEqual(payload, {
+      error: 'RETIRED',
+      replaced_by: ['audit_search', 'corpus_search'],
+      since: 'e5f53c55',
+    });
+    // The wire object and the v2 surface's deprecation are still the same fact. Decision 149 left
+    // two literals standing on purpose; this is the pin that keeps them from drifting.
+    const [dep] = V1_DEPRECATIONS;
+    assert.equal(dep.tool, 'lab_query');
+    assert.deepEqual([...dep.replaced_by], payload.replaced_by);
+    assert.equal(dep.since, payload.since);
+  } finally {
+    if (saved === undefined) delete process.env.LAB_API_KEY; else process.env.LAB_API_KEY = saved;
+  }
+});
+
+test('§17.11 decision 149: the gate still refuses a name that was never served', async () => {
+  const { dispatchMcp } = await import('../../mcp-server');
+  const reply = await dispatchMcp(rpc(2, 'tools/call', { name: 'lab_nonesuch', arguments: {} }));
+  const body = reply.body as { error?: { code: number; message: string }; result?: unknown };
+  assert.equal(body.result, undefined, 'an unknown name is not answered');
+  assert.deepEqual(body.error, { code: -32602, message: 'unknown tool: lab_nonesuch' });
+  // ⚠️ RETIREMENT IS NOT THE SAME FACT AS NEVER EXISTING, and decision 149 must not have blurred
+  // the two: only the names on the retired list pass, not any name at all.
+  const { RETIRED_TOOLS } = await import('../../mcp-tools');
+  assert.deepEqual(RETIRED_TOOLS.map((t) => String(t.name)), ['lab_query']);
+});
+
+test('§17.11 decision 149: tools/list is unchanged — a retired name stays undiscoverable', async () => {
+  const { dispatchMcp } = await import('../../mcp-server');
+  const { LAB_TOOLS } = await import('../../mcp-tools');
+  const reply = await dispatchMcp(rpc(3, 'tools/list'));
+  const { tools } = (reply.body as { result: { tools: { name: string }[] } }).result;
+  const names = tools.map((t) => String(t.name));
+  assert.ok(!names.includes('lab_query'), 'a retired tool is not offered for discovery');
+  assert.equal(names.length, LAB_TOOLS.length, 'the list is LAB_TOOLS and nothing else');
+  assert.ok(names.includes('audit_query'), 'audit_query still reads every row lab_query listed');
+});
+
+test('§17.11 decision 149: the handshake no longer advertises the retired tool', async () => {
+  const { dispatchMcp } = await import('../../mcp-server');
+  const reply = await dispatchMcp(rpc(4, 'initialize'));
+  const { instructions } = (reply.body as { result: { instructions: string } }).result;
+  // A client reads this string on connect. Naming a tool here that tools/call answers RETIRED and
+  // tools/list does not offer contradicted the retirement at the first message of the session.
+  assert.ok(!instructions.includes('lab_query'), 'the instructions still name lab_query');
+  assert.ok(instructions.includes('mini_analyze'), 'and the tools that DO exist are still named');
+  assert.ok(instructions.includes('corpus_manage'), 'including the neighbour lab_query sat beside');
+});

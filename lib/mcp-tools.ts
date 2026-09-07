@@ -402,6 +402,23 @@ export const LAB_TOOLS = [
   },
 ] as const;
 
+/**
+ * lab-v2 decision 143 (§17.11) + decision 149 — NAMES THIS SERVER ONCE SERVED AND NO LONGER DOES.
+ *
+ * A retirement has two halves that pull opposite ways: the name must be GONE from `LAB_TOOLS`, so
+ * nobody discovers it, AND a client that already knows the name must get an ANSWER rather than
+ * "unknown tool". This list is the second half. `dispatchMcp` consults it alongside `LAB_TOOLS` at
+ * the name gate so a retired call reaches `callLabTool`; `tools/list` never reads it, which is what
+ * keeps a retired tool undiscoverable.
+ *
+ * ⚠️ NOT the single source of the deprecation: `V1_DEPRECATIONS` in `lib/lab-v2/contracts.ts` is a
+ * second copy, and decision 149 accepted that rather than making a pure schema module import this
+ * one. The two are pinned equal by `c2-rules.test.ts` — if you change one, that test fails.
+ */
+export const RETIRED_TOOLS = [
+  { name: 'lab_query', replaced_by: ['audit_search', 'corpus_search'], since: 'e5f53c55' },
+] as const;
+
 // ── dispatch ─────────────────────────────────────────────────────────────────────
 export async function callLabTool(name: string, args: Record<string, unknown>): Promise<ToolResult> {
   try {
@@ -426,8 +443,8 @@ export async function callLabTool(name: string, args: Record<string, unknown>): 
       // lab_analyses is deleted — audit_query still reads every row lab_query ever listed.
       case 'lab_query': return ok({
         error: 'RETIRED',
-        replaced_by: ['audit_search', 'corpus_search'],
-        since: 'e5f53c55',
+        replaced_by: [...RETIRED_TOOLS[0].replaced_by],
+        since: RETIRED_TOOLS[0].since,
       });
       case 'audit_query': return await auditQuery(args);
       case 'lab_batch_start': return await labBatchStart(args);
