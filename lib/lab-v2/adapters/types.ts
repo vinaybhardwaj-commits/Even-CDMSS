@@ -319,6 +319,10 @@ export function allAdapters(): Record<string, Adapter> {
   // carries a source-text sha pin that nothing here may disturb.
   const { makeReadmissionAdapter } = require('./readmission') as typeof import('./readmission');
   const { makePreopAdapter } = require('./preop') as typeof import('./preop');
+  // §17.9 round D2b decision 117(a) — the tenth. Lazily required like the rest, and with the same
+  // extra reason as the two above: it drags `lib/doc-audit.ts`'s whole module graph, which
+  // `route-budget-guard.test.ts` reads as source text.
+  const { makeIpdDischargeAdapter } = require('./ipd-discharge') as typeof import('./ipd-discharge');
   /* eslint-enable @typescript-eslint/no-require-imports */
   return {
     opd_note_audit: opdAdapter,
@@ -330,6 +334,7 @@ export function allAdapters(): Record<string, Adapter> {
     doc_audit: makeDocAuditAdapter(),
     readmission: makeReadmissionAdapter(),
     preop: makePreopAdapter(),
+    ipd_discharge: makeIpdDischargeAdapter(),
   };
 }
 

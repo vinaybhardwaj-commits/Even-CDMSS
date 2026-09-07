@@ -27,6 +27,7 @@ import { dataScopeFor, identifyingPrincipals, mayUseIdentifyingInput } from '../
 import { createHash } from 'crypto';
 // §17.8 decision 109 — the two Slice D freezes, wired into dataset_create.
 import { freezeReadmissionFinding } from './sources/readmission';
+import { freezeIpdDischargeDocument } from './sources/ipd-discharge';
 import { freezePreopEpisode } from './sources/preop';
 import { PRICING_VERSION, isSupportedModel, modelsFor } from './pricing';
 import { BY_NAME, visibleTools } from './registry';
@@ -189,21 +190,29 @@ function stripIdentityFields(args: Record<string, unknown>): Record<string, unkn
  * nothing live.
  */
 async function sliceDDataset(
-  deps: ServiceDeps, args: Record<string, unknown>, engine: 'readmission' | 'preop',
+  deps: ServiceDeps, args: Record<string, unknown>, engine: 'readmission' | 'preop' | 'ipd_discharge',
 ): Promise<unknown> {
   const isReadmission = engine === 'readmission';
+  const isDischarge = engine === 'ipd_discharge';
   const bodyArg = (args.body ?? {}) as Record<string, unknown>;
   const cohort = args.cohort as { case_keys?: string[] } | undefined;
 
-  // The identifier, in either of the two shapes the tool accepts.
-  const single = isReadmission ? bodyArg.dedup_key : bodyArg.episodeKey;
+  /**
+   * The identifier, in either of the two shapes the tool accepts. §17.9 round D2b adds a third
+   * engine on the same path: one DOCUMENT, named by its `documentId` — already declared
+   * `identifying: true` at `sources/requests.ts:218`, so the decision 105 gate above already
+   * covers it and no `REQUEST_FIELDS` entry had to be added.
+   */
+  const single = isReadmission ? bodyArg.dedup_key : isDischarge ? bodyArg.documentId : bodyArg.episodeKey;
   const keys = (cohort?.case_keys ?? (single == null ? [] : [String(single)]))
     .map((k) => String(k).trim()).filter((k) => k.length > 0);
   if (!keys.length) {
     throw new LabError('INVALID_INPUT',
       isReadmission
         ? 'readmission takes body.dedup_key, or cohort.case_keys as dedup keys'
-        : 'preop takes body.episodeKey, or cohort.case_keys as episode keys');
+        : isDischarge
+          ? 'ipd_discharge takes body.documentId, or cohort.case_keys as discharge document ids'
+          : 'preop takes body.episodeKey, or cohort.case_keys as episode keys');
   }
   const skip = new Set((args.exclusions as string[]) ?? []);
   const wanted = keys.filter((k) => !skip.has(k));
@@ -213,7 +222,11 @@ async function sliceDDataset(
   const excluded: { case_key: string; reason: string }[] = [];
   for (const key of wanted) {
     try {
-      const f = isReadmission ? await freezeReadmissionFinding(key) : await freezePreopEpisode(key);
+      const f = isReadmission
+        ? await freezeReadmissionFinding(key)
+        : isDischarge
+          ? await freezeIpdDischargeDocument(key)
+          : await freezePreopEpisode(key);
       cases.push({ case_key: f.case_key, member_key: f.member_key, frozen: f.frozen as unknown as Record<string, unknown> });
     } catch (e) {
       const err = e as LabError;
@@ -256,12 +269,16 @@ async function sliceDDataset(
   const body = datasetBodySchema.parse({
     engine,
     cases,
+    // A discharge case is one already-extracted DOCUMENT, so its snapshot is the episode the
+    // extract was taken from — the same policy preop uses, and for the same reason.
     snapshot_policy: isReadmission ? 'finding_at_creation' : 'episode_at_creation',
     exclusions: (args.exclusions as string[]) ?? [],
     classification: 'deidentified',
     source_versions: {
       frozen_at: new Date().toISOString(),
-      origin: isReadmission ? 'readmission_findings' : 'db13 via lib/preop/db13.ts',
+      origin: isReadmission ? 'readmission_findings'
+        : isDischarge ? 'discharge_extracted_cases + db13 via lib/ipd-audit/db13.ts'
+        : 'db13 via lib/preop/db13.ts',
       cases: cases.length,
     },
     replay_exactness: 'frozen',
@@ -511,7 +528,9 @@ const HANDLERS: Record<ToolName, Handler> = {
      */
 
     // ── §17.8 D1 fix 2 (decision 109) — the two Slice D engines ─────────────────────
-    if (engine === 'readmission' || engine === 'preop') {
+    // §17.9 round D2b decision 117(a) adds the third: one discharge document, frozen from its
+    // STORED extract at DOC_EXTRACT_VERSION and never from a fresh PDF read (decision 102).
+    if (engine === 'readmission' || engine === 'preop' || engine === 'ipd_discharge') {
       return sliceDDataset(deps, args, engine);
     }
 

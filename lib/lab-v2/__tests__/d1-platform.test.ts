@@ -171,14 +171,18 @@ test('§17.8 decision 102: the static isolation list carries all three guarded f
 // ITEM 4 — the two engines
 // ═════════════════════════════════════════════════════════════════════════════════════
 
-test('§17.8 item 4: readmission and preop are supported, adapted and priced; ipd_discharge is not', () => {
+test('§17.8 item 4: readmission and preop are supported, adapted and priced; and D2b adds the third', () => {
   for (const e of ['readmission', 'preop'] as const) {
     assert.ok(SUPPORTED_ENGINES.includes(e), `${e} is supported`);
     assert.ok(ALL_ADAPTERS()[e], `${e} has an adapter`);
     assert.ok((ENGINE_STAGES[e] ?? []).length > 0, `${e} declares stages`);
   }
-  assert.ok(!SUPPORTED_ENGINES.includes('ipd_discharge'), 'decision 103 holds it for D2');
-  assert.ok(!ALL_ADAPTERS().ipd_discharge);
+  // ⚠️ RULE 1a, §17.9 DECISION 117(a). D1 asserted `ipd_discharge` was held BACK; D2b wires it,
+  // so the assertion inverts rather than disappears — the third Slice D engine is supported,
+  // adapted and priced on exactly the terms the other two are.
+  assert.ok(SUPPORTED_ENGINES.includes('ipd_discharge'), 'decision 117(a) wired it in D2b');
+  assert.ok(ALL_ADAPTERS().ipd_discharge, 'and it has an adapter');
+  assert.equal((ENGINE_STAGES.ipd_discharge ?? []).length, 8, 'decision 124: eight labels');
 
   assert.deepEqual((ENGINE_STAGES.readmission ?? []).map((s) => s.name),
     ['readmit_oon', 'readmit_condition', 'readmit_recon_a', 'readmit_recon_b']);

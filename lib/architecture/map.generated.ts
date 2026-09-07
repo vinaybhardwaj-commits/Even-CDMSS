@@ -3829,7 +3829,22 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "lab-v2",
+    "to": "discharge-extract-store",
+    "kind": "value"
+  },
+  {
+    "from": "lab-v2",
+    "to": "doc-audit-core",
+    "kind": "type"
+  },
+  {
+    "from": "lab-v2",
     "to": "formulary",
+    "kind": "value"
+  },
+  {
+    "from": "lab-v2",
+    "to": "ipd-audit",
     "kind": "value"
   },
   {

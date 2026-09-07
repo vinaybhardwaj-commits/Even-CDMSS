@@ -21,7 +21,7 @@ import { readFileSync } from 'node:fs';
 import { NextRequest } from 'next/server';
 import { freshDb } from './helpers';
 import { callTool } from '../service';
-import { ENGINE_STAGES, SUPPORTED_ENGINES, stagesFor, type EngineId } from '../contracts';
+import { ENGINE_IDS, ENGINE_STAGES, SUPPORTED_ENGINES, stagesFor, type EngineId } from '../contracts';
 import {
   assessStream, buildSyntheticRequest, eventTypes, makeRouteAdapter, readRouteResponse, ALL_ADAPTERS,
 } from '../adapters/types';
@@ -116,11 +116,22 @@ test('decision 35: each engine lists exactly the governed labels measured in its
   assert.deepEqual(stagesFor('ddx').map((s) => s.name), ['investigations_parse', 'clinical_state_normalise', 'ddx_draft', 'ddx_critique', 'ddx_revision']);
   assert.deepEqual(stagesFor('appropriateness').map((s) => s.name), ['lvc_value', 'lvc_value_critique', 'clinical_state_normalise']);
   assert.deepEqual(stagesFor('pathway').map((s) => s.name), ['pathway_skeleton', 'clinical_state_normalise']);
+  /**
+   * ⚠️ RULE 1a / §17.9 DECISION 124 — THREE LABELS ADDED, AND THE PIN MOVING IS THE FIX.
+   *
+   * A3 measured five and missed three that the same call tree emits: `doc_audit_critique_llm`
+   * (`doc-audit.ts:593`) and `doc_audit_revise` (`:605`) fire whenever `DOC_AUDIT_AUDIT !== '0'`,
+   * i.e. by DEFAULT, and `pathway_skeleton` (`:525` → `lib/pathway.ts:68`) fires on every audit.
+   * The fenced chat edge refuses an unpriced label by name, so this list was not a documentation
+   * gap: every `doc_audit` run met MODEL_UNSUPPORTED on its second leg. The pin moves to eight.
+   */
   assert.deepEqual(stagesFor('doc_audit').map((s) => s.name), [
-    'doc_audit_analyze', 'doc_audit_cite_gate', 'doc_audit_prognosis', 'doc_audit_prognosis_critique', 'doc_audit_prognosis_revise',
+    'doc_audit_analyze', 'doc_audit_critique_llm', 'doc_audit_revise', 'doc_audit_cite_gate',
+    'doc_audit_prognosis', 'doc_audit_prognosis_critique', 'doc_audit_prognosis_revise',
+    'pathway_skeleton',
   ]);
-  // The counts the ruling fixed.
-  assert.deepEqual(A3.map((e) => stagesFor(e).length), [5, 5, 3, 2, 5]);
+  // The counts the ruling fixed; doc_audit's 5 → 8 under decision 124.
+  assert.deepEqual(A3.map((e) => stagesFor(e).length), [5, 5, 3, 2, 8]);
 });
 
 test('decision 35: every listed label really appears in that engine\'s call tree', () => {
@@ -129,7 +140,10 @@ test('decision 35: every listed label really appears in that engine\'s call tree
     ddx: ['app/api/ddx/route.ts', 'lib/investigations.ts'],
     appropriateness: ['app/api/appropriateness/route.ts', 'lib/lvc-value.ts'],
     pathway: ['app/api/pathway/skeleton/route.ts', 'lib/pathway.ts'],
-    doc_audit: ['app/api/doc-audit/analyze/route.ts', 'lib/doc-audit.ts'],
+    // Rule 1a / decision 124: `pathway_skeleton` is now a doc_audit label too, and its literal
+    // lives in `lib/pathway.ts` — which `doc-audit.ts:525` calls. The call TREE is the unit
+    // (decision 35's own words), so the file that emits the label joins this engine's list.
+    doc_audit: ['app/api/doc-audit/analyze/route.ts', 'lib/doc-audit.ts', 'lib/pathway.ts'],
   };
   for (const engine of A3) {
     const src = trees[engine].map((f) => readFileSync(f, 'utf8')).join('\n');
@@ -141,11 +155,17 @@ test('decision 35: every listed label really appears in that engine\'s call tree
 
 test('decision 35a: the conditional stages are the two that do not fire on every request', () => {
   const conditional = A3.flatMap((e) => stagesFor(e).filter((s) => s.conditional).map((s) => `${e}.${s.name}`));
+  // Rule 1a / decision 124: doc_audit's three new labels are all conditional — `critique_llm`
+  // behind a default-on flag, `revise` behind the critique's own verdict, `pathway_skeleton`
+  // soft-failing to a null spine. §35a: listed, priced, charged only when they fire.
   assert.deepEqual(conditional.sort(), [
     'appropriateness.clinical_state_normalise',
     'ask.investigations_parse',
     'ddx.clinical_state_normalise',
     'ddx.investigations_parse',
+    'doc_audit.doc_audit_critique_llm',
+    'doc_audit.doc_audit_revise',
+    'doc_audit.pathway_skeleton',
     'pathway.clinical_state_normalise',
   ]);
   // A conditional stage is still a stage: it is listed, and experiment_create still demands a price.
@@ -226,14 +246,33 @@ test('§17.3: engine_describe reports all six supported, with conditional marks 
 
 test('§17.3: an engine with no adapter is still supported:false with a reason', async () => {
   const db = await freshDb();
-  // ⚠️ RULE 1a, §17.8 DECISION 103 AND ITEM 4. This asked about `readmission`, which round D1 wired
-  // — so the EXAMPLE moved and the assertion did not. `ipd_discharge` is the engine decision 103
-  // deliberately holds back for slice D2 (a compute.ts-sized extraction, 22 guard sites), so it is
-  // the one that still proves the rule: no adapter, unsupported, and a reason that says which slice.
-  const out = await callTool(deps(db), 'engine_describe', { engine: 'ipd_discharge' }) as { supported: boolean; reason: string | null; stages: unknown[] };
-  assert.equal(out.supported, false);
-  assert.match(out.reason ?? '', /slice D/);
-  assert.deepEqual(out.stages, []);
+  /**
+   * ⚠️ RULE 1a, §17.9 DECISION 117(a). The example has moved TWICE now — `readmission` in D1,
+   * `ipd_discharge` in D2b — and each time because the engine it named got wired. With D2b every
+   * member of `ENGINE_IDS` is supported, so there is no real engine left to demonstrate the rule
+   * on and the example becomes a SYNTHETIC name, which is what §17.9's item list calls for.
+   *
+   * ⚠️ AND IT IS STILL A REAL ASSERTION. `engine_describe` must refuse an unknown engine rather
+   * than answer about it, and `SUPPORTED_ENGINES` covering `ENGINE_IDS` in full is asserted
+   * directly below, which is the property this test used to carry as a side effect.
+   */
+  await assert.rejects(
+    () => callTool(deps(db), 'engine_describe', { engine: 'not_an_engine' }),
+    (e: { code?: string }) => e.code === 'INVALID_INPUT' || e.code === 'ENGINE_UNSUPPORTED',
+    'an engine that is not in ENGINE_IDS is refused, never described',
+  );
+  // Every declared engine is now wired, and each answers with stages and a version.
+  for (const engine of SUPPORTED_ENGINES) {
+    const out = await callTool(deps(db), 'engine_describe', { engine }) as {
+      supported: boolean; reason: string | null; stages: unknown[]; replay_exactness_available: string[];
+    };
+    assert.equal(out.supported, true, `${engine} is supported`);
+    assert.equal(out.reason, null);
+    assert.ok(out.stages.length > 0, `${engine} declares stages`);
+    // DECISION 125 — no engine offers a frozen replay yet; `ipd_discharge`'s three retrievals are
+    // live, which is exactly what `mutable_source` says.
+    assert.deepEqual(out.replay_exactness_available, ['mutable_source'], `${engine}'s replay exactness`);
+  }
   await db.close();
 });
 
@@ -243,13 +282,20 @@ test('§17.3: SUPPORTED_ENGINES and the adapter registry agree', () => {
   // lab-v2 decision 47 (§17.5): the seventh engine. ipd_episode could not be adapted at all until
   // its pipeline moved into lib/ipd-episode/compute.ts, because its first stage was a db13 read
   // through a module import and lib/metabase.ts:115 throws on that inside the fence.
-  // ⚠️ RULE 1a, §17.8 DECISION 103 AND ITEM 4 — 7 → 9. `readmission` and `preop` are the eighth
-  // and ninth; `ipd_discharge` stays out until D2, which is what keeps this a count and not a
-  // rubber stamp: SUPPORTED_ENGINES and the registry must still disagree with ENGINE_IDS.
-  assert.equal(registered.length, 9);
+  /**
+   * ⚠️ RULE 1a, §17.9 DECISION 117(a) — 9 → 10, AND THE COUNT NOW EQUALS `ENGINE_IDS`.
+   *
+   * D1 left this count meaningful by having one engine out: the registry and `SUPPORTED_ENGINES`
+   * had to agree with each other and DISAGREE with `ENGINE_IDS`. D2b wires the tenth, so the
+   * three-way agreement is asserted instead — which is a stronger statement, not a weaker one:
+   * every engine this platform DECLARES is now one it can actually run, and a new `ENGINE_IDS`
+   * entry with no adapter fails here on the day it is added.
+   */
+  assert.equal(registered.length, 10);
+  assert.deepEqual(registered, [...ENGINE_IDS].sort(), 'every declared engine is wired');
   assert.ok(registered.includes('ipd_episode'), 'the extracted IPD pipeline is a registered engine');
   assert.ok(registered.includes('readmission') && registered.includes('preop'), 'the two Slice D1 engines');
-  assert.ok(!registered.includes('ipd_discharge'), 'and the one decision 103 holds back for D2');
+  assert.ok(registered.includes('ipd_discharge'), 'and the tenth, which decision 117(a) wired in D2b');
   for (const e of SUPPORTED_ENGINES) assert.ok(ENGINE_STAGES[e], `${e} must declare stages`);
 });
 

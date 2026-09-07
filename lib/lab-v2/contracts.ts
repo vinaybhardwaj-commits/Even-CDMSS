@@ -105,12 +105,20 @@ export const SUPPORTED_ENGINES: readonly EngineId[] = [
    * identifying input, and the reason decision 105 exists. Under decision 34 an engine like this
    * was simply unsupported; under 105 it is supported, its tools are marked `identifying_input`,
    * and the identifier is used in the request and never written to `lab_v2` (decision 99).
-   *
-   * ⚠️ `ipd_discharge` IS DELIBERATELY ABSENT and stays "not wired yet; arrives in slice D2". Its
-   * extraction is a `compute.ts`-sized one with 22 source-text guard sites and an unfenced
-   * multimodal read (decision 102, fixed this round); decision 103 splits it out for that reason.
    */
   'readmission', 'preop',
+  /**
+   * §17.9 round D2b, decision 117(a) — THE TENTH, and the last of `ENGINE_IDS`.
+   *
+   * Decision 103 held it out of D1 for two reasons and both are now closed: the unfenced
+   * multimodal read was fenced by decision 102, and the "compute.ts-sized extraction with 22
+   * source-text guard sites" was avoided rather than paid for. `lib/ipd-audit/compute.ts` COMPOSES
+   * `analyzeCase` and `buildIpdAuditRow` where they already live instead of moving ten I/O phases
+   * out of `run.ts`, so the 19 guard assertions the D2 survey counted are untouched and the engine
+   * is reachable. Its case is one discharge document, keyed by `documentId` and frozen from the
+   * STORED extract — never from a fresh PDF read.
+   */
+  'ipd_discharge',
 ];
 
 /**
@@ -208,13 +216,61 @@ export const ENGINE_STAGES: Partial<Record<EngineId, readonly EngineStage[]>> = 
     { name: 'preop_suggest', conditional: true },
     { name: 'preop_narrative', conditional: true },
   ],
-  // lib/doc-audit.ts:199, :309/310, :423, :433, :443.
+  /**
+   * lib/doc-audit.ts:199, :309/310, :423, :433, :443 — and, under DECISION 124, the three this
+   * list was missing.
+   *
+   * ⚠️ A3 SHIPPED A LATENT DEFECT AND 124 CLOSES IT. `doc_audit_critique_llm` (`:593`) and
+   * `doc_audit_revise` (`:605`) fire BY DEFAULT — the gate is `DOC_AUDIT_AUDIT !== '0'` (`:486`),
+   * so an unset variable enables them — and the fenced chat edge refuses an unpriced label by name
+   * (`adapters/types.ts:244-250`). An arm priced against this list therefore met a
+   * `MODEL_UNSUPPORTED` on the second leg of every `doc_audit` run. `pathway_skeleton` (`:525` →
+   * `lib/pathway.ts:68`) is the third: it runs on every audit and soft-fails to a null skeleton,
+   * so its absence cost no error and silently removed the idealised care-path spine from the report.
+   *
+   * ⚠️ ALL THREE ARE MARKED CONDITIONAL, WHICH IS THE HONEST MARKING. `critique_llm` is behind a
+   * flag that is on by default, `revise` fires only when the critique asks for it (`:603`), and
+   * `pathway_skeleton` soft-fails; §35a still requires every one of them to be PRICED, and a
+   * conditional stage that does not fire makes no call and no charge.
+   */
   doc_audit: [
     { name: 'doc_audit_analyze', conditional: false },
+    { name: 'doc_audit_critique_llm', conditional: true },
+    { name: 'doc_audit_revise', conditional: true },
     { name: 'doc_audit_cite_gate', conditional: false },
     { name: 'doc_audit_prognosis', conditional: false },
     { name: 'doc_audit_prognosis_critique', conditional: false },
     { name: 'doc_audit_prognosis_revise', conditional: false },
+    { name: 'pathway_skeleton', conditional: true },
+  ],
+  /**
+   * §17.9 round D2b, DECISION 124 — the eight labels `analyzeCase`'s call tree can emit, measured
+   * in source and confirmed on production traces (V's console read, 07 Sep 2026: one
+   * request/response pair at each of six labels and fifteen pairs at the cite gate, on the three
+   * newest `ipd-discharge-audit/0.2` traces).
+   *
+   * ⚠️ THE SAME EIGHT AS `doc_audit`, AND THAT IS NOT A DUPLICATION TO FOLD AWAY. The two engines
+   * share one call tree (`lib/doc-audit.ts:484`) and differ in what surrounds it — `doc_audit` is
+   * the A3 route adapter, `ipd_discharge` composes `compute.ts` over a frozen extract — so the two
+   * lists moving together is a fact about today and not a constraint. §4.2 keys stages by ENGINE
+   * because an arm prices an engine.
+   *
+   * ⚠️ SEVEN OF THE EIGHT ARE CONDITIONAL, and the two that are not still both fire on every run:
+   * `doc_audit_analyze` (`:542`) is unconditional, and `pathway_skeleton` (`:525`) runs on every
+   * audit but soft-fails, which is why it is marked conditional rather than not. The prognosis
+   * chain is behind `PROGNOSIS_AUDIT === '1'` and the cite gate behind `DOC_AUDIT_CITE_GATE === '1'`
+   * — both `process.env` reads (decision 123), both dark by default in most deployments, and both
+   * measured live in production. §35a: listed, priced, and charged only when they fire.
+   */
+  ipd_discharge: [
+    { name: 'doc_audit_analyze', conditional: false },
+    { name: 'doc_audit_critique_llm', conditional: true },
+    { name: 'doc_audit_revise', conditional: true },
+    { name: 'doc_audit_cite_gate', conditional: true },
+    { name: 'doc_audit_prognosis', conditional: true },
+    { name: 'doc_audit_prognosis_critique', conditional: true },
+    { name: 'doc_audit_prognosis_revise', conditional: true },
+    { name: 'pathway_skeleton', conditional: true },
   ],
 };
 

@@ -71,6 +71,9 @@ export const COMPARE_SCHEMAS = {
         avoidable_verdict_after: z.string().nullable(),
         tier_before: z.string().nullable(),
         tier_after: z.string().nullable(),
+        /** §17.9 item 6 — `ipd_discharge`'s headline. `band` is already declared above. */
+        care_value_index_before: z.number().nullable(),
+        care_value_index_after: z.number().nullable(),
         result_hash_a: z.string().nullable(),
         result_hash_b: z.string().nullable(),
         result_hash_equal: z.boolean(),
@@ -124,6 +127,13 @@ interface Summary {
   avoidable_verdict?: string | null;
   /** `adapters/preop.ts:171`. Absent on every other engine. */
   tier?: string | null;
+  /**
+   * §17.9 item 6 — `adapters/ipd-discharge.ts`'s headline, `Math.round(valueScore.headline)` as
+   * `assemble.ts:73` computes it. `band` is already read above and `ipd_discharge` fills it with
+   * the same A–E vocabulary the OPD engine uses, so a diff of two discharge runs shows the
+   * headline moving AND the band it moved across.
+   */
+  care_value_index?: number | null;
 }
 
 const summaryOf = (i: Item): Summary =>
@@ -255,6 +265,8 @@ export async function runDiff(deps: CompareDeps, args: { run_a: string; run_b: s
       avoidable_verdict_after: sy.avoidable_verdict ?? null,
       tier_before: sx.tier ?? null,
       tier_after: sy.tier ?? null,
+      care_value_index_before: typeof sx.care_value_index === 'number' ? sx.care_value_index : null,
+      care_value_index_after: typeof sy.care_value_index === 'number' ? sy.care_value_index : null,
       result_hash_a: ha,
       result_hash_b: hb,
       result_hash_equal: ha != null && ha === hb,
