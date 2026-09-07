@@ -178,6 +178,24 @@ async function seedAudit(db: Db, o: { documentId?: string; cvi?: number; band?: 
 
 const runner = (db: Db) => (async (statement: string, params: unknown[]) => db.query(statement, params)) as never;
 
+/**
+ * ⚠️ RULE 1a, §17.10 DECISION 134 — THE ROUND D2c SEAM, AND WHY EVERY TEST BELOW TAKES IT.
+ *
+ * D2c makes the freeze RECORD a replay: `freezeIpdDischargeDocument` now runs the engine once
+ * against production's stored replies and refuses `SOURCE_UNAVAILABLE` when there are none, exactly
+ * as D2a's readmission freeze does. Every test in this file freezes a fixture document that has no
+ * audit trace, so without this seam all eight of them would fail on a fact none of them is about.
+ *
+ * ⚠️ AND IT IS INJECTED RATHER THAN THE FIXTURES BEING GIVEN TRACES, DELIBERATELY. These tests
+ * assert D2b's behaviour — the freeze's shape, the eight stages reaching the gateway, the §35a
+ * refusal — and a fixture with a trace would silently convert three of them into REPLAY tests that
+ * no longer exercise the fresh path at all. D2a made the same call for the same reason
+ * (`d1-engines.test.ts`'s `NO_STEPS`). The recorded path is exercised in `d2c-ipd-discharge-replay.test.ts`.
+ */
+const NO_STEPS = {
+  recordSteps: (async () => ({ steps: {}, retrieval: {}, text_model: null })) as never,
+};
+
 /** The freeze with every read answered from the PGlite tables and the two db13 fixtures. */
 function freeze(db: Db, documentId = DOC, over: Record<string, unknown> = {}) {
   return freezeIpdDischargeDocument(documentId, {
@@ -186,6 +204,7 @@ function freeze(db: Db, documentId = DOC, over: Record<string, unknown> = {}) {
     fetchBilling: (async () => BILLING) as never,
     fetchTotal: (async () => BILLED_TOTAL) as never,
     salt: SALT,
+    ...NO_STEPS,
     ...over,
   });
 }
@@ -391,6 +410,12 @@ test('§17.9 item 7: the frozen ipd_discharge body carries exactly these keys, a
   assert.deepEqual(keyInventory(c.frozen), [
     // the body itself
     'billing', 'engine', 'extracted', 'extraction_version', 'envelope', 'stripped',
+    // ⚠️ RULE 1a, §17.10 DECISION 134 — the four keys round D2c adds. `steps` and `retrieval` are
+    // empty here (see NO_STEPS above), so they contribute no nested keys; `d2c-ipd-discharge-replay`
+    // enumerates a recorded body, every `ChunkHitWithMeta` field included.
+    'steps', 'retrieval', 'text_model', 'flags',
+    // frozen.flags — the three process.env reads analyzeCase:486-488 makes, as they stood at freeze
+    'DOC_AUDIT_AUDIT', 'PROGNOSIS_AUDIT', 'DOC_AUDIT_CITE_GATE',
     // frozen.extracted — ExtractedCase (doc-audit-core.ts:123-149) MINUS verbatimSections
     'adminFacts', 'aftercare', 'completeness', 'confidence', 'courseSummary', 'detectedDocType',
     'diagnosis', 'disposition', 'docType', 'followUp', 'indication', 'investigations',
@@ -556,7 +581,9 @@ test('§17.9 decision 109: engine_describe ipd_discharge is supported, with eigh
   assert.equal(out.supported, true);
   assert.equal(out.identifying_input, true, 'decision 118: keyed by documentId');
   assert.deepEqual(out.stages.map((s) => s.name), [...IPD_DISCHARGE_STAGES]);
-  assert.deepEqual(out.frozen_inputs, ['extracted', 'envelope', 'billing', 'extraction_version']);
+  // ⚠️ RULE 1a, §17.10 DECISION 134 / item 6 — `steps` and `retrieval` join the frozen inputs.
+  assert.deepEqual(out.frozen_inputs,
+    ['extracted', 'envelope', 'billing', 'extraction_version', 'steps', 'retrieval']);
   // DECISION 125 — the three retrievals are live, so no frozen replay is offered.
   assert.deepEqual(out.replay_exactness_available, ['mutable_source']);
   assert.equal(out.engine_version, IPD_ENGINE_VERSION);
