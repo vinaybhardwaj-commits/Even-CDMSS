@@ -20,8 +20,9 @@ import { callCarriesIdentifyingInput } from '../service';
 import { freezeRequestCase, identifyingKeys, requiresIdentifyingInput } from '../sources/requests';
 import { withLabExecution, labExecution } from '../../lab-execution-context';
 import { generateFromDocument } from '../../gemini-multimodal';
+import { SCOPES_BY_PRINCIPAL } from '../contracts';
 import { ALL_ADAPTERS } from '../adapters/types';
-import { BY_NAME } from '../registry';
+import { BY_NAME, visibleTools } from '../registry';
 
 const ROOT = process.cwd();
 const EDGES = { chat: async () => ({}), retrieve: async () => ({ hits: [] }), event: () => {} };
@@ -191,4 +192,69 @@ test('§17.8 item 4: readmission and preop are supported, adapted and priced; ip
   }
   // Decision 104 — the narrative leg is out of scope for D1, so it is NOT priced.
   assert.ok(!(ENGINE_STAGES.readmission ?? []).some((s) => s.name === 'readmit_narrative'));
+});
+
+// ═════════════════════════════════════════════════════════════════════════════════════
+// D1 FIX 1 — DECISION 108
+// ═════════════════════════════════════════════════════════════════════════════════════
+
+test('§17.8 decision 108: the operator can now run an identifying experiment end to end', () => {
+  /**
+   * ⚠️ THE BUG THIS CLOSES WAS A GAP BETWEEN TWO DECISIONS, NOT INSIDE EITHER.
+   *
+   * Decision 105 makes `operator` the only principal that may send an identifier — `research` holds
+   * `research_write` and may NEVER hold the attribute. But a Slice D run needs `dataset_create`,
+   * then `experiment_create`, then `experiment_run`, and all three are `research_write`, which
+   * `operator` did not have. Measured live on `c7f353af`: `operator` saw 33 tools and none of the
+   * three, so no principal could run an identifying experiment at all.
+   */
+  const operator = visibleTools(SCOPES_BY_PRINCIPAL.operator).map((t) => String(t.name));
+  for (const tool of ['dataset_create', 'experiment_create', 'experiment_run']) {
+    assert.ok(operator.includes(tool), `the operator must see ${tool} or Slice D has no reachable path`);
+  }
+  // And the attribute is what actually lets the identifier through — the scope alone does not.
+  assert.equal(mayUseIdentifyingInput('operator', {}), false, 'off the list, still refused');
+  assert.equal(mayUseIdentifyingInput('operator', { [IDENTIFYING_PRINCIPALS_ENV]: 'operator' }), true);
+
+  // ⚠️ RESEARCH GAINS NOTHING. The two rows are separate, and the key that may never see a person
+  // is byte-identical to what it was.
+  assert.deepEqual([...SCOPES_BY_PRINCIPAL.research], ['research_read', 'research_write', 'production_read']);
+  assert.throws(() => mayUseIdentifyingInput('research', { [IDENTIFYING_PRINCIPALS_ENV]: 'research' }));
+
+  // ⚠️ AND THE OPERATOR STILL DOES NOT HOLD THE TWO SCOPES THAT CHANGE WHAT A CLINICIAN SEES.
+  // `research_write` is not `release` and is not `review`; activation and approval are untouched.
+  assert.ok(!SCOPES_BY_PRINCIPAL.operator.includes('release'));
+  assert.ok(!SCOPES_BY_PRINCIPAL.operator.includes('review'));
+  for (const tool of ['release_prepare', 'release_apply', 'release_rollback', 'review_submit', 'review_queue']) {
+    assert.ok(!operator.includes(tool), `the operator must not see ${tool}`);
+  }
+
+  // The reviewer and release rows are untouched, and so are their tool counts.
+  assert.deepEqual([...SCOPES_BY_PRINCIPAL.reviewer], ['review', 'research_read', 'production_read']);
+  assert.deepEqual([...SCOPES_BY_PRINCIPAL.release], ['release', 'production_read']);
+  assert.equal(visibleTools(SCOPES_BY_PRINCIPAL.reviewer).length, 32);
+  assert.equal(visibleTools(SCOPES_BY_PRINCIPAL.release).length, 13);
+  assert.equal(visibleTools(SCOPES_BY_PRINCIPAL.research).length, 39);
+});
+
+test('§17.8 decision 108: the operator gains NINE tools, not three, and that is reported', () => {
+  /**
+   * ⚠️ THE DECISION NAMES THREE AND THE SCOPE GRANTS NINE, because a scope is not a list of tools.
+   * The other six ride along by construction: run_cancel, run_retry, run_replay, episode_replay,
+   * corpus_stage and rule_propose. It is a real widening and it is pinned here rather than absorbed
+   * — if a tenth appears, this test says so.
+   *
+   * It is not a privilege escalation. `operator` already holds `production_write`, the stronger
+   * authority; and both staging tools stage into QUARANTINE — `corpus_stage` writes rows that are
+   * `visible = false` under a `labq:` prefix, and `rule_propose` writes a proposal that
+   * `lvc_recommendations` never sees. Activating either needs `release`, which the operator does
+   * not hold and does not gain.
+   */
+  const gained = visibleTools(SCOPES_BY_PRINCIPAL.operator)
+    .filter((t) => t.scopes.includes('research_write') && !t.scopes.some((s) => (['production_read', 'production_write', 'research_read'] as string[]).includes(s)))
+    .map((t) => String(t.name)).sort();
+  assert.deepEqual(gained, [
+    'corpus_stage', 'dataset_create', 'episode_replay', 'experiment_create', 'experiment_run',
+    'rule_propose', 'run_cancel', 'run_replay', 'run_retry',
+  ]);
 });

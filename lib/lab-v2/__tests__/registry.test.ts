@@ -93,7 +93,12 @@ test('§15.2: each of the four keys maps to its principal and its scopes', () =>
     assert.equal(principalFor(KEYS.LAB_API_KEY_REVIEWER), 'reviewer');
     assert.equal(principalFor(KEYS.LAB_API_KEY_RELEASE), 'release');
     assert.deepEqual([...scopesFor('research')], ['research_read', 'research_write', 'production_read']);
-    assert.deepEqual([...scopesFor('operator')], ['production_read', 'production_write', 'research_read']);
+    // ⚠️ RULE 1a, §17.8 DECISION 108. `research_write` was added because decision 105 makes
+    // `operator` the only principal that may send an identifier, and dataset_create,
+    // experiment_create and experiment_run are all research_write — so without it no principal
+    // could run an identifying experiment at all. The other three rows are unchanged, which is
+    // what this assertion is really for.
+    assert.deepEqual([...scopesFor('operator')], ['production_read', 'production_write', 'research_read', 'research_write']);
     assert.deepEqual([...scopesFor('reviewer')], ['review', 'research_read', 'production_read']);
     assert.deepEqual([...scopesFor('release')], ['release', 'production_read']);
   });

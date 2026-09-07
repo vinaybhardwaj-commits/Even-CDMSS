@@ -68,17 +68,34 @@ test('§15.3: tools/list is scope-filtered for each of the four principals', asy
   // lab-v2 §17.7 C3 adds one research-visible: failure_cluster. review_queue is `review` ALONE.
   assert.equal(listed.research.length, 39);
 
-  // The operator holds production_write, so it alone sees worker_control — but it holds
-  // no research_write, so the five research-writing tools are hidden from it.
+  // The operator holds production_write, so it alone sees worker_control.
   assert.ok(listed.operator.includes('worker_control'));
-  assert.ok(!listed.operator.includes('dataset_create'));
+  // ⚠️ RULE 1a, §17.8 DECISION 108. This asserted the operator could NOT see dataset_create, which
+  // was true until decision 105 made it the only principal that may send an identifier — and then
+  // it was the bug: no principal could run an identifying experiment. The assertion is inverted,
+  // and the one it was really protecting is kept below and made explicit: `release` is the scope
+  // the operator still does not hold.
+  assert.ok(listed.operator.includes('dataset_create'));
+  assert.ok(!listed.operator.includes('release_apply'), 'research_write is not the release scope');
+  assert.ok(!listed.operator.includes('review_submit'), 'nor the review scope');
   // The operator adds budget_reconcile (production_write) on top of the reads it can see, and
   // decision 49's episode_checkpoint_inspect, which is a research READ the operator already holds.
-  // §17.6 five, then §17.7's three research reads + release_status, then C2's rule_simulate
-  // (research_read), then C3's failure_cluster (research_read). rule_propose is research_write and
-  // the operator holds none; review_queue is `review` and the operator holds that neither.
-  assert.equal(listed.operator.length, 33);
-  assert.ok(!listed.operator.includes('episode_replay'), 'a replay is a research write; the operator has none');
+  /**
+   * ⚠️ RULE 1a, §17.8 DECISION 108 — 33 → 42, and the jump is NINE rather than the three the
+   * decision names. `operator` gained `research_write`, so it now sees every research-write tool:
+   * dataset_create, experiment_create and experiment_run (the three Slice D needs), and with them
+   * run_cancel, run_retry, run_replay, episode_replay, corpus_stage and rule_propose.
+   *
+   * That is a real widening and it is reported rather than absorbed. It is not a privilege
+   * escalation: `operator` already holds `production_write`, which is the stronger authority —
+   * corpus_stage and rule_propose both stage into quarantine and neither can activate anything,
+   * because activation is the `release` scope, which `operator` does not hold and does not gain.
+   */
+  assert.equal(listed.operator.length, 42);
+  // ⚠️ RULE 1a, §17.8 DECISION 108 — inverted for the same reason as dataset_create above. A
+  // replay IS a research write and the operator now holds that scope; what it still does not hold
+  // is `release`, which is what actually keeps it from changing what a clinician sees.
+  assert.ok(listed.operator.includes('episode_replay'));
 
   // reviewer and release hold no research_write: no dataset or experiment creation.
   for (const p of ['reviewer', 'release'] as const) {

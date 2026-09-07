@@ -32,10 +32,25 @@ export type Classification = (typeof CLASSIFICATIONS)[number];
 export const COST_CLASSES = ['free', 'metered'] as const;
 export type CostClass = (typeof COST_CLASSES)[number];
 
-/** §3.1 — the key a caller holds IS its authority. No self-declared header, ever. */
+/**
+ * §3.1 — the key a caller holds IS its authority. No self-declared header, ever.
+ *
+ * ⚠️ §17.8 DECISION 108 — `operator` GAINS `research_write`, AND WITHOUT IT SLICE D HAD NO
+ * REACHABLE PATH AT ALL. Decision 105 gives `operator` the `data_scope` attribute, so it is the
+ * only principal that may send an identifier; but a run needs `dataset_create`, then
+ * `experiment_create`, then `experiment_run`, and all three are `research_write`. `research` has
+ * the scope and can never hold the attribute (decision 105); `operator` had the attribute and not
+ * the scope. Measured live on `c7f353af`: `operator` saw 33 tools and none of the three. So no
+ * principal could run an identifying experiment, which is the whole of Slice D.
+ *
+ * ⚠️ THE ATTRIBUTE STILL GATES THE IDENTIFIER, AND THE SCOPE STILL GATES THE TOOL. This grants
+ * `operator` the research-write TOOLS; it grants nothing about identifying input, which remains
+ * `production_read` plus the env list. And it grants `research` nothing: the two are separate rows
+ * and `research` is unchanged, so the key that may never see a person still cannot.
+ */
 export const SCOPES_BY_PRINCIPAL: Record<Principal, readonly Scope[]> = {
   research: ['research_read', 'research_write', 'production_read'],
-  operator: ['production_read', 'production_write', 'research_read'],
+  operator: ['production_read', 'production_write', 'research_read', 'research_write'],
   reviewer: ['review', 'research_read', 'production_read'],
   release: ['release', 'production_read'],
 };
