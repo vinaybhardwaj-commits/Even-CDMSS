@@ -857,15 +857,20 @@ test('§17.10 item 8: dataset_create still reaches the freeze, and run_diff is u
   const db = await freshDb();
   const { IDENTIFYING_PRINCIPALS_ENV } = await import('../contracts');
   await withFlags({ [IDENTIFYING_PRINCIPALS_ENV]: 'operator', LAB_V2_MEMBER_SALT: SALT }, async () => {
-    let err: LabError | null = null;
-    try {
-      await callTool(deps(db), 'dataset_create', {
-        engine: 'ipd_discharge', body: { documentId: DOC }, idempotency_key: 'd2c-1',
-      });
-    } catch (e) { err = e as LabError; }
-    assert.equal(err?.code, 'SOURCE_UNAVAILABLE', 'the sandbox has no production database');
-    assert.ok(!/not wired yet/.test(err!.message), 'never the unsupported-engine text');
-    assert.ok(!err!.message.includes(DOC), 'the identifier is not echoed back');
+    /**
+     * ⚠️ RULE 1a, §17.11 DECISION 144 — THE CALL NO LONGER REFUSES; IT QUEUES. Same edit and same
+     * reason as `d2b-ipd-discharge.test.ts`: until D3 the freeze ran inside the tool call and this
+     * sandbox has no production database, so the assertion was a `SOURCE_UNAVAILABLE`. The freeze
+     * is now a run, the refusal has moved to the item, and what this test is for — that
+     * dataset_create REACHES the freeze path for this engine and echoes no identifier — is proved
+     * by the run it returns. Not a mechanical pin; the round report says so.
+     */
+    const queued = await callTool(deps(db), 'dataset_create', {
+      engine: 'ipd_discharge', body: { documentId: DOC }, idempotency_key: 'd2c-1',
+    }) as { freeze_run_id: string; state: string; requested: number };
+    assert.equal(queued.state, 'freezing');
+    assert.equal(queued.requested, 1);
+    assert.ok(!JSON.stringify(queued).includes(DOC), 'the identifier is not echoed back');
   });
 
   // run_diff: D2a's six fields and D2b's headline, untouched by this round.

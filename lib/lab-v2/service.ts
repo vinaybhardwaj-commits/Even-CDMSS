@@ -21,6 +21,7 @@ import {
   LabError, RUN_DEADLINE_MS, SCOPES_BY_PRINCIPAL, SUPPORTED_ENGINES, ENGINE_SLICE, PROVIDERS, stagesFor,
   armBodySchema, datasetBodySchema, experimentBodySchema, hash, toolSchemas,
   type Principal, type Scope, type ToolName, IDENTIFYING_PRINCIPALS_ENV, ENGINE_IDS, type EngineId,
+  DATASET_FREEZE_OPERATION, V1_DEPRECATIONS,
 } from './contracts';
 // §17.8 decision 105 — the data_scope gate lives beside the keys, not beside the tools.
 import { dataScopeFor, identifyingPrincipals, mayUseIdentifyingInput } from '../mcp-v2/auth';
@@ -62,6 +63,11 @@ import { RULES_SCHEMAS, rulePropose, ruleSimulate } from './tools/rules';
 // Slice C round C3 (§17.7, decisions 96, 97).
 import { CLUSTER_SCHEMAS, failureCluster } from './tools/cluster';
 import { QUEUE_SCHEMAS, reviewQueue } from './tools/queue';
+// Slice D round D3 (§17.11, decisions 141, 142, 146). Schemas beside their handlers, as every
+// round since A2 has done.
+import { CASE_SCHEMAS, caseAsk, caseTimeline } from './tools/case';
+import { MINIMIZE_SCHEMAS, failureMinimize } from './tools/minimize';
+import { FREEZE_ARM_HASH, freezeItemKey } from './adapters/dataset-freeze';
 import { freezeCohort } from './sources/cohort';
 import { freezeOpdCase, validateFrozenCase } from './sources/opd';
 import { openrouterConfigured, geminiConfigured } from '../llm';
@@ -130,6 +136,8 @@ const SCHEMAS: Record<string, SchemaPair> = {
   ...(RULES_SCHEMAS as unknown as Record<string, SchemaPair>),
   ...(CLUSTER_SCHEMAS as unknown as Record<string, SchemaPair>),
   ...(QUEUE_SCHEMAS as unknown as Record<string, SchemaPair>),
+  ...(CASE_SCHEMAS as unknown as Record<string, SchemaPair>),
+  ...(MINIMIZE_SCHEMAS as unknown as Record<string, SchemaPair>),
   // §17.6 item 6 — report_export goes FULL. Its schema is widened here rather than in
   // tools/observation.ts because §17.6's file contract leaves that file untouched, and this
   // table is where both rounds' schemas already meet. A later spread wins, so this entry
@@ -189,6 +197,61 @@ function stripIdentityFields(args: Record<string, unknown>): Record<string, unkn
  * the recon legs read, and a preop case carries all six source fetches, so a replay of either reads
  * nothing live.
  */
+/**
+ * §17.11 DECISION 144 — `dataset_create ipd_discharge` SUBMITS A RUN AND RETURNS.
+ *
+ * One item per requested key, each carrying `{engine, source_key_hash, source_key}` and nothing
+ * else. The item's `case_key` is a CONTENT HASH of the engine and the key — never the key — because
+ * `items.case_key` is read back by every observation tool; the key itself lives in the payload,
+ * which is the run's private work, and the freeze adapter erases it the moment the item settles.
+ *
+ * ⚠️ THE DEDUPLICATION IS `submitRun`'s, NOT A NEW ONE. The same `(owner, 'dataset_freeze',
+ * idempotency_key)` returns the prior run with `deduplicated: true`, so a client that retries a
+ * timed-out call gets the run it already has rather than a second freeze of twenty documents.
+ *
+ * ⚠️ NO BUDGET IS SPENT AND ONE IS STILL REQUIRED. `submitRun` takes a budget id because every run
+ * has one; a freeze prices no stage and the freeze adapter never touches the gateway, so the
+ * ledger records zero against it. Using the caller's default budget keeps the run visible in
+ * `run_status`'s money columns rather than inventing a second accounting path.
+ */
+async function submitIpdDischargeFreeze(deps: ServiceDeps, args: Record<string, unknown>): Promise<unknown> {
+  const bodyArg = (args.body ?? {}) as Record<string, unknown>;
+  const cohort = args.cohort as { case_keys?: string[] } | undefined;
+  const single = bodyArg.documentId;
+  const keys = (cohort?.case_keys ?? (single == null ? [] : [String(single)]))
+    .map((k) => String(k).trim()).filter((k) => k.length > 0);
+  if (!keys.length) {
+    throw new LabError('INVALID_INPUT',
+      'ipd_discharge takes body.documentId, or cohort.case_keys as discharge document ids');
+  }
+  const skip = new Set((args.exclusions as string[]) ?? []);
+  const wanted = [...new Set(keys.filter((k) => !skip.has(k)))];
+  if (!wanted.length) throw new LabError('INVALID_INPUT', 'every requested case is in the exclusion list');
+
+  const budget = await ensureBudget(deps.db, deps.principal, 'default', DEFAULT_BUDGET_CAP_MICROUSD);
+  const items = wanted.map((k) => ({
+    case_key: freezeItemKey('ipd_discharge', k),
+    arm_hash: FREEZE_ARM_HASH,
+    repetition: 1,
+    payload: { engine: 'ipd_discharge', source_key_hash: freezeItemKey('ipd_discharge', k), source_key: k },
+  }));
+  const { run, itemCount, deduplicated } = await submitRun(
+    deps.db, deps.principal, DATASET_FREEZE_OPERATION, null, budget.id,
+    String(args.idempotency_key), hash({ engine: 'ipd_discharge', cases: items.length }),
+    RUN_DEADLINE_MS, items,
+  );
+  return {
+    freeze_run_id: run.id,
+    state: 'freezing' as const,
+    requested: itemCount,
+    deduplicated,
+    note: 'Each case is frozen by the tick, one per claim, and the last item to settle assembles the '
+      + 'dataset object; its item summary in run_result carries dataset_id and hash. A case that '
+      + 'cannot be frozen becomes an exclusion naming the cause — including decision 147\'s phase '
+      + 'deadlines, which name the phase and the elapsed milliseconds.',
+  };
+}
+
 async function sliceDDataset(
   deps: ServiceDeps, args: Record<string, unknown>, engine: 'readmission' | 'preop' | 'ipd_discharge',
 ): Promise<unknown> {
@@ -313,7 +376,21 @@ export async function callTool(deps: ServiceDeps, name: string, rawArgs: unknown
    * this tool and is missing the data-scope attribute, which is fixed by an env list rather than by
    * a different key.
    */
-  if (spec.identifying_input && callCarriesIdentifyingInput(rawArgs) && !mayUseIdentifyingInput(deps.principal)) {
+  /**
+   * §17.11 DECISION 146 — `identifying_always`, AND WHY THE ENGINE DISCRIMINATOR IS NOT ENOUGH.
+   *
+   * `callCarriesIdentifyingInput` asks whether THIS CALL carries an identifier by looking at the
+   * engine named in its arguments, which is exactly right for `dataset_create` — seven of its ten
+   * engines take a de-identified body. It is wrong for `case_ask`, whose whole input is a person:
+   * `requestFieldsFor('opd_note_audit')` declares no identifying field (the table has no name and
+   * no UHID), so the engine test would have waved a `case_ask` for one individual straight through
+   * to the research key. `case_timeline` names no engine at all and already fails closed.
+   *
+   * So a tool may declare that EVERY call it receives carries an identifier, and the two D3 case
+   * tools do. The engine test still runs for every tool that does not.
+   */
+  const carriesIdentifier = spec.identifying_always === true || callCarriesIdentifyingInput(rawArgs);
+  if (spec.identifying_input && carriesIdentifier && !mayUseIdentifyingInput(deps.principal)) {
     throw new LabError('CLASSIFICATION_REQUIRED',
       `'${name}' for engine '${String((rawArgs as Record<string, unknown> | null)?.engine ?? 'unknown')}' `
       + `is sent an identifier that resolves to a person, and principal '${deps.principal}' has `
@@ -392,6 +469,13 @@ const HANDLERS: Record<ToolName, Handler> = {
       sdk_version: deps.sdkVersion,
       lab_v2_enabled: process.env.LAB_V2_ENABLED === '1',
       pricing_version: PRICING_VERSION,
+      /**
+       * §17.11 DECISION 143 — the first retirement this programme has performed, said out loud on
+       * the surface a client already calls to find out what exists. A tool removed from a list is
+       * indistinguishable from a tool that was never there; a deprecation entry names what replaced
+       * it and since when, so a stale client's operator has somewhere to look.
+       */
+      deprecations: [...V1_DEPRECATIONS],
     };
   },
 
@@ -530,7 +614,14 @@ const HANDLERS: Record<ToolName, Handler> = {
     // ── §17.8 D1 fix 2 (decision 109) — the two Slice D engines ─────────────────────
     // §17.9 round D2b decision 117(a) adds the third: one discharge document, frozen from its
     // STORED extract at DOC_EXTRACT_VERSION and never from a fresh PDF read (decision 102).
-    if (engine === 'readmission' || engine === 'preop' || engine === 'ipd_discharge') {
+    /**
+     * §17.11 DECISION 144 — `ipd_discharge` LEAVES THIS PATH AND BECOMES A JOB; the other two stay
+     * exactly where they were. Neither `readmission` nor `preop` runs an engine at freeze time and
+     * neither has ever failed to return, so making them asynchronous would cost every caller a
+     * poll for nothing.
+     */
+    if (engine === 'ipd_discharge') return submitIpdDischargeFreeze(deps, args);
+    if (engine === 'readmission' || engine === 'preop') {
       return sliceDDataset(deps, args, engine);
     }
 
@@ -1008,6 +1099,23 @@ const C3_HANDLERS: Record<string, Handler> = {
   },
 };
 
+/**
+ * Slice D round D3 (§17.11, decisions 141, 142, 146). The two case tools read PRODUCTION through
+ * narrow statements and store nothing; `failure_minimize` is the only one of the three that runs
+ * anything, and it runs the engine the failed run already ran, at that run's own arm.
+ */
+const D3_HANDLERS: Record<string, Handler> = {
+  async case_ask(deps, args) {
+    return caseAsk({ db: deps.db, principal: deps.principal }, args as never);
+  },
+  async case_timeline(deps, args) {
+    return caseTimeline({ db: deps.db, principal: deps.principal }, args as never);
+  },
+  async failure_minimize(deps, args) {
+    return failureMinimize({ db: deps.db, principal: deps.principal }, args as never);
+  },
+};
+
 const ALL_HANDLERS: Record<string, Handler> = {
   ...HANDLERS,
   ...(OBSERVATION_HANDLERS as unknown as Record<string, Handler>),
@@ -1017,4 +1125,5 @@ const ALL_HANDLERS: Record<string, Handler> = {
   ...C1_HANDLERS,
   ...C2_HANDLERS,
   ...C3_HANDLERS,
+  ...D3_HANDLERS,
 };

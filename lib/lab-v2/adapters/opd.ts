@@ -126,12 +126,26 @@ export function makeOpdAdapter(deps: OpdAdapterDeps = {}): Adapter {
           meta: { vector_pool: 0, bm25_pool: 0, fused: frozenSources.length, reranked: false },
         };
       }
-      const out = await exitLabExecution(() => retrieveImpl(query, (opts ?? {}) as RetrieveOptions));
+      /**
+       * ⚠️ §17.11 DECISION 145 — TWO OPTIONS FORCED, copying `adapters/ipd-discharge.ts:276`.
+       * Decision 133's three unfenced egress paths on this exit are `expandQuery`
+       * (`lib/retrieve.ts:405`), the rerank judge (`lib/rerank.ts:311`) and the embedding
+       * (`lib/llm.ts:512-513`); `skipExpand` and `useReranker: false` kill the first two, and the
+       * embedding read is the one decision 133 accepts and names. This line is also taken by the
+       * OPD REPAIR adapter, which runs the same engine and writes a production row — so a fresh
+       * repair makes no model call from retrieval either.
+       *
+       * ⚠️ IT DOES NOT AFFECT THE FROZEN BRANCH ABOVE, which returns the dataset's own sources and
+       * never reaches the corpus at all.
+       */
+      const forced: RetrieveOptions = { ...((opts ?? {}) as RetrieveOptions), skipExpand: true, useReranker: false };
+      const out = await exitLabExecution(() => retrieveImpl(query, forced));
       ctx.event('retrieval_read', {
         query_hash: hash(query),
         chunks: out?.hits?.length ?? 0,
         ms: Date.now() - started,
         frozen: false,
+        forced_no_model: true,
       });
       return out;
     };

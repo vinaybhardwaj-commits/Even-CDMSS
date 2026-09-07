@@ -18,7 +18,7 @@
  */
 import type { Db } from './db';
 import {
-  HEARTBEAT_MS, TICK_MAX_ITEMS, TICK_MAX_ELAPSED_MS, WORKER_ID, LabError, hash,
+  DATASET_FREEZE_OPERATION, HEARTBEAT_MS, TICK_MAX_ITEMS, TICK_MAX_ELAPSED_MS, WORKER_ID, LabError, hash,
   type AssessmentStatus, type ExecutionStatus, type ItemState,
 } from './contracts';
 import { Gateway, type StageSpec } from './gateway';
@@ -49,6 +49,18 @@ function repairAdapters(): Record<string, Adapter> {
   const { makeOpdRepairAdapter } = require('./adapters/opd') as typeof import('./adapters/opd');
   /* eslint-enable @typescript-eslint/no-require-imports */
   return { ...ALL_ADAPTERS(), ipd_episode: makeIpdEpisodeRepairAdapter(), opd_note_audit: makeOpdRepairAdapter() };
+}
+
+/**
+ * §17.11 decision 144 — the freeze map. Required lazily like the repair map, and for one more
+ * reason: `adapters/dataset-freeze.ts` drags `sources/ipd-discharge.ts`, which drags the whole
+ * `lib/doc-audit.ts` module graph that `route-budget-guard.test.ts` reads as source text.
+ */
+function freezeAdaptersFor(db: Db): Record<string, Adapter> {
+  /* eslint-disable @typescript-eslint/no-require-imports */
+  const { freezeAdapters } = require('./adapters/dataset-freeze') as typeof import('./adapters/dataset-freeze');
+  /* eslint-enable @typescript-eslint/no-require-imports */
+  return freezeAdapters(db);
 }
 
 export interface TickOptions {
@@ -117,7 +129,22 @@ export async function tick(opts: TickOptions): Promise<TickReport> {
      */
     const run = opts.adapters ? null : await getRun(db, item.run_id);
     const repair = run?.operation === 'reaudit';
-    const adapters = opts.adapters ?? (repair ? repairAdapters() : ALL_ADAPTERS());
+    /**
+     * §17.11 DECISION 144 — THE SECOND OPERATION-ROUTED MAP, on exactly the precedent above.
+     *
+     * A `dataset_freeze` item does not run an engine: it freezes ONE case and stores it, and the
+     * last item of the run assembles the dataset. It is kept out of `ALL_ADAPTERS` for the same
+     * reason the repair adapters are — the only way to reach it is to be claimed from a run whose
+     * `operation` is `dataset_freeze`, and that string is written by `dataset_create` and by
+     * nothing a caller controls.
+     *
+     * ⚠️ IT NEEDS THE DB, WHICH AN ENGINE ADAPTER NEVER DOES. The assembly reads its siblings'
+     * artifacts and writes the dataset object, so the map is built per tick around this tick's
+     * connection rather than cached like the engine registry.
+     */
+    const isFreeze = run?.operation === DATASET_FREEZE_OPERATION;
+    const adapters = opts.adapters
+      ?? (repair ? repairAdapters() : isFreeze ? freezeAdaptersFor(db) : ALL_ADAPTERS());
     const ok = await runItem({ db, transport: itemTransport, item, workerId, adapters, replayed: Boolean(replayFrom) });
     if (ok) finished += 1;
     await deriveRunState(db, item.run_id);

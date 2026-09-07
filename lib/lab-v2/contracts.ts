@@ -304,6 +304,54 @@ export const OPD_STAGES = ['analysis'] as const;
 export const OBJECT_KINDS = ['dataset', 'arm', 'experiment', 'artifact', 'report', 'operation_plan', 'staged_set', 'release'] as const;
 export type ObjectKind = (typeof OBJECT_KINDS)[number];
 
+/**
+ * §17.11 DECISION 144 — `runs.operation`, WRITTEN DOWN AT LAST.
+ *
+ * The column is free text and always has been, and every value in it is written by the service,
+ * never by a caller: `experiment_run`, `run_replay`, `run_retry` and `reaudit` were the four, and
+ * `worker.ts` already routes the writing adapters off the fourth (decision 67). D3 adds the fifth,
+ * `dataset_freeze`, and routes a second adapter map off it — so the set is now load-bearing twice
+ * and belongs here where both readers can see it, rather than as four string literals in three
+ * files.
+ *
+ * ⚠️ IT IS NOT A DATABASE CONSTRAINT AND IS NOT CLAIMED TO BE. `lab_v2.runs.operation` stays
+ * `text NOT NULL` (`migrations/lab-v2/0001_platform.sql:68`); this round's file contract permits no
+ * migration. The list is what the service writes and what the worker matches on, checked by a test.
+ */
+export const RUN_OPERATIONS = ['experiment_run', 'run_replay', 'run_retry', 'reaudit', 'dataset_freeze', 'failure_minimize'] as const;
+export type RunOperation = (typeof RUN_OPERATIONS)[number];
+
+/** The one operation that routes to the freeze adapter map (decision 144). */
+export const DATASET_FREEZE_OPERATION = 'dataset_freeze';
+
+/**
+ * §17.11 DECISION 143 — THE V1 RETIREMENT LIST, AND THE ONE HONEST THING TO PUT IN `since`.
+ *
+ * `lab_query` is the first v1 tool retired. It read `lab_analyses` and `mksap_chunks` through
+ * `lib/lab.ts`; `audit_search` and `corpus_search` have covered both in every verification since
+ * A2, and v1 has no deprecation mechanism of its own — so the record lives here, on the v2 surface,
+ * and the v1 dispatcher's arm returns the same three fields to a stale client instead of results.
+ *
+ * ⚠️ `since` IS THE LAST SHA AT WHICH `lab_query` STILL WORKED, NOT THE SHA THAT RETIRED IT, AND
+ * THAT IS NOT A ROUNDING. A commit cannot contain its own hash: the value would have to be written
+ * before the commit exists and would then name a different tree. `e5f53c55` is checkable in both
+ * directions — the tool answers there and is retired in its successor — where a fabricated
+ * successor sha would be checkable in neither. Flagged in the round report.
+ *
+ * ⚠️ `lab_analyses` ROWS ARE UNTOUCHED. Retirement removes a READER; every run anyone stored
+ * through it is still there and is still reachable through `audit_query`.
+ */
+export const LAB_QUERY_RETIRED_SINCE = 'e5f53c55';
+
+export const V1_DEPRECATIONS = [
+  {
+    tool: 'lab_query',
+    surface: 'v1',
+    replaced_by: ['audit_search', 'corpus_search'],
+    since: LAB_QUERY_RETIRED_SINCE,
+  },
+] as const;
+
 export const PROVIDERS = ['bedrock', 'openrouter', 'ollama', 'vertex'] as const;
 export type Provider = (typeof PROVIDERS)[number];
 
@@ -579,6 +627,13 @@ export const toolSchemas = {
       })),
       protocol_version: z.string(),
       sdk_version: z.string(),
+      /** §17.11 decision 143 — what this platform has retired, and what replaced it. */
+      deprecations: z.array(z.object({
+        tool: z.string(),
+        surface: z.string(),
+        replaced_by: z.array(z.string()),
+        since: z.string(),
+      })),
       lab_v2_enabled: z.boolean(),
       pricing_version: z.string(),
     }),
@@ -680,20 +735,39 @@ export const toolSchemas = {
       exclusions: z.array(z.string()).default([]),
       idempotency_key: z.string().min(1),
     }),
-    output: z.object({
-      dataset_id: z.string().uuid(),
-      hash: z.string(),
-      replay_exactness: z.enum(REPLAY_EXACTNESS),
-      classification: z.enum(CLASSIFICATIONS),
-      deduplicated: z.boolean(),
-      /** Cohort mode reports what it asked for, what it froze, and what it dropped and why. */
-      counts: z.object({
-        requested: z.number().int(),
-        frozen: z.number().int(),
-        excluded: z.number().int(),
+    /**
+     * §17.11 DECISION 138/144 — TWO SHAPES, AND A CALLER TELLS THEM APART BY `state`.
+     *
+     * Every engine but one still answers with the dataset itself: the freeze happened inside the
+     * call and the object exists by the time it returns. `ipd_discharge` cannot — since D2c each
+     * of its freezes runs the engine once, and two of the twenty documents V froze never returned
+     * (decision 139) — so it answers with a RUN ID and `state: 'freezing'`, and the dataset arrives
+     * on the run. The union is additive: no existing caller's shape changed.
+     */
+    output: z.union([
+      z.object({
+        dataset_id: z.string().uuid(),
+        hash: z.string(),
+        replay_exactness: z.enum(REPLAY_EXACTNESS),
+        classification: z.enum(CLASSIFICATIONS),
+        deduplicated: z.boolean(),
+        /** Cohort mode reports what it asked for, what it froze, and what it dropped and why. */
+        counts: z.object({
+          requested: z.number().int(),
+          frozen: z.number().int(),
+          excluded: z.number().int(),
+        }),
+        excluded: z.array(z.object({ case_key: z.string(), reason: z.string() })),
       }),
-      excluded: z.array(z.object({ case_key: z.string(), reason: z.string() })),
-    }),
+      z.object({
+        freeze_run_id: z.string().uuid(),
+        state: z.literal('freezing'),
+        requested: z.number().int(),
+        deduplicated: z.boolean(),
+        /** Said in words, because `freezing` is a state no other dataset_create has ever returned. */
+        note: z.string(),
+      }),
+    ]),
   },
   dataset_preview: {
     input: z.object({ dataset_id: z.string().uuid() }),

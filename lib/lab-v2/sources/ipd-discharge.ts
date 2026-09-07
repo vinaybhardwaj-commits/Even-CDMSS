@@ -54,6 +54,9 @@ import { fetchIpdAdmissionHeader } from '../../ipd-audit/db13';
 import { fetchBillingEnvelope, fetchBilledTotal } from '../../ipd-audit/billing';
 import { IPD_ENGINE_VERSION } from '../../ipd-audit/store';
 import type { ExtractedCase } from '../../doc-audit-core';
+// §17.11 decision 147 — the trace read's deadline is `boundedRead`'s own constant, imported
+// rather than copied, so the two can never drift to different numbers.
+import { SOURCE_TIMEOUT_MS } from './read';
 
 /**
  * ⚠️ THE VERSION PROBE. INFERRED (decision 87) — no live database was available to the builder —
@@ -162,6 +165,68 @@ export const CITE_GATE_KEEP_LITERAL = JSON.stringify({
   why: 'frozen at dataset creation: decision 132 runs this stage live at the arm\'s model',
 });
 
+/**
+ * §17.11 DECISION 147 — THE THREE PHASE DEADLINES, AND WHY A FREEZE NEEDED THEM.
+ *
+ * Two of the twenty documents V froze on 06 Sep never returned (decision 139). Both traces carried
+ * all seven stages once and every event kind, the same shape as the eighteen that froze, so the
+ * cause is INSIDE the recording pass on those cases and is not measurable from a hang: a process
+ * that never comes back produces no error, no elapsed time and no phase name. A deadline converts
+ * the hang into all three.
+ *
+ * ⚠️ THE TRACE READ'S NUMBER IS `boundedRead`'s, IMPORTED. Decision 147 names `boundedRead` for
+ * this phase; the read itself keeps the injected `run` seam the freeze supplies (and D2c's decision
+ * 87 exercise binds to), so what is adopted here is the DEADLINE — 15 s, the same constant, from
+ * the same file — rather than the wrapper. The guard is not needed: this statement is a constant in
+ * this module, not a generated one.
+ *
+ * ⚠️ AND THEY NEST INSIDE THE LEASE, NOT BESIDE IT. `LEASE_MS` is 120 s and the heartbeat renews it
+ * every 30 s (`contracts.ts:394-395`), so a 240 s pass is covered by renewals rather than by one
+ * long lease; the freeze adapter's per-attempt ceiling (300 s) sits above the sum a single case can
+ * legitimately spend.
+ */
+export const TRACE_READ_DEADLINE_MS = SOURCE_TIMEOUT_MS;
+export const RETRIEVAL_DEADLINE_MS = 30_000;
+export const RECORDING_PASS_DEADLINE_MS = 240_000;
+
+/** What a phase reports as it starts and as it ends. The freeze adapter turns these into events. */
+export type FreezePhaseReporter = (phase: string, state: 'started' | 'done' | 'over_deadline', ms: number) => void;
+
+/**
+ * Run one phase under its own deadline. A breach is `SOURCE_UNAVAILABLE` NAMING THE PHASE AND THE
+ * ELAPSED MILLISECONDS, which decision 147 makes the dataset's exclusion text — so the two
+ * documents of decision 139 stop being "the freeze hung" and become a line an operator can read.
+ *
+ * ⚠️ IT DOES NOT CANCEL THE WORK. `Promise.race` bounds how long this process WAITS; the underlying
+ * query or fetch runs on until it or its own socket gives up. That is `withDeadline`'s posture in
+ * `sources/read.ts:54-78` and it is stated here for the same reason: the observable contract is the
+ * deadline, and pretending the backend was cancelled would be a claim this code cannot make.
+ */
+export async function withPhaseDeadline<T>(
+  phase: string, ms: number, fn: () => Promise<T>, report?: FreezePhaseReporter,
+): Promise<T> {
+  const startedAt = Date.now();
+  report?.(phase, 'started', 0);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const out = await Promise.race([
+      fn(),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          const elapsed = Date.now() - startedAt;
+          report?.(phase, 'over_deadline', elapsed);
+          reject(new LabError('SOURCE_UNAVAILABLE',
+            `the ipd_discharge freeze phase '${phase}' exceeded its ${ms} ms deadline (elapsed ${elapsed} ms)`));
+        }, ms);
+      }),
+    ]);
+    report?.(phase, 'done', Date.now() - startedAt);
+    return out;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 /** One replayed leg: production's stored reply, under the hash the recording pass was asked for. */
 export interface IpdDischargeStep {
   stage: string;
@@ -207,6 +272,10 @@ export interface RecordIpdDischargeStepsArgs {
   retrieve?: (query: string, opts: RetrieveOptions) => Promise<RetrieveResult>;
   /** Why there is no trace id, when there is none — a missing audit reads differently from a fault. */
   reason?: string | null;
+  /** Decision 147 — each phase as it starts and ends. The freeze adapter turns these into events. */
+  onPhase?: FreezePhaseReporter;
+  /** Decision 147's three numbers, overridable so a test can drive a breach in milliseconds. */
+  deadlines?: { traceReadMs?: number; retrievalMs?: number; recordingMs?: number };
 }
 
 /** The key both sides of the replay compute for one retrieval: the query AND the options. */
@@ -246,11 +315,18 @@ export async function recordIpdDischargeSteps(
       + `audit trace to read (${a.reason ?? 'no audit row at this engine version'})`);
   }
 
+  const traceReadMs = a.deadlines?.traceReadMs ?? TRACE_READ_DEADLINE_MS;
+  const retrievalMs = a.deadlines?.retrievalMs ?? RETRIEVAL_DEADLINE_MS;
+  const recordingMs = a.deadlines?.recordingMs ?? RECORDING_PASS_DEADLINE_MS;
+
   let rows: Record<string, unknown>[];
   try {
-    rows = await a.run(IPD_DISCHARGE_TRACE_SQL, [traceId]);
+    // Decision 147, phase one. The deadline is boundedRead's own; see TRACE_READ_DEADLINE_MS.
+    rows = await withPhaseDeadline('trace_read', traceReadMs, () => a.run(IPD_DISCHARGE_TRACE_SQL, [traceId]), a.onPhase);
   } catch (e) {
-    // FAIL-SAFE. A read fault is never a frozen case without steps.
+    // FAIL-SAFE. A read fault is never a frozen case without steps — and a deadline breach is
+    // already a `SOURCE_UNAVAILABLE` naming its phase, so it is passed through rather than reworded.
+    if (e instanceof LabError) throw e;
     throw new LabError('SOURCE_UNAVAILABLE',
       `the trace_events read for this document's audit failed: ${String((e as Error).message).slice(0, 200)}`);
   }
@@ -328,7 +404,24 @@ export async function recordIpdDischargeSteps(
     if (already) {
       return { hits: already.hits as RetrieveResult['hits'], expandedQuery: already.expandedQuery, meta: already.meta as RetrieveResult['meta'] };
     }
-    const out = await exitLabExecution(() => retrieveImpl(query, o));
+    /**
+     * Decision 147, phase two — ONE deadline per retrieval, not one for all of them. A case makes
+     * three or four of these (pooled, prognosis, enrichment) and they are sequential; a single
+     * budget over the set would let one slow read eat the others' time and report the wrong phase.
+     *
+     * ⚠️ A BREACH IS HELD, NOT ONLY THROWN. `analyzeCase` catches everything at five sites
+     * (`doc-audit.ts:718`, `:610`, `:625`, `:581`, `:316`), so a thrown deadline here would be
+     * swallowed into an empty hit list and the pass would go on to produce a case whose prompts
+     * were built without the corpus. The held error is re-thrown after the pass, which is the same
+     * idiom the missing-leg refusal above uses and for the same reason.
+     */
+    let out: RetrieveResult;
+    try {
+      out = await withPhaseDeadline('retrieval', retrievalMs, () => exitLabExecution(() => retrieveImpl(query, o)), a.onPhase);
+    } catch (e) {
+      if (e instanceof LabError) { held = held ?? e; throw e; }
+      throw e;
+    }
     retrieval[key] = {
       query_hash: hash(query),
       opts: o as Record<string, unknown>,
@@ -340,7 +433,8 @@ export async function recordIpdDischargeSteps(
   };
 
   try {
-    await withLabExecution(
+    // Decision 147, phase three — the whole engine pass, inside the lease's renewals.
+    await withPhaseDeadline('recording_pass', recordingMs, () => withLabExecution(
       {
         chat,
         retrieve: retrieveEdge as unknown as (q: string, o?: unknown) => Promise<unknown>,
@@ -356,7 +450,7 @@ export async function recordIpdDischargeSteps(
         deps: {},
         opts: {},
       }),
-    );
+    ), a.onPhase);
   } catch (e) {
     if (held) throw held as LabError;
     if (e instanceof LabError) throw e;
@@ -474,6 +568,13 @@ export interface IpdDischargeSourceDeps {
   recordSteps?: (a: RecordIpdDischargeStepsArgs) => Promise<IpdDischargeRecording>;
   /** The corpus read the recording pass makes outside the fence (decision 136). */
   retrieve?: (query: string, opts: RetrieveOptions) => Promise<RetrieveResult>;
+  /**
+   * §17.11 decision 147 — each phase as it starts and ends, so the freeze adapter can emit them as
+   * item events. Absent on the synchronous path, where there is no item to hang an event on.
+   */
+  onPhase?: FreezePhaseReporter;
+  /** Decision 147's three deadlines, overridable so a test can drive a breach in milliseconds. */
+  deadlines?: { traceReadMs?: number; retrievalMs?: number; recordingMs?: number };
 }
 
 const liveRun = sql as unknown as (text: string, params?: unknown[]) => Promise<Record<string, unknown>[]>;
@@ -649,6 +750,10 @@ export async function freezeIpdDischargeDocument(
       run,
       retrieve: deps.retrieve,
       reason: traceReason,
+      // §17.11 decision 147 — the three phase deadlines and their reporter, passed straight
+      // through. On the synchronous path both are undefined and the constants apply.
+      onPhase: deps.onPhase,
+      deadlines: deps.deadlines,
     });
     frozen.steps = recorded.steps;
     frozen.retrieval = recorded.retrieval;

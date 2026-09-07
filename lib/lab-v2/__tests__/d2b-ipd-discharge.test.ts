@@ -595,32 +595,52 @@ test('§17.9 decision 109: engine_describe ipd_discharge is supported, with eigh
 test('§17.9 decision 109: dataset_create ipd_discharge is REACHABLE from the operator key', async () => {
   const db = await freshDb();
   await asIdentifyingOperator(async () => {
-    let err: LabError | null = null;
-    try {
-      await callTool(deps(db), 'dataset_create', {
-        engine: 'ipd_discharge', body: { documentId: DOC }, idempotency_key: 'd2b-1',
-      });
-    } catch (e) { err = e as LabError; }
-    assert.ok(err, 'the sandbox has no production database, so the freeze cannot succeed here');
-    // ⚠️ THE POINT IS WHICH REFUSAL: it reached the freeze, and the freeze had no database.
-    assert.ok(!/not wired yet/.test(err!.message), 'never the unsupported-engine text');
-    assert.ok(!/data_scope/.test(err!.message), 'nor the decision 105 gate — the operator passed it');
-    assert.equal(err!.code, 'SOURCE_UNAVAILABLE');
-    // Decision 99 on the error path: the document id is not echoed back.
-    assert.ok(!err!.message.includes(DOC), 'the identifier is not echoed back');
+    /**
+     * ⚠️ RULE 1a, §17.11 DECISION 144 — THE CALL NO LONGER REFUSES; IT QUEUES.
+     *
+     * This test asserted a `SOURCE_UNAVAILABLE`, because until D3 the freeze ran INSIDE the tool
+     * call and this sandbox has no production database. Decision 144 makes `dataset_create
+     * ipd_discharge` submit a run and return `{freeze_run_id, state: 'freezing'}` before anything
+     * is read, so the refusal moved to the item and the call now succeeds.
+     *
+     * ⚠️ WHAT THE TEST WAS PROTECTING IS KEPT AND IS NOW PROVED MORE DIRECTLY. Its subject is
+     * REACHABILITY — that the call is neither the unsupported-engine refusal decision 34 used to
+     * give nor the decision 105 data-scope gate. A run id is a stronger answer to that than a
+     * SOURCE_UNAVAILABLE was, and decision 99's check on the error path becomes the same check on
+     * the success path: the documentId appears nowhere in what comes back, and `items.case_key` is
+     * a content hash rather than the key.
+     *
+     * This is not a mechanical pin, and the round report says so rather than filing it as one.
+     */
+    const out = await callTool(deps(db), 'dataset_create', {
+      engine: 'ipd_discharge', body: { documentId: DOC }, idempotency_key: 'd2b-1',
+    }) as { freeze_run_id: string; state: string; requested: number };
+    assert.equal(out.state, 'freezing');
+    assert.equal(out.requested, 1);
+    assert.ok(out.freeze_run_id, 'the run exists before any production read');
+    assert.ok(!JSON.stringify(out).includes(DOC), 'the identifier is not echoed back');
+    const items = await itemsOf(db, out.freeze_run_id);
+    assert.equal(items.length, 1);
+    assert.ok(!items[0].case_key.includes(DOC), 'items.case_key is a content hash, never the key');
   });
   // The cohort form, and the named INVALID_INPUT when neither shape is supplied.
   await asIdentifyingOperator(async () => {
     await assert.rejects(
       () => callTool(deps(db), 'dataset_create', { engine: 'ipd_discharge', idempotency_key: 'd2b-2' }),
       (e: LabError) => e.code === 'INVALID_INPUT' && /documentId/.test(e.message));
-    let err: LabError | null = null;
-    try {
-      await callTool(deps(db), 'dataset_create', {
-        engine: 'ipd_discharge', cohort: { case_keys: [DOC, 'DOCX-0002'] }, idempotency_key: 'd2b-3',
-      });
-    } catch (e) { err = e as LabError; }
-    assert.equal(err?.code, 'SOURCE_UNAVAILABLE', 'the cohort form reaches the freeze too');
+    // RULE 1a, §17.11 decision 144, as above: the cohort form queues one item per key rather than
+    // freezing them in the call. Two keys, two items, and neither key is a case_key.
+    const many = await callTool(deps(db), 'dataset_create', {
+      engine: 'ipd_discharge', cohort: { case_keys: [DOC, 'DOCX-0002'] }, idempotency_key: 'd2b-3',
+    }) as { freeze_run_id: string; state: string; requested: number };
+    assert.equal(many.state, 'freezing', 'the cohort form reaches the freeze queue too');
+    assert.equal(many.requested, 2);
+    const manyItems = await itemsOf(db, many.freeze_run_id);
+    assert.equal(manyItems.length, 2);
+    for (const it of manyItems) {
+      assert.ok(!it.case_key.includes(DOC) && !it.case_key.includes('DOCX-0002'),
+        'no document id reaches items.case_key');
+    }
   });
   await db.close();
 });

@@ -86,10 +86,21 @@ test('§17.8 decision 105: the gate is per CALL, not per tool — a de-identifie
 
 test('§17.8 decision 105: dataset_create is the tool that declares identifying_input', () => {
   assert.equal(BY_NAME.dataset_create.identifying_input, true);
-  // ⚠️ AND IT IS THE ONLY ONE. Every other tool takes ids this platform generated; marking more
-  // would close tools that never see a person and make the flag mean nothing.
-  const marked = Object.values(BY_NAME).filter((s) => s.identifying_input === true).map((s) => s.name);
-  assert.deepEqual(marked, ['dataset_create']);
+  /**
+   * ⚠️ RULE 1a, §17.11 DECISION 146 — 'dataset_create' → THREE, and the two new ones are stronger
+   * than it, not weaker. This asserted the flag was carried by exactly one tool, because marking
+   * tools that never see a person would make it mean nothing. `case_ask` and `case_timeline` are
+   * the first tools whose WHOLE INPUT is a person, so they carry it and they also carry
+   * `identifying_always`: `dataset_create` is narrowed by the engine a call names (seven of its ten
+   * take a de-identified body), and these two have no such case. The set is still closed and this
+   * is still where a fourth would be noticed.
+   */
+  const marked = Object.values(BY_NAME).filter((s) => s.identifying_input === true).map((s) => String(s.name)).sort();
+  assert.deepEqual(marked, ['case_ask', 'case_timeline', 'dataset_create']);
+  // And the always-flag is carried by the two, never by dataset_create.
+  const always = Object.values(BY_NAME).filter((s) => s.identifying_always === true).map((s) => String(s.name)).sort();
+  assert.deepEqual(always, ['case_ask', 'case_timeline']);
+  assert.notEqual(BY_NAME.dataset_create.identifying_always, true);
 });
 
 // ═════════════════════════════════════════════════════════════════════════════════════
@@ -238,7 +249,11 @@ test('§17.8 decision 108: the operator can now run an identifying experiment en
   assert.deepEqual([...SCOPES_BY_PRINCIPAL.release], ['release', 'production_read']);
   assert.equal(visibleTools(SCOPES_BY_PRINCIPAL.reviewer).length, 32);
   assert.equal(visibleTools(SCOPES_BY_PRINCIPAL.release).length, 13);
-  assert.equal(visibleTools(SCOPES_BY_PRINCIPAL.research).length, 39);
+  // ⚠️ RULE 1a, §17.11 — 39 → 42. D3 adds case_ask, case_timeline and failure_minimize, all three
+  // `research_write`-scoped, which is the scope research and operator hold and the other two do
+  // not. The reviewer and release counts above are unchanged BY CONSTRUCTION rather than by luck,
+  // and that is what this trio of assertions is for.
+  assert.equal(visibleTools(SCOPES_BY_PRINCIPAL.research).length, 42);
 });
 
 test('§17.8 decision 108: the operator gains NINE tools, not three, and that is reported', () => {
@@ -257,8 +272,12 @@ test('§17.8 decision 108: the operator gains NINE tools, not three, and that is
   const gained = visibleTools(SCOPES_BY_PRINCIPAL.operator)
     .filter((t) => t.scopes.includes('research_write') && !t.scopes.some((s) => (['production_read', 'production_write', 'research_read'] as string[]).includes(s)))
     .map((t) => String(t.name)).sort();
+  // ⚠️ RULE 1a, §17.11 — NINE → TWELVE. D3's three are `research_write` and nothing else, for the
+  // reason the decision gives: `production_read` would have shown the two case tools to the
+  // reviewer and release keys as well. So they land in exactly this list, which is what it is for.
   assert.deepEqual(gained, [
-    'corpus_stage', 'dataset_create', 'episode_replay', 'experiment_create', 'experiment_run',
+    'case_ask', 'case_timeline', 'corpus_stage', 'dataset_create', 'episode_replay',
+    'experiment_create', 'experiment_run', 'failure_minimize',
     'rule_propose', 'run_cancel', 'run_replay', 'run_retry',
   ]);
 });

@@ -66,7 +66,10 @@ test('§15.3: tools/list is scope-filtered for each of the four principals', asy
   // release_status. The three `release` tools and review_submit carry scopes research has not.
   // lab-v2 §17.7 C2 adds two: rule_propose (research_write) and rule_simulate (research_read).
   // lab-v2 §17.7 C3 adds one research-visible: failure_cluster. review_queue is `review` ALONE.
-  assert.equal(listed.research.length, 39);
+  // ⚠️ RULE 1a, §17.11 — D3 adds three research-visible: case_ask, case_timeline and
+  // failure_minimize, all `research_write`. The reviewer and release counts below do NOT move,
+  // which is the point of scoping them that way rather than on production_read.
+  assert.equal(listed.research.length, 42);
 
   // The operator holds production_write, so it alone sees worker_control.
   assert.ok(listed.operator.includes('worker_control'));
@@ -91,7 +94,8 @@ test('§15.3: tools/list is scope-filtered for each of the four principals', asy
    * corpus_stage and rule_propose both stage into quarantine and neither can activate anything,
    * because activation is the `release` scope, which `operator` does not hold and does not gain.
    */
-  assert.equal(listed.operator.length, 42);
+  // ⚠️ RULE 1a, §17.11 — 42 → 45, D3's three, which the operator sees through `research_write`.
+  assert.equal(listed.operator.length, 45);
   // ⚠️ RULE 1a, §17.8 DECISION 108 — inverted for the same reason as dataset_create above. A
   // replay IS a research write and the operator now holds that scope; what it still does not hold
   // is `release`, which is what actually keeps it from changing what a clinician sees.
@@ -108,6 +112,9 @@ test('§15.3: tools/list is scope-filtered for each of the four principals', asy
   // §17.7 — the reads, release_status, and review_submit; C2 adds rule_simulate (research_read).
   // C3 adds BOTH: failure_cluster (research_read) and review_queue, whose `review` scope the
   // reviewer alone holds.
+  // §17.11 pins this at 32 and it is unchanged: no D3 tool carries `review`, `research_read` or
+  // `production_read`, so a reviewer sees none of them. Deliberate — decision 146's tools resolve
+  // a person and a reviewer's job does not.
   assert.equal(listed.reviewer.length, 32);
   for (const p of ['reviewer', 'release'] as const) {
     assert.ok(!listed[p].includes('episode_replay'), `${p} must not replay a run`);
@@ -115,7 +122,14 @@ test('§15.3: tools/list is scope-filtered for each of the four principals', asy
   // release = 3 unrestricted + 2 production reads + source_freshness. Nothing carries `release`.
   // §17.6 — release holds production_read, so the three production reads join it.
   // §17.7 — the release key gains its four: prepare, apply, rollback and status.
+  // §17.11 pins this at 13, likewise unchanged, and for the same reason.
   assert.equal(listed.release.length, 13);
+  for (const t of ['case_ask', 'case_timeline', 'failure_minimize']) {
+    assert.ok(listed.research.includes(t), `research must see ${t}`);
+    assert.ok(listed.operator.includes(t), `the operator must see ${t}`);
+    assert.ok(!listed.reviewer.includes(t), `a reviewer must not see ${t}`);
+    assert.ok(!listed.release.includes(t), `the release key must not see ${t}`);
+  }
   for (const t of ['release_prepare', 'release_apply', 'release_rollback']) {
     assert.ok(listed.release.includes(t), `the release key must see ${t}`);
     assert.ok(!listed.research.includes(t), `research must never ${t}`);
@@ -155,8 +169,18 @@ test('§8: a real tool call round-trips through the SDK with structured content'
   assert.equal(body.principal, 'research');
   assert.equal(body.protocol_version, MCP_V2_PROTOCOL_VERSION);
   assert.equal(body.sdk_version, MCP_V2_SDK_VERSION);
-  assert.equal(body.tools.length, 39);   // lab-v2 §17.7 — C1's four, C2's two, C3's failure_cluster
+  assert.equal(body.tools.length, 42);   // lab-v2 §17.11 — D3's three, all research_write-scoped
   assert.ok(body.pricing_version.startsWith('lab-v2-pricing/'));
+  /**
+   * ⚠️ RULE 1a, §17.11 DECISION 143 — the first retirement this platform has performed, asserted on
+   * the surface a client calls to find out what exists. A tool that vanishes from a list is
+   * indistinguishable from one that was never there; this entry is what makes it distinguishable.
+   */
+  assert.deepEqual(body.deprecations, [{
+    tool: 'lab_query', surface: 'v1',
+    replaced_by: ['audit_search', 'corpus_search'],
+    since: 'e5f53c55',
+  }]);
   await handler.close();
   await db.close();
 });

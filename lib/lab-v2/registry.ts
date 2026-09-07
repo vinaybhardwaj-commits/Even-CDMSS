@@ -38,6 +38,9 @@ import { RULES_SCHEMAS } from './tools/rules';
 // Slice C round C3 (§17.7, decisions 96, 97). Same pattern: schemas beside their handlers.
 import { CLUSTER_SCHEMAS } from './tools/cluster';
 import { QUEUE_SCHEMAS } from './tools/queue';
+// Slice D round D3 (§17.11). Same pattern: schemas beside their handlers.
+import { CASE_SCHEMAS } from './tools/case';
+import { MINIMIZE_SCHEMAS } from './tools/minimize';
 
 export interface ToolAnnotations { readOnlyHint: boolean; destructiveHint: boolean; idempotentHint: boolean }
 
@@ -63,6 +66,16 @@ export interface ToolSpec {
    * safe one and a new tool has to say so deliberately.
    */
   identifying_input?: boolean;
+  /**
+   * §17.11 DECISION 146 — EVERY call to this tool carries an identifier, not merely some of them.
+   *
+   * `dataset_create` is `identifying_input` and the gate in `callTool` narrows it by the ENGINE the
+   * call names, because seven of its ten engines take a de-identified body. `case_ask` and
+   * `case_timeline` have no such case: their input IS a person. Without this flag the engine test
+   * would pass a `case_ask` for one `individual_uid` through to the research key, because
+   * `opd_note_audits` declares no identifying request field — the table has no name and no UHID.
+   */
+  identifying_always?: boolean;
   cost_class: CostClass;
   slice: string;
 }
@@ -235,6 +248,37 @@ const c3 = (
   slice: 'C-3',
 });
 
+/**
+ * Slice D round D3 entries (§17.11, decisions 141, 142, 143, 146).
+ *
+ * ⚠️ ALL THREE ARE `research_write`-SCOPED AND THAT IS WHAT DECIDES WHO SEES THEM. `research_write`
+ * is held by exactly `research` and `operator` (`contracts.ts:51-56`), which is the visibility
+ * §17.11 pins: research 42, operator 45, reviewer 32, release 13. Scoping the two READS on
+ * `production_read` instead would have shown them to the reviewer and the release keys as well —
+ * two principals with no business resolving a person — because both hold that scope for
+ * `system_health`.
+ *
+ * ⚠️ AND VISIBILITY IS NOT PERMISSION. Decision 146 requires `production_read` AND `data_scope:
+ * identifying` to actually USE either case tool, and that gate is `mayUseIdentifyingInput`
+ * (`lib/mcp-v2/auth.ts:114-115`) in `callTool`, not this list. The research key SEES `case_ask` and
+ * is refused `CLASSIFICATION_REQUIRED` by name the moment it calls it — which is the honest
+ * ordering: a caller should be able to discover a tool exists and be told why it may not use it.
+ */
+const D3 = { ...CASE_SCHEMAS, ...MINIMIZE_SCHEMAS } as unknown as Record<string, { input: ZodTypeAny; output: ZodTypeAny }>;
+const d3 = (
+  name: string, description: string, effect: Effect, cost_class: CostClass = 'free',
+): ToolSpec => ({
+  name: name as ToolName,
+  description,
+  inputSchema: D3[name].input,
+  outputSchema: D3[name].output,
+  scopes: ['research_write'],
+  effect,
+  classification: 'deidentified',
+  cost_class,
+  slice: 'D-3',
+});
+
 export const REGISTRY: readonly ToolSpec[] = [
   // ── capability discovery ──────────────────────────────────────────────────────────
   t('system_capabilities', 'List the tools this principal can see, the negotiated MCP protocol version, the SDK version, whether LAB_V2_ENABLED is set, and the pricing table version.', ANY, 'read'),
@@ -321,6 +365,19 @@ export const REGISTRY: readonly ToolSpec[] = [
 
   // ── Slice C round C3 (§17.7, decisions 96, 97) ────────────────────────────────────
   c3('failure_cluster', 'Group the window\u2019s failed, unassessable and unattributable items by engine, the stage of their last model call, their error category and the first line of their error message. Reports item and run counts, first and last seen, three examples per group, and counts the items that carry NO error object rather than dropping them. Reads lab_v2 only; zero model calls.', ['research_read']),
+  // ── Slice D round D3 (§17.11, decisions 141, 142, 146) ───────────────────────────
+  {
+    ...d3('case_ask', 'For one person, named by a uhid, a member_id or an individual_uid: what one engine\u2019s newest stored audit concluded \u2014 its engine version, when it was audited, its finding subjects with verdicts and citation ids, and its scores. Every column is named; no free-text column is selected and no identifier is returned, only a salted member_key. Makes NO model call: a `question` is refused INVALID_INPUT in D3.', 'read'),
+    identifying_input: true,
+    identifying_always: true,
+  },
+  {
+    ...d3('case_timeline', 'Every stored audit this platform holds for one person, sorted newest first: readmission and preop for a uhid, IPD discharge audits plus their episode_states projections for a member_id, OPD note audits for an individual_uid. An episode_state contributes its fact count and day span, computed inside the row \u2014 never its verbatim course summary. Keyed by member_key; no identifier is returned. Zero model calls.', 'read'),
+    identifying_input: true,
+    identifying_always: true,
+  },
+  d3('failure_minimize', 'Bisect a failure_cluster group down to the smallest set of cases that still reproduces it: at most eight of the group\u2019s cases from the failed run\u2019s own dataset, re-run at that run\u2019s own arm, halved while the same error category at the same last stage keeps appearing. Reports the minimal case keys, every step with its run id, and the spend. budget_cap_microusd is required and a step is refused BEFORE it runs when the arm\u2019s own declared ceilings would breach it.', 'research_write', 'metered'),
+
   c3('review_queue', 'The reviewer\u2019s two lists: releases prepared and not applied, each with its impact reference and release_status\u2019s own word for why it waits; and the cases whose band moved in a stored experiment_compare, with both arm hashes. The band rows are re-derived from the run items each compare was computed over and each compare reports whether that matched its stored count. Cases are listed, never scored.', ['review']),
 ];
 

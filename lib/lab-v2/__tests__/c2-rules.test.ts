@@ -25,7 +25,7 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { embedded, type Db } from '../db';
-import { LabError, RULES_ROLLBACK_CAVEAT, hash } from '../contracts';
+import { LabError, RULES_ROLLBACK_CAVEAT, V1_DEPRECATIONS, hash } from '../contracts';
 import { applyMigrations, ensureBudget, getObject, getReceipt, putObject, putReview, submitRun } from '../store';
 import {
   ACTIVE_RULES_SQL, ACTIVE_RULE_IDS_SQL, PROPOSAL_SQL, RATIFICATIONS_SQL, RECOMMENDATION_SQL,
@@ -358,10 +358,28 @@ test('§17.7 C2.1 decision 94: every line it changed in the frozen file is insid
     assert.notEqual(i, -1, `${needle} has moved; read lib/mcp-tools.ts before touching this test`);
     return MCP_TOOLS.slice(0, i).split('\n').length;
   };
-  // Decision 94's two regions: the `lvc_propose` tool schema, and the two F14 functions.
+  /**
+   * Decision 94's two regions: the `lvc_propose` tool schema, and the two F14 functions.
+   *
+   * ⚠️ RULE 1a, §17.11 DECISION 143 — CARVE-OUT THREE, AND IT IS A DELETION. `lab_query` is retired:
+   * its entry is removed from `LAB_TOOLS` and its `switch` arm now returns the RETIRED object
+   * instead of results, so a stale v1 client gets a message naming its two replacements rather than
+   * "unknown tool". Two regions, bracketed by the neighbours the edits sit between, because a
+   * deletion has no line of its own in the new file to anchor on:
+   *
+   *   3a  the LAB_TOOLS entry, between `lab_case_audit`'s and `audit_query`'s;
+   *   3b  the dispatch arm, between `lab_retrieve`'s and `audit_query`'s.
+   *
+   * ⚠️ THE `labQuery` FUNCTION ITSELF IS UNTOUCHED, deliberately: deleting it would orphan three
+   * imports from `lib/lab.ts` and turn a two-line retirement into a fourth region in a frozen file.
+   * It is now unreachable, and `lab_analyses` — every row it ever listed — is still readable
+   * through `audit_query`.
+   */
   const regions: [number, number][] = [
     [lineOf("name: 'lvc_propose',"), lineOf("name: 'lvc_ratify',")],
     [lineOf('async function lvcPropose('), lineOf('async function lvcGaps(')],
+    [lineOf("name: 'lab_case_audit',"), lineOf("name: 'audit_query',")],
+    [lineOf("case 'lab_retrieve':"), lineOf("case 'audit_query':")],
   ];
   const diff = execFileSync('git', ['diff', '--unified=0', '9c440fcc', '--', 'lib/mcp-tools.ts'],
     { cwd: ROOT, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
@@ -371,7 +389,46 @@ test('§17.7 C2.1 decision 94: every line it changed in the frozen file is insid
   const outside = hunks.filter((h) =>
     !regions.some(([lo, hi]) => h.start >= lo && h.start + Math.max(h.count, 1) <= hi + 1));
   assert.deepEqual(outside, [],
-    `decision 94 authorises lvcPropose, lvcRatify and the lvc_propose schema; these hunks are elsewhere: ${JSON.stringify(outside)}`);
+    `decisions 94 and 143 authorise lvcPropose, lvcRatify, the lvc_propose schema, and lab_query's `
+    + `removal from LAB_TOOLS and its dispatch arm; these hunks are elsewhere: ${JSON.stringify(outside)}`);
+});
+
+/**
+ * §17.11 DECISION 143 — THE RETIREMENT ITSELF, asserted on both halves of what it promises.
+ *
+ * A retirement has two obligations and they pull in opposite directions: the tool must be GONE from
+ * the list a client discovers, and a client that already knows the name must get an ANSWER rather
+ * than "unknown tool". Testing only the first would let the second rot silently.
+ */
+test('§17.11 decision 143: lab_query is out of LAB_TOOLS and its dispatch arm answers RETIRED', async () => {
+  const { LAB_TOOLS, callLabTool } = await import('../../mcp-tools');
+  // ⚠️ WIDENED TO `string` ON PURPOSE. `LAB_TOOLS` is `as const`, so after the removal the literal
+  // union no longer CONTAINS 'lab_query' and `t.name === 'lab_query'` is a compile error — which is
+  // a stronger guarantee than this assertion, and the reason the comparison is written this way
+  // rather than deleted: the runtime list is what a client is served.
+  const names = LAB_TOOLS.map((t) => String(t.name));
+  assert.ok(!names.includes('lab_query'), 'lab_query is off the v1 list');
+  // Its two replacements are v2 tools and are unaffected by anything here; the v1 list keeps
+  // audit_query, which is how every lab_analyses row lab_query used to list is still reachable.
+  assert.ok(names.includes('audit_query'), 'audit_query is untouched');
+
+  const res = await callLabTool('lab_query', {});
+  assert.notEqual(res.isError, true, 'a retirement is an answer, not an error result');
+  const body = JSON.parse(res.content[0].text);
+  assert.deepEqual(body, {
+    error: 'RETIRED',
+    replaced_by: ['audit_search', 'corpus_search'],
+    since: 'e5f53c55',
+  });
+  // ⚠️ AND IT IS THE SAME OBJECT `system_capabilities` ADVERTISES. Two hand-written copies of a
+  // deprecation would drift; this asserts they agree today.
+  const [dep] = V1_DEPRECATIONS;
+  assert.equal(dep.tool, 'lab_query');
+  assert.deepEqual([...dep.replaced_by], body.replaced_by);
+  assert.equal(dep.since, body.since);
+  // The unknown-tool arm is untouched: retirement is not the same fact as never existing.
+  const unknown = await callLabTool('lab_nonesuch', {});
+  assert.equal(unknown.isError, true);
 });
 
 test('§17.7 decision 89: lvcPropose is NOT exported — rule_propose goes through v1’s own dispatcher', () => {

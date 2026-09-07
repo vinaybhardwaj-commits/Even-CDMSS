@@ -236,8 +236,26 @@ export function makeRouteAdapter(spec: RouteEngineSpec, deps: RouteAdapterDeps =
 
       const retrieveEdge = async (query: string, opts?: unknown): Promise<RetrieveResult> => {
         const started = Date.now();
-        const out = await exitLabExecution(() => retrieveImpl(query, (opts ?? {}) as RetrieveOptions));
-        ctx.event('retrieval_read', { query_hash: hash(query), chunks: out?.hits?.length ?? 0, ms: Date.now() - started });
+      /**
+       * ⚠️ §17.11 DECISION 145 — TWO OPTIONS FORCED, AND THIS IS THE FENCE HOLE CLOSING ON EVERY
+       * FRESH LAB RUN. Decision 133 measured three unfenced egress paths on the retrieve edge's
+       * exit: `expandQuery` (`lib/retrieve.ts:405` → `lib/expand.ts:24`), the rerank judge
+       * (`lib/rerank.ts:311`) or its raw Cohere fetch (`:117-122`), and the embedding call
+       * (`lib/llm.ts:512-513`). `skipExpand` and `useReranker: false` kill the first two. The
+       * embedding read is what decision 133 accepts and names: a network READ, never a production
+       * write, and never a governed model call escaping the gateway's meter.
+       *
+       * ⚠️ THE RESULT IS NOT PRODUCTION'S. Fresh lab retrieval without expansion or reranking
+       * returns a different ordering from the same corpus, which is exactly what
+       * `replay_exactness: 'mutable_source'` already tells a reader; `forced_no_model: true` on the
+       * event is the per-call record of it.
+       */
+        const forced: RetrieveOptions = { ...((opts ?? {}) as RetrieveOptions), skipExpand: true, useReranker: false };
+        const out = await exitLabExecution(() => retrieveImpl(query, forced));
+        ctx.event('retrieval_read', {
+          query_hash: hash(query), chunks: out?.hits?.length ?? 0, ms: Date.now() - started,
+          forced_no_model: true,
+        });
         return out;
       };
 

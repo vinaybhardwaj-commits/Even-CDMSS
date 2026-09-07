@@ -58,8 +58,18 @@ test('§8.1: only the tools that run an engine are metered', () => {
   // reason as the other two — it runs a clinical engine against a provider. It is also the only
   // one of the three that WRITES A PRODUCTION ROW, which is why it is production_write and not
   // research_write; the two facts are asserted together so neither can drift alone.
-  assert.deepEqual(REGISTRY.filter((t) => t.cost_class === 'metered').map((t) => t.name).sort(),
-    ['experiment_run', 'reaudit_execute', 'run_retry']);
+  /**
+   * ⚠️ RULE 1a, §17.11 DECISION 142 — THE FOURTH METERED TOOL, and it earns the word the same way
+   * the other three do: `failure_minimize` re-runs the failed run's own engine at the failed run's
+   * own arm, up to eight cases at a time, and every one of those calls goes through the gateway.
+   * It is `research_write` and NOT `production_write`, because it writes datasets, experiments and
+   * runs in `lab_v2` and touches no clinical row — the distinction `reaudit_execute` exists to make.
+   */
+  assert.deepEqual(REGISTRY.filter((t) => t.cost_class === 'metered').map((t) => String(t.name)).sort(),
+    ['experiment_run', 'failure_minimize', 'reaudit_execute', 'run_retry']);
+  const minimize = REGISTRY.find((t) => String(t.name) === 'failure_minimize')!;
+  assert.deepEqual([...minimize.scopes], ['research_write']);
+  assert.equal(minimize.effect, 'research_write');
   // `t.name` is typed as round 1's union — every later round's tools are cast into it in the
   // registry — so the comparison is on the string, not on the type.
   const repair = REGISTRY.find((t) => String(t.name) === 'reaudit_execute')!;

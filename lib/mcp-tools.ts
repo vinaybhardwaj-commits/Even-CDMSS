@@ -224,17 +224,6 @@ export const LAB_TOOLS = [
     },
   },
   {
-    name: 'lab_query',
-    description: 'Inspect the experimental lab + POLL async clinical probes (lab_ddx/lab_ask/lab_appropriateness/lab_pathway/lab_case_audit): fetch one run by id (its output.status is pending → done → error; done rows carry the full result), list runs in one experiment (experiment=…), list experiments (no args), or storage stats (stats=true). args: experiment? | id? | stats? WRITE-CLASS: read-only.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        experiment: { type: 'string' }, id: { type: 'string' },
-        stats: { type: 'boolean' }, limit: { type: 'number' },
-      },
-    },
-  },
-  {
     name: 'audit_query',
     description:
       'Run a READ-ONLY SQL query (SELECT/WITH only) against the CDMSS audit database (Neon) — for mining bug prevalence + building golden sets. Readable tables are DE-IDENTIFIED (no PHI): opd_note_audits (per-note audit: uid, doctor_uid, note_date, note_quality_index, band, score_documentation/note_quality/appropriateness/prescribing_safety/patient_centred, pdqi9 jsonb [{attr,value}], completeness_pct, n_missing_mandatory, n_findings, n_low_value, n_interaction_alerts, findings jsonb [{subject,verdict,domain,source,informational,signal_type,finding_ref,citation_ids,rule_ref,lvc_category}] (lvc_category on low-value findings ∈ antibiotic|imaging|supplement_polypharmacy|therapeutic_duplication|systemic_steroid|gi_ppi_prokinetic|antihistamine_allergy|nsaid_analgesic|cough_cold_fdc|cough_expectorant|unindicated_investigation|other — the 8 overuse sub-tags added in engine 0.81.8), suggestions jsonb, missing_fields jsonb, engine_version), plus opd_audit_triage, opd_gov_signal(_event), doctor_directory, doctor_roster, audit_suppression, doctor_operational_metrics, lvc_recommendations (reference), lab_analyses (your lab_ddx/lab_ask/mini_analyze runs — output jsonb), and the DE-IDENTIFIED pipeline views v_trace_summary (feature/status/severity/timings/model_summary — NO clinical text) + v_appropriateness_summary (mode/doc_type/counts). PHI-bearing raw tables (traces, trace_events, appropriateness_runs, ccb_briefs, care_track_assignments, opd_audit_feedback) are BLOCKED — use the views, and the feedback_* tools for opd_audit_feedback. Enforced: SELECT/WITH only, single statement, no writes/DDL/system-functions, blocked-relation guard, LIMIT ≤ 500 (auto-added), audit-logged. Source-NOTE fields (medications count, followUpType, patient age, specialty) live in db13 — take the uids this returns and join via the Metabase MCP. WRITE-CLASS: read-only.',
@@ -432,7 +421,14 @@ export async function callLabTool(name: string, args: Record<string, unknown>): 
       case 'lvc_ratify': return await lvcRatify(args);
       case 'lvc_gaps': return await lvcGaps(args);
       case 'lab_retrieve': return await labRetrieve(args);
-      case 'lab_query': return await labQuery(args);
+      // lab-v2 decision 143 (§17.11): RETIRED. Removed from LAB_TOOLS above; this arm stays so a
+      // stale client gets a message naming its replacements instead of "unknown tool". Nothing in
+      // lab_analyses is deleted — audit_query still reads every row lab_query ever listed.
+      case 'lab_query': return ok({
+        error: 'RETIRED',
+        replaced_by: ['audit_search', 'corpus_search'],
+        since: 'e5f53c55',
+      });
       case 'audit_query': return await auditQuery(args);
       case 'lab_batch_start': return await labBatchStart(args);
       case 'lab_batch_status': return await labBatchStatus();
