@@ -28,7 +28,7 @@
 import { LabError } from '../contracts';
 import { runPreopSweep, type PreopSources } from '../../preop/run';
 import { PREOP_ENGINE_VERSION } from '../../preop/store';
-import { DIRECTORY_KEYS, PSEUDONYM_KEYS } from '../sources/preop';
+import { FACILITY_KEYS, PERSON_DOC_KEYS, PSEUDONYM_KEYS } from '../sources/preop';
 import { PREOP_TIER_RULE_VERSION } from '../../preop-tier-core';
 import type { Adapter, AdapterContext, AdapterOutcome } from './types';
 
@@ -39,17 +39,34 @@ export const PREOP_STAGES = ['preop_suggest', 'preop_narrative'] as const;
 export const PREOP_PER_ATTEMPT_MS = 120_000;
 
 /** The inverse of `PSEUDONYM_KEYS`, built once. `personRef` → `individualUid`, and so on. */
-const RESTORE: Record<string, string> = Object.fromEntries(
-  [...Object.entries(PSEUDONYM_KEYS), ...Object.entries(DIRECTORY_KEYS)].map(([real, alias]) => [alias, real]),
-);
+/**
+ * ⚠️ DECISION 111 — THE INVERSE IS PER SOURCE, BECAUSE ONE ALIAS NOW STANDS FOR TWO REAL NAMES.
+ * `facilityRef` is the episode's `hospitalUid` on one row set and the directory's `uid` on another;
+ * `recordRef` is `PacRow.uid` on one and `ref` on two more. A single global map would have to pick
+ * one, and the join at `run.ts:529` would then land on nothing. So the restore is applied with the
+ * map that belongs to the source it is restoring.
+ */
+const RESTORE_FOR: Record<string, Record<string, string>> = {
+  fetchUpcomingEpisodes: { personRef: 'individualUid', personAltRef: 'uhid', episodeRef: 'docId', facilityRef: 'hospitalUid' },
+  fetchCreatinine: { personRef: 'individualUid', personAltRef: 'uhid', episodeRef: 'docId', label: 'name' },
+  fetchOpdIcd: { personRef: 'individualUid', personAltRef: 'uhid', episodeRef: 'docId', recordRef: 'ref' },
+  fetchOpdComorbidities: { personRef: 'individualUid', personAltRef: 'uhid', episodeRef: 'docId', recordRef: 'ref' },
+  fetchPacReports: { personRef: 'individualUid', personAltRef: 'uhid', episodeRef: 'docId', recordRef: 'uid' },
+  fetchHospitalNames: { facilityRef: 'uid', label: 'name' },
+};
 
-/** Rename the three aliases back to what the engine reads. Values are untouched surrogates. */
-export function restoreKeys(value: unknown, depth = 0): unknown {
+/** Every alias this adapter knows how to undo, for the shape assertions in the tests. */
+export const ALL_ALIASES: readonly string[] = [
+  ...Object.values(PSEUDONYM_KEYS), ...Object.values(PERSON_DOC_KEYS), ...Object.values(FACILITY_KEYS),
+];
+
+/** Rename the aliases back to what the engine reads. Values are untouched surrogates. */
+export function restoreKeys(value: unknown, map: Record<string, string>, depth = 0): unknown {
   if (depth > 12 || value === null || typeof value !== 'object') return value;
-  if (Array.isArray(value)) return value.map((v) => restoreKeys(v, depth + 1));
+  if (Array.isArray(value)) return value.map((v) => restoreKeys(v, map, depth + 1));
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-    out[RESTORE[k] ?? k] = restoreKeys(v, depth + 1);
+    out[map[k] ?? k] = restoreKeys(v, map, depth + 1);
   }
   return out;
 }
@@ -83,7 +100,7 @@ export function makePreopAdapter(): Adapter {
       // The six, served from the frozen bytes with the three keys renamed back.
       const served = (name: string) => {
         const s = stored[name] ?? { rows: [], error: null };
-        return { rows: restoreKeys(s.rows) as never[], error: s.error };
+        return { rows: restoreKeys(s.rows, RESTORE_FOR[name] ?? {}) as never[], error: s.error };
       };
       const sources: PreopSources = {
         fetchUpcomingEpisodes: async () => served('fetchUpcomingEpisodes'),

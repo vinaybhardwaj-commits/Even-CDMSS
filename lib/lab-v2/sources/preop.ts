@@ -112,6 +112,40 @@ export const PSEUDONYM_KEYS: Record<string, string> = {
  */
 export const DIRECTORY_KEYS: Record<string, string> = { name: 'label' };
 
+/**
+ * ⚠️⚠️ DECISION 111 — WHAT THE SAME SWEEP THROUGH THE PREOP SHAPES FOUND. Three more families, all
+ * of them reachable in the freeze this round shipped, none of them caught by decision 101's pattern:
+ *
+ *   · `PreopEpisodeRow.patientName` (`lib/preop/db13.ts:75`) — A PATIENT'S NAME. The old pattern
+ *     needed an underscore or nothing before `name`, so `patientName` passed. DROPPED: the sweep
+ *     uses it only for the snapshot, and this adapter does not pass `collectSnapshots`, so nothing
+ *     in the output path reads it.
+ *   · `PacRow.uid` and `PreopIcdRow.ref` / `PreopOpdComorbidityRow.ref` (`db13.ts:403`, `:449` —
+ *     both are `_doc_id`) — Firestore document ids, the same family as `indexDocumentId`.
+ *     PSEUDONYMISED rather than dropped: `run.ts:225`, `:245`, `:263`, `:266` and `:276` pass each
+ *     one as an observation's SOURCE REFERENCE, so the value must stay a stable handle or the
+ *     provenance of every observation is lost.
+ *   · `PreopEpisodeRow.hospitalUid` and the directory's `uid` — matched by the new `…Uid` suffix
+ *     rule, and NOT about a patient. Renamed with their values KEPT, exactly as `name` → `label`
+ *     already was: a facility is not a person. Both become the SAME name so the join at
+ *     `run.ts:529` still lands. `PacRow.templateName` and `PreopEpisodeRow.procedure` need nothing:
+ *     the name family is deliberately restricted to person words, so a form template and a surgery
+ *     are untouched — see the note on `IDENTIFYING_KEY`.
+ *
+ * ⚠️ ONE VALUE-LEVEL RISK IS FLAGGED AND NOT ACTED ON: `PacRow.componentJson` is the raw KareXpert
+ * form payload and could carry a name in its VALUE. Decision 34 says do not guess at value-level
+ * de-identification, so it is reported rather than scrubbed.
+ */
+export const DROPPED_KEYS: readonly string[] = ['patientName'];
+
+/** Person-scoped document ids: the value must survive as a stable handle, so it is a surrogate. */
+export const PERSON_DOC_KEYS: Record<string, string> = { uid: 'recordRef', ref: 'recordRef' };
+
+/** Not about a patient: the key is renamed and the VALUE is kept (decision 100's reasoning). */
+export const FACILITY_KEYS: Record<string, string> = {
+  hospitalUid: 'facilityRef', uid: 'facilityRef', name: 'label',
+};
+
 /** The prefix each surrogate carries, so a test can assert a value is one. */
 export const PSEUDONYM_PREFIX = 'px:';
 
@@ -120,7 +154,25 @@ export function pseudonym(value: unknown, salt: string): string {
   return `${PSEUDONYM_PREFIX}${createHash('sha256').update(`${salt}|${String(value)}`).digest('hex').slice(0, 24)}`;
 }
 
-/** Rename keys without touching values — the hospital directory's `name`, and nothing else. */
+/** Remove keys outright — decision 111's `patientName`, and nothing the engine reads. */
+export function dropKeys(rows: unknown[], drop: readonly string[]): unknown[] {
+  return rows.map((r) => {
+    if (!r || typeof r !== 'object' || Array.isArray(r)) return r;
+    return Object.fromEntries(Object.entries(r as Record<string, unknown>).filter(([k]) => !drop.includes(k)));
+  });
+}
+
+/** Rename a key AND replace its value with a surrogate — decision 111's document ids. */
+export function pxKeys(rows: unknown[], map: Record<string, string>, salt: string): unknown[] {
+  return rows.map((r) => {
+    if (!r || typeof r !== 'object' || Array.isArray(r)) return r;
+    return Object.fromEntries(Object.entries(r as Record<string, unknown>).map(([k, v]) => (
+      map[k] ? [map[k], v == null ? null : pseudonym(v, salt)] : [k, v]
+    )));
+  });
+}
+
+/** Rename keys without touching values — a facility is not a person (decision 100). */
 export function renameKeys(rows: unknown[], map: Record<string, string>): unknown[] {
   return rows.map((r) => {
     if (!r || typeof r !== 'object' || Array.isArray(r)) return r;
@@ -193,15 +245,20 @@ export async function freezePreopEpisode(
     const salt = deps.salt ?? memberSalt();
     const px = (rows: unknown[]) => pseudonymiseRows(rows, salt);
     const sources: Record<string, { rows: unknown[]; error: string | null }> = {
-      fetchUpcomingEpisodes: { rows: px([episode]), error: episodeFetch.error },
-      fetchCreatinine: { rows: px(creat.rows), error: creat.error },
-      fetchOpdIcd: { rows: px(icd.rows), error: icd.error },
-      fetchPacReports: { rows: px(pacs.rows), error: pacs.error },
+      // Decision 111: `patientName` dropped, `hospitalUid` renamed with its value kept.
+      fetchUpcomingEpisodes: { rows: renameKeys(dropKeys(px([episode]), DROPPED_KEYS), { hospitalUid: 'facilityRef' }), error: episodeFetch.error },
+      // ⚠️ `PreopLabRow.name` is the ANALYTE ('Creatinine'), not a person — but a bare `name` on a
+      // clinical row usually is one, so the pattern matches it and this renames rather than
+      // exempts. `run.ts:495` reads only value, unit and at, so nothing downstream notices.
+      fetchCreatinine: { rows: renameKeys(px(creat.rows), { name: 'label' }), error: creat.error },
+      // Decision 111: `ref` is a Firestore `_doc_id` — a surrogate, so the observation keeps a handle.
+      fetchOpdIcd: { rows: pxKeys(px(icd.rows), { ref: 'recordRef' }, salt), error: icd.error },
+      fetchPacReports: { rows: pxKeys(px(pacs.rows), { uid: 'recordRef' }, salt), error: pacs.error },
       // ⚠️ NOT PSEUDONYMISED, AND THE REASON IS THAT IT IS NOT ABOUT A PERSON. This is a
       // uid → name table of HOSPITALS, which the sweep uses to label a facility. Decision 100's
       // reasoning applies with room to spare: §3.3's denylist is about patients.
-      fetchHospitalNames: { rows: renameKeys(hospitals.rows, DIRECTORY_KEYS), error: hospitals.error },
-      fetchOpdComorbidities: { rows: px(comorb.rows), error: comorb.error },
+      fetchHospitalNames: { rows: renameKeys(hospitals.rows, { ...DIRECTORY_KEYS, uid: 'facilityRef' }), error: hospitals.error },
+      fetchOpdComorbidities: { rows: pxKeys(px(comorb.rows), { ref: 'recordRef' }, salt), error: comorb.error },
     };
 
     const frozen = { engine: 'preop' as const, sources, horizon_days: horizonDays, now: now.toISOString() };

@@ -51,8 +51,53 @@ import { LabError, type EngineId } from '../contracts';
  * and must not be: `case_key` is this platform's own de-identified handle and appears on every
  * frozen case.
  */
+/**
+ * ⚠️⚠️ DECISION 111 — THIS PATTERN WAS TOO NARROW AND A REAL IDENTIFIER REACHED `lab_v2`.
+ *
+ * V read dataset `87b4986e` case 0 in the v2 Neon console and found
+ * `frozen.inputs.labSourceProvenance.indexDocumentId` and `.readmitDocumentId` — the Firestore ids
+ * of two discharge documents, each of which resolves to a person. Decision 101 had added
+ * `documentId` and `document_id` as WHOLE keys; the prefixed camelCase forms matched nothing, so
+ * decision 99's walk passed on keys it was never told about and the object was stored.
+ *
+ * ⚠️ THE LESSON IS ABOUT THE SHAPE OF THE RULE, NOT ABOUT TWO MISSING WORDS. An allow-by-omission
+ * pattern — a list of exact keys — is wrong for this job: every engine names its ids differently
+ * and the platform finds out which ones only when a body arrives. So three families become SUFFIX
+ * rules, matching wherever they END a key, in camelCase or snake_case:
+ *
+ *   · `…DocumentId` / `…document_id`   — indexDocumentId, readmitDocumentId, documentId
+ *   · `…Uid` / `…_uid`                 — individualUid, memberUid, ipUid, form_uid, member_uid, uid
+ *   · `…EncounterId` / `…_encounter_id`— indexEncounterId, readmit_encounter_id, encounter_id
+ *
+ * Decision 101's `…Key` family survives as a suffix rule of its own — `dedup_key`, `dedupKey`,
+ * `episodeKey`, `episode_key` — kept narrow to the encounter/episode words so that a bare `key`,
+ * and this platform's `case_key`, are untouched.
+ *
+ * ⚠️ AND TWO NAMED EXCEPTIONS, BECAUSE THE SUFFIX RULE WOULD OTHERWISE EAT THE PLATFORM'S OWN
+ * HANDLES. `case_key` and `member_key` are this platform's de-identified keys — the first is a
+ * salted hash of whatever identified the case, the second a salted hash of the member id — and both
+ * ride on every dataset ever made here. They are exempted BY NAME, at the top, so the exemption is
+ * a list of two rather than a hole in a pattern.
+ *
+ * ⚠️ THE `name` FAMILY GAINS CAMELCASE, BEYOND THE LETTER OF DECISION 111, AND THE REASON IS
+ * MEASURED. `PreopEpisodeRow.patientName` (`lib/preop/db13.ts:75`) is a PATIENT'S NAME and the old
+ * pattern did not match it: `(.*_)?(name|…)` needs an underscore or nothing before `name`, so
+ * `patientName` passed. It was reachable in the preop freeze this round shipped, and shipping a fix
+ * for one stored identifier while leaving a stored patient name behind was not defensible.
+ *
+ * ⚠️ AND IT IS THE ONE FAMILY THAT IS NOT A BARE SUFFIX RULE, DELIBERATELY. `…Name` as a suffix
+ * matches `surgeryName`, `templateName`, `hospitalName` and `analyteName` — a procedure, a form, a
+ * facility and a lab analyte, none of them a person, all of them evidence the round needs. So the
+ * name family is a bare `name`/`surname`/`full_name`… OR one of the PERSON words in front of it.
+ * The first draft used a bare suffix and refused a preop case for carrying `surgeryName`, which is
+ * how the distinction got measured rather than assumed.
+ */
+
+/** §3.3 — this platform's own de-identified handles. Exempt by name, never by pattern. */
+export const KEY_EXCEPTIONS: readonly string[] = ['case_key', 'member_key'];
+
 const IDENTIFYING_KEY =
-  /^(.*_)?(member|patient|person|subject|doctor|clinician|provider|individual)_?(id|uid|uuid|key|no|number)$|^(uhid|mrn|nric|aadhaar|ssn)$|^(.*_)?(encounter|consult|visit|admission|episode|prescription|document|dedup)_?(id|uid|no|key)$|^ip_?uid$|^(.*_)?(name|full_?name|first_?name|last_?name|surname)$|^(.*_)?(phone|mobile|msisdn|email|address|dob|date_?of_?birth)$/i;
+  /(?:document|encounter|consult|visit|admission|episode|prescription|member|patient|person|subject|doctor|clinician|provider|individual)_?(?:id|uid|uuid|no|number)$|(?:dedup|episode|encounter|consult|visit|admission|prescription)_?key$|(?:^|[a-z0-9])_?uid$|^(?:uhid|mrn|nric|aadhaar|ssn|uid)$|^(?:name|surname|full_?name|first_?name|last_?name)$|(?:patient|person|member|doctor|clinician|provider|subject|individual|first|last|full|given|family)_?names?$|(?:phone|mobile|msisdn|email|address|dob|date_?of_?birth)$/i;
 
 /** Every key in a body, at every depth. Arrays are walked; their indices are not keys. */
 export function allKeys(value: unknown, out: string[] = [], depth = 0): string[] {
@@ -70,7 +115,14 @@ export function allKeys(value: unknown, out: string[] = [], depth = 0): string[]
 
 /** The identifying keys a body carries, in the order found. Empty means it may be frozen. */
 export function identifyingKeys(body: unknown): string[] {
-  return [...new Set(allKeys(body).filter((k) => IDENTIFYING_KEY.test(k)))];
+  return [...new Set(allKeys(body)
+    .filter((k) => !KEY_EXCEPTIONS.includes(k))
+    .filter((k) => IDENTIFYING_KEY.test(k)))];
+}
+
+/** Exposed so a test can show the pattern against a real frozen shape, key by key. */
+export function isIdentifyingKey(key: string): boolean {
+  return !KEY_EXCEPTIONS.includes(key) && IDENTIFYING_KEY.test(key);
 }
 
 /**

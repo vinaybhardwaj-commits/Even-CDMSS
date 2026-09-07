@@ -115,7 +115,10 @@ test('§17.8 decision 109: the stored dataset carries member_key BESIDE frozen, 
     engine: 'preop',
     sources: {
       fetchUpcomingEpisodes: { rows: [{ personRef: `${PSEUDONYM_PREFIX}aaaa`, personAltRef: `${PSEUDONYM_PREFIX}bbbb`, episodeRef: `${PSEUDONYM_PREFIX}cccc`, surgeryName: 'Total knee replacement' }], error: null },
-      fetchHospitalNames: { rows: [{ uid: 'H-1', label: 'Even Hospital' }], error: null },
+      // ⚠️ DECISION 111 — the directory's `uid` is now `facilityRef`, matching the episode's
+      // renamed `hospitalUid` so the join at run.ts:529 still lands. The VALUE is real: a facility
+      // is not a person.
+      fetchHospitalNames: { rows: [{ facilityRef: 'H-1', label: 'Even Hospital' }], error: null },
     },
     horizon_days: 60, now: '2026-09-07T00:00:00.000Z',
   };

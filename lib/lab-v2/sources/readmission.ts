@@ -111,6 +111,37 @@ export function refuseIdentifying(body: unknown, what: string): void {
   }
 }
 
+/**
+ * ⚠️⚠️ DECISION 111 — THE TWO KEYS THAT REACHED PRODUCTION, DROPPED AT THE SOURCE.
+ *
+ * `LabSourceProvenance` (`lib/readmission-reconcile-core.ts:392-393`) carries `indexDocumentId` and
+ * `readmitDocumentId`: the Firestore ids of the two discharge documents, each of which resolves to a
+ * person. They rode inside `inputs.labSourceProvenance`, three levels down, and decision 101's
+ * pattern matched `documentId` as a WHOLE key and not as a suffix — so decision 99's walk passed
+ * and dataset `87b4986e` was stored with both. V found them in the Neon console.
+ *
+ * ⚠️ DROPPED, AND THE REST OF THE OBJECT KEPT. `labSourceProvenance` is how a reader knows whether
+ * a finding's labs were structured or scraped, which window was read and whether its start was
+ * inferred — all of that is evidence about the AUDIT and none of it names anyone. Dropping the whole
+ * object to be safe would have cost the round its provenance; dropping two keys costs nothing.
+ *
+ * ⚠️ AND NOTHING READS THEM DOWNSTREAM. `runReconSequence` passes `labSourceProvenance` to
+ * `reconcileFinding`, which reads `tier` and the counts. The two ids exist for the production
+ * worker's own trace, which a lab run does not write.
+ */
+export const DROPPED_PROVENANCE_KEYS = ['indexDocumentId', 'readmitDocumentId'] as const;
+
+export function stripProvenanceIds<T>(inputs: T): T {
+  const i = inputs as unknown as { labSourceProvenance?: Record<string, unknown> | null };
+  if (!i || typeof i !== 'object' || !i.labSourceProvenance || typeof i.labSourceProvenance !== 'object') return inputs;
+  const kept: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(i.labSourceProvenance)) {
+    if ((DROPPED_PROVENANCE_KEYS as readonly string[]).includes(k)) continue;
+    kept[k] = v;
+  }
+  return { ...(inputs as object), labSourceProvenance: kept } as T;
+}
+
 export async function freezeReadmissionFinding(
   dedupKey: string, deps: ReadmissionSourceDeps = {},
 ): Promise<FrozenReadmissionCase> {
@@ -140,7 +171,7 @@ export async function freezeReadmissionFinding(
       engine: 'readmission' as const,
       row: frozenRow,
       // `identity` is NOT carried forward — see the header.
-      inputs: assembled.inputs,
+      inputs: stripProvenanceIds(assembled.inputs),
       index_discharge_at: assembled.indexDischargeAt ?? null,
     };
     refuseIdentifying(frozen, 'the frozen readmission case');

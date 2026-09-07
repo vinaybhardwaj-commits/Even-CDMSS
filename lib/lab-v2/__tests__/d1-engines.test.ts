@@ -16,16 +16,16 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { embedded, type Db } from '../db';
 import { LabError } from '../contracts';
-import { identifyingKeys } from '../sources/requests';
+import { identifyingKeys, isIdentifyingKey } from '../sources/requests';
 import {
-  FROZEN_ROW_FIELDS, READMISSION_FINDING_SQL, READMISSION_VERDICT_SQL,
+  DROPPED_PROVENANCE_KEYS, FROZEN_ROW_FIELDS, READMISSION_FINDING_SQL, READMISSION_VERDICT_SQL,
   auditedVerdict, freezeReadmissionFinding, refuseIdentifying,
 } from '../sources/readmission';
 import {
   PSEUDONYM_KEYS, PSEUDONYM_PREFIX, freezePreopEpisode, pseudonym, pseudonymiseRows,
 } from '../sources/preop';
 import { AVOIDABLE_VERDICTS, makeReadmissionAdapter } from '../adapters/readmission';
-import { makePreopAdapter, restoreKeys } from '../adapters/preop';
+import { ALL_ALIASES, makePreopAdapter, restoreKeys } from '../adapters/preop';
 import { runReconSequence } from '../../readmission/run';
 import { parsePassClaims } from '../../readmission-prompts';
 import type { AdapterContext } from '../adapters/types';
@@ -98,7 +98,18 @@ const ASSEMBLED = {
       ],
     },
     labProfile: 'has_late_labs', labTier: 'tier1',
-    labSourceProvenance: { structured: 1, tier2: 0, none: 0 },
+    /**
+     * ⚠️ DECISION 111 — `LabSourceProvenance` IN FULL (`readmission-reconcile-core.ts:378`),
+     * INCLUDING THE TWO KEYS THAT REACHED PRODUCTION. D1's fixture invented a three-field object
+     * and the walk passed on it; the real one carries `indexDocumentId` and `readmitDocumentId`,
+     * three levels down, and those are what V found in dataset 87b4986e.
+     */
+    labSourceProvenance: {
+      tier: 'tier1', structuredLabCount: 3, window: { from: '2026-07-18', to: '2026-08-03' },
+      windowStartInferred: false, caseLabCount: 5, indexCase: 'store', readmitCase: 'store',
+      extractionVersion: 'doc-extract/0.4',
+      indexDocumentId: 'FIRESTORE-DOC-INDEX-1', readmitDocumentId: 'FIRESTORE-DOC-READMIT-1',
+    },
     indexSentenceCount: 12, readmitSentenceCount: 9,
   },
   indexAdmitAt: '2026-07-28T10:00:00+05:30',
@@ -284,17 +295,26 @@ test('§17.8 item 6: a bad frozen shape fails the item rather than throwing at t
 // The preop freeze and adapter
 // ─────────────────────────────────────────────────────────────────────────────────────
 
+/**
+ * ⚠️ DECISION 111 ITEM 3 — THE REAL ROW SHAPES, EVERY FIELD, ids replaced with the same shape.
+ *
+ * D1's fixture was a hand-made subset and that is exactly how `patientName` survived: the walk
+ * asserted "no denylist key" over an object that never carried the dangerous one. These are
+ * `PreopEpisodeRow` (`lib/preop/db13.ts:70`), `PreopLabRow` (`:298`), `PreopIcdRow` (`:347`),
+ * `PacRow` (`:228`) and `PreopOpdComorbidityRow` (`:377`) in full.
+ */
 const EPISODE = {
-  docId: 'SC-1', individualUid: 'IND-1', uhid: 'UH-9', hospitalUid: 'H-1',
-  surgeryName: 'Total knee replacement', surgeryAt: '2026-09-20T04:00:00Z', age: 64, sex: 'M',
+  docId: 'SC-1', individualUid: 'IND-1', uhid: 'UH-9', patientName: 'A Real Patient',
+  age: 64, sex: 'M', procedure: 'Total knee replacement', hospitalUid: 'H-1',
+  surgeryDate: '2026-09-20', status: 'scheduled', urgency: 'elective', pacWorkflowStatus: 'complete',
 };
 const preopSources = (over: Record<string, unknown> = {}) => ({
   fetchUpcomingEpisodes: async () => ({ rows: [EPISODE], error: null }),
-  fetchCreatinine: async () => ({ rows: [{ individualUid: 'IND-1', value: 1.4, unit: 'mg/dL', at: '2026-09-01' }], error: null }),
-  fetchOpdIcd: async () => ({ rows: [{ individualUid: 'IND-1', code: 'E11', term: 'Type 2 diabetes' }], error: null }),
-  fetchPacReports: async () => ({ rows: [], error: null }),
+  fetchCreatinine: async () => ({ rows: [{ individualUid: 'IND-1', name: 'Creatinine', value: 1.4, unit: 'mg/dL', at: '2026-09-01' }], error: null }),
+  fetchOpdIcd: async () => ({ rows: [{ individualUid: 'IND-1', codes: ['E11'], at: '2026-08-01', ref: 'ICD-DOC-1' }], error: null }),
+  fetchPacReports: async () => ({ rows: [{ uid: 'PAC-DOC-1', uhid: 'UH-9', status: 'closed', createdAt: '2026-09-02', closingLine: 'Fit for surgery', templateName: 'PAC v3', componentJson: '{}' }], error: null }),
   fetchHospitalNames: async () => ({ rows: [{ uid: 'H-1', name: 'Even Hospital' }], error: null }),
-  fetchOpdComorbidities: async () => ({ rows: [{ individualUid: 'IND-1', notes: '[]' }], error: null }),
+  fetchOpdComorbidities: async () => ({ rows: [{ individualUid: 'IND-1', names: ['Diabetes'], at: '2026-08-01', ref: 'COM-DOC-1' }], error: null }),
   ...over,
 }) as never;
 
@@ -310,14 +330,23 @@ test('§17.8 decision 99: the frozen preop case carries no denylist key and no r
   const ep = (frozen.frozen.sources.fetchUpcomingEpisodes.rows[0] ?? {}) as Record<string, unknown>;
   for (const alias of Object.values(PSEUDONYM_KEYS)) assert.ok(alias in ep, `${alias} is present`);
   assert.match(String(ep.personRef), new RegExp(`^${PSEUDONYM_PREFIX}[0-9a-f]{24}$`));
-  assert.equal(ep.surgeryName, 'Total knee replacement', 'the clinical values ARE the case and are untouched');
+  assert.equal(ep.procedure, 'Total knee replacement', 'the clinical values ARE the case and are untouched');
+  assert.equal(ep.age, 64);
+  assert.equal(ep.sex, 'M');
+  // ⚠️ DECISION 111 — the patient's NAME is gone entirely, not renamed and not hashed.
+  assert.ok(!('patientName' in ep), 'patientName is dropped: nothing in the output path reads it');
+  assert.ok(!JSON.stringify(frozen.frozen).includes('A Real Patient'));
+  // The facility keeps its real value under a name the denylist does not match — decision 100.
+  assert.equal(ep.facilityRef, 'H-1', 'a facility is not a person');
   // Consistent within the case, which is all the joins need.
   const creat = (frozen.frozen.sources.fetchCreatinine.rows[0] ?? {}) as Record<string, unknown>;
   assert.equal(creat.personRef, ep.personRef, 'the surrogate joins the labs to the episode');
   assert.equal(pseudonym('IND-1', SALT), ep.personRef);
   assert.notEqual(pseudonym('IND-1', 'other-salt'), ep.personRef, 'and it is salted');
   // The hospital directory is NOT pseudonymised: it is not about a patient (decision 100's reasoning).
-  assert.equal((frozen.frozen.sources.fetchHospitalNames.rows[0] as Record<string, unknown>).uid, 'H-1');
+  assert.equal((frozen.frozen.sources.fetchHospitalNames.rows[0] as Record<string, unknown>).facilityRef, 'H-1',
+    'and the directory joins to it under the SAME name, so run.ts:529 still lands');
+  assert.equal((frozen.frozen.sources.fetchHospitalNames.rows[0] as Record<string, unknown>).label, 'Even Hospital');
   assert.match(frozen.member_key ?? '', /^[0-9a-f]{16,}$/);
   assert.match(frozen.case_key, /^preop:[0-9a-f]{32}$/);
 });
@@ -346,7 +375,7 @@ test('§17.8: pseudonymiseRows renames and replaces, at depth, and touches nothi
   assert.ok('episodeRef' in ((out[0].list as Record<string, unknown>[])[0]));
   assert.deepEqual(identifyingKeys(out), []);
   // And the adapter's inverse restores exactly what the engine reads.
-  const back = restoreKeys(out) as Record<string, unknown>[];
+  const back = restoreKeys(out, { personRef: 'individualUid', personAltRef: 'uhid', episodeRef: 'docId' }) as Record<string, unknown>[];
   assert.ok('individualUid' in back[0]);
   assert.equal((back[0].nested as Record<string, unknown>).uhid, pseudonym('B', SALT), 'the VALUE stays a surrogate');
 });
@@ -570,4 +599,111 @@ test('§17.8: the readmission adapter never reaches the production audit wrapper
   const b = run.indexOf('// ── Phase 1.5');
   assert.ok(a > 0 && b > a, 'the pinned region is where it was');
   assert.ok(!run.slice(a, b).includes('opts.sources'), 'and the D1 seam is nowhere inside it');
+});
+
+// ═════════════════════════════════════════════════════════════════════════════════════
+// DECISION 111 ITEM 3 — the key inventory. A new key fails until someone classifies it.
+// ═════════════════════════════════════════════════════════════════════════════════════
+
+/** Every key in a body, at every depth, sorted and de-duplicated. */
+function keyInventory(v: unknown, out = new Set<string>(), depth = 0): string[] {
+  if (depth > 12 || v === null || typeof v !== 'object') return [...out].sort();
+  if (Array.isArray(v)) { for (const x of v) keyInventory(x, out, depth + 1); return [...out].sort(); }
+  for (const [k, val] of Object.entries(v as Record<string, unknown>)) { out.add(k); keyInventory(val, out, depth + 1); }
+  return [...out].sort();
+}
+
+/**
+ * ⚠️ THIS IS THE TEST DECISION 111 ACTUALLY ASKS FOR, AND IT IS NOT THE DENYLIST WALK.
+ *
+ * The walk asks "does this body carry a key I already know is dangerous". That question passed on
+ * `indexDocumentId` for the whole of D1, because the pattern had never been told about it — an
+ * allow-by-omission check cannot catch a key nobody classified.
+ *
+ * This asks the opposite question: "IS EVERY KEY IN THIS BODY ONE SOMEBODY LOOKED AT". A new field
+ * in an upstream engine — a column added to `readmission_findings`, a field added to
+ * `PreopEpisodeRow` — fails this test on the day it appears, and the fix is to put it in the list
+ * having decided what it is. That is the difference between a denylist and an inventory, and it is
+ * why both are here.
+ */
+test('§17.8 decision 111: the frozen READMISSION body carries exactly these keys, and no others', async () => {
+  const db = await readmissionDb();
+  await seedFinding(db);
+  const frozen = await freezeReadmissionFinding('RX-1|RX-2', {
+    run: runner(db), assemble: (async () => ASSEMBLED) as never, salt: SALT,
+  });
+  assert.deepEqual(keyInventory(frozen.frozen), [
+    // the body itself
+    'engine', 'index_discharge_at', 'inputs', 'row',
+    // frozen.row — the seven PendingRow columns runReconSequence reads
+    'finding_class', 'form_is_planned', 'form_same_condition', 'gap_days', 'lane', 'readmit_admit_at',
+    // frozen.inputs — ThreeSourceInputs
+    'catalog', 'indexSentenceCount', 'labProfile', 'labSourceProvenance', 'labTier', 'readmitSentenceCount',
+    // catalog is `{items: EvidenceItem[]}` — the wrapper key, then the item's own
+    'items',
+    // catalog.items — EvidenceItem
+    'abnormal', 'analyte', 'at', 'id', 'side', 'source', 'text',
+    // labSourceProvenance — WITHOUT the two document ids decision 111 drops
+    'caseLabCount', 'extractionVersion', 'from', 'indexCase', 'readmitCase', 'structuredLabCount',
+    'tier', 'to', 'window', 'windowStartInferred',
+  ].sort());
+  // ⚠️ THE TWO THAT REACHED PRODUCTION, ABSENT — asserted by name as well as by inventory.
+  for (const k of DROPPED_PROVENANCE_KEYS) {
+    assert.ok(!keyInventory(frozen.frozen).includes(k), `${k} must not survive the freeze`);
+  }
+  assert.ok(!JSON.stringify(frozen.frozen).includes('FIRESTORE-DOC-INDEX-1'));
+  assert.ok(!JSON.stringify(frozen.frozen).includes('FIRESTORE-DOC-READMIT-1'));
+  // And the rest of the provenance object is KEPT: it is evidence about the audit, not about a person.
+  const prov = (frozen.frozen.inputs as { labSourceProvenance: Record<string, unknown> }).labSourceProvenance;
+  assert.equal(prov.tier, 'tier1');
+  assert.equal(prov.structuredLabCount, 3);
+  assert.equal(prov.extractionVersion, 'doc-extract/0.4');
+  assert.deepEqual(prov.window, { from: '2026-07-18', to: '2026-08-03' });
+  // Every key in the inventory passes the denylist — the two checks agree.
+  assert.deepEqual(keyInventory(frozen.frozen).filter(isIdentifyingKey), []);
+});
+
+test('§17.8 decision 111: the frozen PREOP body carries exactly these keys, and no others', async () => {
+  const frozen = await freezePreopEpisode('SC-1', { sources: preopSources(), salt: SALT });
+  assert.deepEqual(keyInventory(frozen.frozen), [
+    // the body itself
+    'engine', 'horizon_days', 'now', 'sources',
+    // the six source names
+    'fetchCreatinine', 'fetchHospitalNames', 'fetchOpdComorbidities', 'fetchOpdIcd',
+    'fetchPacReports', 'fetchUpcomingEpisodes',
+    // every source's envelope
+    'error', 'rows',
+    // the episode row — patientName DROPPED, three ids surrogated, hospitalUid renamed
+    'age', 'episodeRef', 'facilityRef', 'pacWorkflowStatus', 'personAltRef', 'personRef',
+    'procedure', 'sex', 'status', 'surgeryDate', 'urgency',
+    // labs, icd, comorbidities, pac, directory
+    'at', 'closingLine', 'codes', 'componentJson', 'createdAt', 'label', 'names', 'recordRef',
+    'templateName', 'unit', 'value',
+  ].sort());
+  // ⚠️ THE PATIENT'S NAME IS GONE, and the two document-id families are surrogates, not values.
+  assert.ok(!keyInventory(frozen.frozen).includes('patientName'));
+  assert.ok(!JSON.stringify(frozen.frozen).includes('A Real Patient'));
+  for (const real of ['IND-1', 'UH-9', 'SC-1', 'PAC-DOC-1', 'ICD-DOC-1', 'COM-DOC-1']) {
+    assert.ok(!JSON.stringify(frozen.frozen).includes(real), `${real} must not survive the freeze`);
+  }
+  // ⚠️ AND THE NOT-A-PERSON VALUES SURVIVE INTACT, which is the other half of getting this right.
+  const text = JSON.stringify(frozen.frozen);
+  for (const kept of ['Total knee replacement', 'Even Hospital', 'H-1', 'PAC v3', 'Fit for surgery', 'Diabetes']) {
+    assert.ok(text.includes(kept), `${kept} is evidence and must be kept`);
+  }
+  assert.deepEqual(keyInventory(frozen.frozen).filter(isIdentifyingKey), []);
+});
+
+test('§17.8 decision 111: the adapter restores every alias the freeze created', async () => {
+  const frozen = await freezePreopEpisode('SC-1', { sources: preopSources(), salt: SALT });
+  const aliases = keyInventory(frozen.frozen).filter((k) => ALL_ALIASES.includes(k));
+  // Each of the aliases the freeze actually produced is restorable by the adapter, per source.
+  assert.deepEqual(aliases.sort(), ['episodeRef', 'facilityRef', 'label', 'personAltRef', 'personRef', 'recordRef']);
+  const { ctx } = ctxFor(frozen.frozen as unknown as Record<string, unknown>, () => '{}', {});
+  const out = await makePreopAdapter().run(ctx);
+  // ⚠️ THE PROOF THAT THE RESTORE IS RIGHT IS THAT THE ENGINE STILL WORKS: the joins at run.ts:493,
+  // :500 and :529 all land, so the episode is found, scored and tiered.
+  assert.equal(out.execution_status, 'succeeded');
+  assert.equal((out.result as { episodes: number }).episodes, 1);
+  assert.ok(typeof out.summary.tier === 'string' && String(out.summary.tier).length > 0);
 });
