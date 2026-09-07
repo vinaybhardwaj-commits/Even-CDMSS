@@ -88,16 +88,30 @@ const RANK: Record<AttributionStatus, number> = {
 
 export class Gateway {
   private worst: AttributionStatus = 'verified';
-  private sawAnyCall = false;
+  private sawCall = false;
   constructor(private readonly deps: GatewayDeps) {}
 
   /** The item's attribution_status: the worst any of its calls achieved (§9). */
   attributionStatus(): AttributionStatus {
-    return this.sawAnyCall ? this.worst : 'unknown';
+    return this.sawCall ? this.worst : 'unknown';
+  }
+
+  /**
+   * DECISION 121 — WHETHER A CALL WAS DISPATCHED AT ALL, which `attributionStatus()` cannot say.
+   *
+   * That method returns `unknown` for two different facts: "one call went out and I could not
+   * attribute it" and "no call went out". D2a's `not_applicable` needed the second and had only
+   * the first available, so an item whose single call settled with no usage was reported as
+   * having made none. This is the missing half of that question and nothing else: it is a
+   * MEASUREMENT of dispatch, it never decides a status, and `worker.ts` is still the only place
+   * `not_applicable` is chosen.
+   */
+  sawAnyCall(): boolean {
+    return this.sawCall;
   }
 
   private note(status: AttributionStatus) {
-    this.sawAnyCall = true;
+    this.sawCall = true;
     if (RANK[status] > RANK[this.worst]) this.worst = status;
   }
 

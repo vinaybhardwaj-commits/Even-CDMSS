@@ -497,14 +497,44 @@ function zeroCallAdapter(summary: Record<string, unknown> = {}): Adapter {
   };
 }
 
-async function runZeroCall(db: Db, adapter: Adapter, key: string) {
+/**
+ * DECISION 121's contrast: an adapter that DOES dispatch one call at the priced stage. Whatever
+ * the transport then does to it, a call went out, and the gateway's verdict about it stands.
+ */
+function oneCallAdapter(): Adapter {
+  return {
+    engine: 'preop',
+    stages: ['suggest'],
+    engineVersion: () => 'one/1.0',
+    frozenInputs: [],
+    perAttemptTimeoutMs: 1_000,
+    async run(ctx: AdapterContext): Promise<AdapterOutcome> {
+      await ctx.gateway.call('suggest', { messages: [{ role: 'user', content: 'hello' }] });
+      return {
+        result: { tiered: true },
+        summary: { engine: 'preop', tier: 'AMBER' },
+        execution_status: 'succeeded', assessment_status: 'assessed',
+      };
+    },
+  };
+}
+
+const PRICED = { suggest: { provider: 'ollama', model: 'local-model', max_cost_microusd: 5_000 } };
+
+async function runZeroCall(
+  db: Db, adapter: Adapter, key: string,
+  o: { transport?: unknown; stages?: Record<string, unknown> } = {},
+) {
   const budget = await ensureBudget(db, 'research', 'default', 1_000_000);
   const { run } = await submitRun(db, 'research', 'experiment_run', null, budget.id, key, 'h', 86_400_000, [
-    { case_key: 'z1', arm_hash: 'h', repetition: 1, payload: { engine: 'preop', frozen: {}, arm: { stages: {} }, budget_id: budget.id } },
+    {
+      case_key: 'z1', arm_hash: 'h', repetition: 1,
+      payload: { engine: 'preop', frozen: {}, arm: { stages: o.stages ?? {} }, budget_id: budget.id },
+    },
   ]);
   await tick({
     db,
-    transport: (async () => { throw new Error('this item makes no model call'); }) as never,
+    transport: (o.transport ?? (async () => { throw new Error('this item makes no model call'); })) as never,
     adapters: { preop: adapter },
   });
   const [item] = await itemsOf(db, run.id);
@@ -526,6 +556,86 @@ test('§17.9 decision 115: a DECLARED replay still wins over not_applicable', as
   const db = await freshDb();
   const item = await runZeroCall(db, zeroCallAdapter({ attribution_status: 'replayed' }), 'd115-replayed');
   assert.equal(item.attribution_status, 'replayed', 'decision 65 is untouched by the fifth value');
+  await db.close();
+});
+
+/**
+ * ⚠️⚠️ DECISION 121 — THE DEFECT D2a SHIPPED, AND THE THREE CASES THAT PIN THE FIX.
+ *
+ * `not_applicable` was set from `gatewayVerdict === 'unknown'`, and the gateway returns that word
+ * for TWO different facts: "no call went out" and "one call went out and I could not attribute
+ * it". Only the first is `not_applicable`. The second is a measurement that FAILED — money may
+ * well have been spent — and calling it "not applicable" would retire a real attribution gap into
+ * a word that reads like housekeeping. `Gateway.sawAnyCall()` separates them.
+ */
+test('§17.9 decision 121: one call settled with NO usage is `unknown`, never not_applicable', async () => {
+  const db = await freshDb();
+  // The transport answers, and reports no usage — so the cost is unknowable, the call is marked
+  // `unknown` and its reservation moves to the unknown bucket (`gateway.ts:141-145`).
+  const item = await runZeroCall(db, oneCallAdapter(), 'd121-nousage', {
+    stages: PRICED,
+    transport: async () => ({ completion: { choices: [] }, text: 'ok', served: { provider: 'ollama', model: 'local-model' }, usage: null }),
+  });
+  assert.equal(item.state, 'succeeded');
+  assert.equal(item.attribution_status, 'unknown', 'a call WAS dispatched; the gateway’s verdict stands');
+  // And the evidence that a call happened, so the assertion above is not about nothing.
+  const calls = await db.query<{ n: string }>(`SELECT count(*)::text AS n FROM lab_v2.calls WHERE item_id = $1`, [item.id]);
+  assert.equal(calls[0].n, '1');
+  await db.close();
+});
+
+test('§17.9 decision 121: a transport that THREW is `unknown`, never not_applicable', async () => {
+  const db = await freshDb();
+  const item = await runZeroCall(db, oneCallAdapter(), 'd121-threw', {
+    stages: PRICED,
+    transport: async () => { throw new Error('provider timed out'); },
+  });
+  // The gateway moves the reservation to `unknown` and re-throws (`gateway.ts:131-138`), so the
+  // item fails — but it fails having SPENT a call, which is not the same fact as never making one.
+  assert.equal(item.state, 'failed');
+  assert.equal(item.attribution_status, 'unknown');
+  const calls = await db.query<{ n: string; state: string }>(
+    `SELECT count(*)::text AS n, max(state) AS state FROM lab_v2.calls WHERE item_id = $1`, [item.id]);
+  assert.equal(calls[0].n, '1', 'the intent row a killed call leaves behind');
+  await db.close();
+});
+
+test('§17.9 decision 121: a FAILED item that never reached a call is still not_applicable', async () => {
+  const db = await freshDb();
+  const throwing: Adapter = {
+    ...zeroCallAdapter(),
+    async run(): Promise<AdapterOutcome> { throw new LabError('ENGINE_UNSUPPORTED', 'nothing to run'); },
+  };
+  const item = await runZeroCall(db, throwing, 'd121-failed-nocall');
+  assert.equal(item.state, 'failed');
+  // ⚠️ AND THIS IS THE HALF THAT MUST NOT REGRESS. Nothing was dispatched, so nothing went
+  // unmeasured; the item failed for a reason that has no attribution question in it at all.
+  assert.equal(item.attribution_status, 'not_applicable');
+  const calls = await db.query<{ n: string }>(`SELECT count(*)::text AS n FROM lab_v2.calls WHERE item_id = $1`, [item.id]);
+  assert.equal(calls[0].n, '0', 'no call, which is exactly why the word is not_applicable');
+  await db.close();
+});
+
+test('§17.9 decision 121: sawAnyCall() is false before any call and true after one', async () => {
+  const db = await freshDb();
+  const budget = await ensureBudget(db, 'research', 'default', 1_000_000);
+  // A real item, because `calls.item_id` is a foreign key and a call must be attributable to one.
+  const { run } = await submitRun(db, 'research', 'experiment_run', null, budget.id, 'd121-unit', 'h', 86_400_000,
+    [{ case_key: 'g1', arm_hash: 'h', repetition: 1, payload: {} }]);
+  const [item] = await itemsOf(db, run.id);
+  const { Gateway } = await import('../gateway');
+  const gateway = new Gateway({
+    db, itemId: item.id, leaseToken: item.lease_token, budgetId: budget.id,
+    transport: (async () => ({ completion: null, text: '', served: null, usage: null })) as never,
+    stages: PRICED as never,
+  });
+  // ⚠️ THE TWO ANSWERS THAT USED TO BE ONE WORD. Before any call both say the same thing; after a
+  // call the gateway can still only say `unknown`, and `sawAnyCall()` is what tells them apart.
+  assert.equal(gateway.sawAnyCall(), false);
+  assert.equal(gateway.attributionStatus(), 'unknown');
+  await assert.doesNotReject(() => gateway.call('suggest', { messages: [] }));
+  assert.equal(gateway.sawAnyCall(), true);
+  assert.equal(gateway.attributionStatus(), 'unknown', 'still unknown — and now demonstrably NOT "no call"');
   await db.close();
 });
 
