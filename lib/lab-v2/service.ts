@@ -24,6 +24,10 @@ import {
 } from './contracts';
 // §17.8 decision 105 — the data_scope gate lives beside the keys, not beside the tools.
 import { dataScopeFor, identifyingPrincipals, mayUseIdentifyingInput } from '../mcp-v2/auth';
+import { createHash } from 'crypto';
+// §17.8 decision 109 — the two Slice D freezes, wired into dataset_create.
+import { freezeReadmissionFinding } from './sources/readmission';
+import { freezePreopEpisode } from './sources/preop';
 import { PRICING_VERSION, isSupportedModel, modelsFor } from './pricing';
 import { BY_NAME, visibleTools } from './registry';
 import {
@@ -34,7 +38,7 @@ import { opdAdapter } from './adapters/opd';
 // Round A3 (decision 37). The multi-engine registry lives in adapters/types.ts because round 1
 // put ADAPTERS in adapters/opd.ts and §17.3 leaves that file untouched.
 import { ALL_ADAPTERS } from './adapters/types';
-import { freezeRequestCase, requestFieldsFor, requiresIdentifyingInput } from './sources/requests';
+import { freezeRequestCase, requestFieldsFor, requiresIdentifyingInput, identifyingKeys} from './sources/requests';
 import { OBSERVATION_HANDLERS, OBSERVATION_SCHEMAS } from './tools/observation';
 // Slice B round B1 (§17.4).
 import { COMPARE_SCHEMAS, experimentCompare, runDiff } from './tools/compare';
@@ -160,6 +164,115 @@ export function callCarriesIdentifyingInput(rawArgs: unknown): boolean {
 function stripIdentityFields(args: Record<string, unknown>): Record<string, unknown> {
   const { principal: _p, reviewer: _r, owner: _o, ...rest } = args;
   return rest;
+}
+
+/**
+ * §17.8 DECISION 109 — `dataset_create` for `readmission` and `preop`.
+ *
+ * ⚠️ IT EXISTED NOWHERE BEFORE THIS FIX. D1 shipped `freezeReadmissionFinding` and
+ * `freezePreopEpisode` and wired neither into the service; `grep readmission lib/lab-v2/service.ts`
+ * returned nothing. D1's tests called the freezes DIRECTLY, so they passed while the only path a
+ * caller has did not exist. Hence the standing rule this fix carries: every new tool path gets at
+ * least one test through service dispatch, not only through its functions.
+ *
+ * ⚠️ THESE ENGINES DO NOT GO THROUGH `freezeRequestCase`, AND MUST NOT. That function refuses any
+ * identifying key in a body — and `dedup_key` and `episodeKey` are both on the denylist after
+ * decision 101, deliberately. The identifier is an ARGUMENT here, used to read and never stored:
+ * the freeze returns a salted `case_key`, a `member_key` and a body with no id in it.
+ *
+ * ⚠️ AND `member_key` IS A SIBLING OF `frozen`, NEVER A FIELD INSIDE IT. That is the shape every
+ * dataset in this platform already uses (`datasetCaseSchema`), and it is why decision 99's walk can
+ * be run over `frozen` alone: the one durable link to a person lives outside the body a replay reads.
+ *
+ * Both are `replay_exactness: 'frozen'` — a readmission case carries the whole `ThreeSourceInputs`
+ * the recon legs read, and a preop case carries all six source fetches, so a replay of either reads
+ * nothing live.
+ */
+async function sliceDDataset(
+  deps: ServiceDeps, args: Record<string, unknown>, engine: 'readmission' | 'preop',
+): Promise<unknown> {
+  const isReadmission = engine === 'readmission';
+  const bodyArg = (args.body ?? {}) as Record<string, unknown>;
+  const cohort = args.cohort as { case_keys?: string[] } | undefined;
+
+  // The identifier, in either of the two shapes the tool accepts.
+  const single = isReadmission ? bodyArg.dedup_key : bodyArg.episodeKey;
+  const keys = (cohort?.case_keys ?? (single == null ? [] : [String(single)]))
+    .map((k) => String(k).trim()).filter((k) => k.length > 0);
+  if (!keys.length) {
+    throw new LabError('INVALID_INPUT',
+      isReadmission
+        ? 'readmission takes body.dedup_key, or cohort.case_keys as dedup keys'
+        : 'preop takes body.episodeKey, or cohort.case_keys as episode keys');
+  }
+  const skip = new Set((args.exclusions as string[]) ?? []);
+  const wanted = keys.filter((k) => !skip.has(k));
+  if (!wanted.length) throw new LabError('INVALID_INPUT', 'every requested case is in the exclusion list');
+
+  const cases: { case_key: string; member_key: string | null; frozen: Record<string, unknown> }[] = [];
+  const excluded: { case_key: string; reason: string }[] = [];
+  for (const key of wanted) {
+    try {
+      const f = isReadmission ? await freezeReadmissionFinding(key) : await freezePreopEpisode(key);
+      cases.push({ case_key: f.case_key, member_key: f.member_key, frozen: f.frozen as unknown as Record<string, unknown> });
+    } catch (e) {
+      const err = e as LabError;
+      /**
+       * ⚠️ ONE CASE'S FAILURE IS AN EXCLUSION WITH A REASON, exactly as decision 41 rules for an
+       * OPD cohort — except `NOT_CONFIGURED`, which is the deployment's problem (no member salt)
+       * and would otherwise produce a dataset of N identical exclusions, and
+       * `CLASSIFICATION_REQUIRED`, which means an upstream engine stopped de-identifying. Neither
+       * is a property of the case, so neither is recorded against it.
+       */
+      if (err.code === 'NOT_CONFIGURED' || err.code === 'CLASSIFICATION_REQUIRED') throw err;
+      /**
+       * ⚠️ THE EXCLUSION IS KEYED BY A HASH, NOT BY THE IDENTIFIER THAT FAILED. `excluded` is
+       * stored on the dataset object, so writing the raw `dedup_key` of a finding that does not
+       * exist would put an identifier in `lab_v2` by the back door — the one thing decision 99
+       * forbids, arriving through the error path rather than the happy one.
+       */
+      excluded.push({
+        case_key: `${engine}:${createHash('sha256').update(`excluded|${key}`).digest('hex').slice(0, 32)}`,
+        reason: `${err.code ?? 'ERROR'}: ${String(err.message).slice(0, 200)}`,
+      });
+    }
+  }
+  if (!cases.length) {
+    throw new LabError('SOURCE_UNAVAILABLE',
+      `no ${engine} case could be frozen (${excluded.length} excluded); the reasons are on the exclusions list`);
+  }
+
+  // ⚠️ DECISION 99, ON WHAT IS ABOUT TO BE STORED. The freezes each refuse an identifying key in
+  // their own body; this walks the ASSEMBLED cases one more time, because the assembly is the last
+  // thing that touches them before `putObject`.
+  for (const c of cases) {
+    const hits = identifyingKeys(c.frozen);
+    if (hits.length) {
+      throw new LabError('CLASSIFICATION_REQUIRED',
+        `a frozen ${engine} case carries identifying key(s) ${hits.join(', ')}; refused rather than stored (decision 99)`);
+    }
+  }
+
+  const body = datasetBodySchema.parse({
+    engine,
+    cases,
+    snapshot_policy: isReadmission ? 'finding_at_creation' : 'episode_at_creation',
+    exclusions: (args.exclusions as string[]) ?? [],
+    classification: 'deidentified',
+    source_versions: {
+      frozen_at: new Date().toISOString(),
+      origin: isReadmission ? 'readmission_findings' : 'db13 via lib/preop/db13.ts',
+      cases: cases.length,
+    },
+    replay_exactness: 'frozen',
+  });
+  const { object, deduplicated } = await putObject(deps.db, deps.principal, 'dataset', body, 'deidentified', String(args.idempotency_key));
+  return {
+    dataset_id: object.id, hash: object.hash, replay_exactness: body.replay_exactness,
+    classification: 'deidentified' as const, deduplicated,
+    counts: { requested: wanted.length, frozen: cases.length, excluded: excluded.length },
+    excluded,
+  };
 }
 
 export async function callTool(deps: ServiceDeps, name: string, rawArgs: unknown): Promise<unknown> {
@@ -379,9 +492,29 @@ const HANDLERS: Record<ToolName, Handler> = {
     if (!SUPPORTED_ENGINES.includes(engine as never)) {
       throw new LabError('ENGINE_UNSUPPORTED', `engine '${engine}' has no adapter; it arrives in slice ${ENGINE_SLICE[engine as never] ?? '?'}`);
     }
-    if (requiresIdentifyingInput(engine as never)) {
-      throw new LabError('CLASSIFICATION_REQUIRED', `engine '${engine}' requires identifying input until Slice D (§3.3)`);
+    /**
+     * §17.8 DECISION 109 — DECISION 34's BLANKET REFUSAL IS GONE FROM HERE, and this note is what
+     * replaces it. Two lines stood here: `if (requiresIdentifyingInput(engine))` and a
+     * `CLASSIFICATION_REQUIRED` throw whose message told the caller the engine was not available
+     * before Slice D. (The message itself is deliberately NOT quoted here — a test asserts that
+     * text appears nowhere in this file, and a comment reproducing it would defeat the test.)
+     *
+     * It was correct for as long as Slice D did not exist. Decision 105 replaced that blanket
+     * with a finer instrument — `production_read` plus a principal on
+     * `LAB_V2_IDENTIFYING_PRINCIPALS` — and the gate for it runs in `callTool` BEFORE this handler
+     * is reached, so leaving the old line here meant the operator key passed the new gate and was
+     * then refused by the old one, with decision 34's text. Measured live on `0332a2a0`.
+     *
+     * ⚠️ NOTHING IS UNGUARDED BY ITS REMOVAL. `callCarriesIdentifyingInput` fails closed on an
+     * absent or unknown engine, and a principal without the attribute never reaches this function
+     * for `readmission` or `preop` at all.
+     */
+
+    // ── §17.8 D1 fix 2 (decision 109) — the two Slice D engines ─────────────────────
+    if (engine === 'readmission' || engine === 'preop') {
+      return sliceDDataset(deps, args, engine);
     }
+
     // ── Slice B round B2: the IPD episode freeze (§17.5, decisions 48 and 50) ───────
     // A frozen episode is a STORED AUDIT ROW, not a live encounter: the freeze reads
     // ipd_episode_audits, its checkpoints and the extraction, strips verbatimSections, and keys
