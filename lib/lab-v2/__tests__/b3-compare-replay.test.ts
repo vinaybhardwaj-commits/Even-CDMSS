@@ -137,7 +137,10 @@ test('§17.6 decision 58: a key that would collide is refused, never quietly res
 // ── decision 65 ─────────────────────────────────────────────────────────────────────────────
 
 test('§17.6 decision 65: `replayed` is the fourth attribution value', () => {
-  assert.deepEqual([...ATTRIBUTION_STATUSES], ['verified', 'invalid', 'unknown', 'replayed']);
+  // Rule 1a / decision 115: a FIFTH value, `not_applicable`, for an item that made no call at all.
+  // The pin moves rather than loosens — the point of it is that this list is short and deliberate.
+  assert.deepEqual([...ATTRIBUTION_STATUSES],
+    ['verified', 'invalid', 'unknown', 'replayed', 'not_applicable']);
 });
 
 async function frozenCase() {

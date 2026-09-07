@@ -253,6 +253,17 @@ async function runItem({ db, transport, item, workerId, adapters, replayed }: Ru
    * ⚠️ THE GATEWAY STILL WINS WHENEVER IT SAW A CALL. `declared` is consulted only when no call was
    * made (`sawAnyCall` false ⇒ `attributionStatus()` is `unknown`), so an adapter cannot dress a
    * real `invalid` — a model that answered instead of the one the arm named — as a replay.
+   *
+   * DECISION 115 — the last arm, `not_applicable`. Nothing ran on a replay transport, the adapter
+   * declared nothing, and the gateway has no verdict: there was no model call to attribute, and
+   * `unknown` claims a failed measurement where none was attempted. Preop with both rails off is
+   * the case; a failed item that never reached a call is the same fact and gets the same word.
+   *
+   * ⚠️ FLAGGED, AND IT IS THE ONE PLACE THIS VALUE CAN BE WRONG. `attributionStatus()` collapses
+   * "no call" and "one call I could not attribute" into the same `unknown` (`gateway.ts:90-92`),
+   * and `gateway.ts` is outside D2a's file contract — so an item whose single call settled with no
+   * usage lands here too. The honest fix is a `sawAnyCall` accessor, in a round that may edit the
+   * gateway.
    */
   const gatewayVerdict = gateway.attributionStatus();
   const declared = (result as { summary?: { attribution_status?: unknown } } | null)?.summary?.attribution_status;
@@ -260,6 +271,7 @@ async function runItem({ db, transport, item, workerId, adapters, replayed }: Ru
     ? gatewayVerdict
     : replayed ? 'replayed'
     : declared === 'replayed' ? 'replayed'
+    : declared === undefined ? 'not_applicable'
     : gatewayVerdict;
 
   const wrote = await finish(db, item.id, leaseToken, {

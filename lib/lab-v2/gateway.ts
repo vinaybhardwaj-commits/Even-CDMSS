@@ -77,6 +77,11 @@ const RANK: Record<AttributionStatus, number> = {
   // with `verified` rather than with a failure because it is not one — but nothing reads this
   // entry, and worker.ts is where `replayed` is decided.
   replayed: 0,
+  // DECISION 115's fifth value, and unreachable here for the SAME reason and more strongly: it
+  // means no call was dispatched at all, so `note()` — which runs once per dispatched call — can
+  // never see it. Present only because this map is exhaustive over `AttributionStatus`; inert.
+  // (CLAUDE.md rule 1a: forced by contracts.ts:318, which D2a item 4 names. One entry, no logic.)
+  not_applicable: 0,
   unknown: 1,
   invalid: 2,
 };

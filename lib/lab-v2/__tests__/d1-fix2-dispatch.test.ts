@@ -150,7 +150,10 @@ test('§17.8 decision 109: the stored dataset carries member_key BESIDE frozen, 
 test('§17.8 decision 109: engine_describe names the frozen inputs dispatch actually freezes', async () => {
   const db = await freshDb();
   for (const [engine, expected] of [
-    ['readmission', ['row', 'inputs', 'index_discharge_at']],
+    // Rule 1a / decision 114: `steps` is a frozen input of this engine now — the adapter reads it
+    // to decide exact vs fresh (`adapters/readmission.ts`), exactly as `ipd-episode.ts:109` does —
+    // so `engine_describe` names it or it under-reports what a dataset must carry.
+    ['readmission', ['row', 'inputs', 'index_discharge_at', 'steps']],
     ['preop', ['sources', 'horizon_days', 'now']],
   ] as const) {
     const out = await callTool(deps(db), 'engine_describe', { engine }) as {

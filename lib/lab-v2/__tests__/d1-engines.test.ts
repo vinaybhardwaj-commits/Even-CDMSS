@@ -11,6 +11,15 @@
  * ⚠️ DECISION 87 THROUGHOUT. The one `readmission_findings` statement runs against a real PGlite
  * table whose columns are `pendingFindings`' own selection (`lib/readmission/store.ts:315`) and
  * whose row is shaped like production's with the ids replaced.
+ *
+ * ⚠️ EXTENDED IN ROUND D2a UNDER CLAUDE.md RULE 1a, CITING DECISION 114. `READMISSION_FINDING_SQL`
+ * gained `trace_id` and `promoted_to_full` and `freezeReadmissionFinding` now records `steps` from
+ * `trace_events`, so this file's two fixtures — the table and the seeded row — had to grow the
+ * columns and the trace rows or every test here fails on a column that does not exist. The edits
+ * are mechanical: two columns, one parent table, one child table, and a trace seeded per leg. The
+ * three tests that exercise the adapter's FRESH path inject `recordSteps: async () => ({})` so
+ * they keep testing what D1 wrote them to test — the gateway, and the stages an arm must price.
+ * D2a's own exact path is `d2a-readmission-replay.test.ts`.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -19,7 +28,7 @@ import { LabError } from '../contracts';
 import { identifyingKeys, isIdentifyingKey } from '../sources/requests';
 import {
   DROPPED_PROVENANCE_KEYS, FROZEN_ROW_FIELDS, READMISSION_FINDING_SQL, READMISSION_VERDICT_SQL,
-  auditedVerdict, freezeReadmissionFinding, refuseIdentifying,
+  auditedVerdict, expectedLegStages, freezeReadmissionFinding, refuseIdentifying,
 } from '../sources/readmission';
 import {
   PSEUDONYM_KEYS, PSEUDONYM_PREFIX, freezePreopEpisode, pseudonym, pseudonymiseRows,
@@ -47,7 +56,15 @@ test('§17.8: the two readmission_findings reads are bounded SELECTs and write n
   }
 });
 
-/** `readmission_findings` in production's shape, from `pendingFindings`' own column list. */
+/**
+ * `readmission_findings` in production's shape, from `pendingFindings`' own column list, plus the
+ * two columns D2a's statement selects (`promoted_to_full`, `trace_id` — both real, `store.ts:197`).
+ *
+ * ⚠️ AND `trace_events`, VERBATIM FROM `app/api/admin/migrate-v7/route.ts:30-39` (decision 87). Its
+ * parent `traces` is created too so the foreign key is a real one; the parent's own
+ * `user_id REFERENCES user_profiles(id)` is the single omission, because it would drag a third
+ * production table in to hold a column nothing in this platform reads.
+ */
 async function readmissionDb(): Promise<Db> {
   const db = await embedded();
   await db.exec(`CREATE TABLE readmission_findings (
@@ -55,12 +72,65 @@ async function readmissionDb(): Promise<Db> {
     form_uid text, uhid text, lane text, gap_days int, index_department text, readmit_department text,
     index_doctor text, readmit_doctor text, index_discharge_at timestamptz, readmit_admit_at timestamptz,
     cm_note text, form_is_planned boolean, form_same_condition boolean,
-    audit_status text, engine_version text, finding jsonb, model text, provider text)`);
+    audit_status text, engine_version text, finding jsonb, model text, provider text,
+    promoted_to_full boolean, trace_id text)`);
+  await db.exec(`CREATE TABLE traces (
+    id              BIGSERIAL PRIMARY KEY,
+    trace_id        TEXT NOT NULL UNIQUE,
+    feature         TEXT NOT NULL,
+    input           JSONB,
+    started_at      TIMESTAMPTZ DEFAULT NOW(),
+    finished_at     TIMESTAMPTZ,
+    total_ms        INT,
+    status          TEXT DEFAULT 'running',
+    error_message   TEXT,
+    meta            JSONB)`);
+  await db.exec(`CREATE TABLE trace_events (
+    id              BIGSERIAL PRIMARY KEY,
+    trace_id        TEXT NOT NULL REFERENCES traces(trace_id) ON DELETE CASCADE,
+    seq             INT NOT NULL,
+    ts              TIMESTAMPTZ DEFAULT NOW(),
+    kind            TEXT NOT NULL,
+    stage           TEXT,
+    payload         JSONB,
+    latency_ms      INT)`);
   return db;
 }
 
-/** One row shaped like production's, ids replaced. */
-async function seedFinding(db: Db, o: Partial<Record<string, unknown>> = {}) {
+/**
+ * One audit's trace, in the shape the survey's Part 1 measured: TWO rows per leg — one
+ * `llm_request` carrying `payload.messages`, one `llm_response` carrying `payload.content` — on
+ * one `trace_id`, in `seq` order. The reply text is what the freeze records as a step.
+ */
+async function seedTrace(
+  db: Db, traceId: string, stages: readonly string[], reply: (stage: string) => string,
+  o: { narrative?: boolean; model?: string; provider?: string } = {},
+) {
+  await db.query(`INSERT INTO traces (trace_id, feature, status) VALUES ($1, 'readmit_audit', 'ok')
+                  ON CONFLICT (trace_id) DO NOTHING`, [traceId]);
+  let seq = 0;
+  const put = async (kind: string, stage: string, payload: unknown) => {
+    seq += 1;
+    await db.query(`INSERT INTO trace_events (trace_id, seq, kind, stage, payload) VALUES ($1, $2, $3, $4, $5::jsonb)`,
+      [traceId, seq, kind, stage, JSON.stringify(payload)]);
+  };
+  for (const stage of stages) {
+    await put('llm_request', stage, { messages: [{ role: 'system', content: 's' }], temperature: 0.1, max_tokens: 3000 });
+    await put('llm_response', stage, {
+      content: reply(stage), model: o.model ?? 'gemini-2.5-pro', provider: o.provider ?? 'vertex',
+      finish_reason: 'stop', usage: { input_tokens: 100, output_tokens: 50 },
+    });
+  }
+  // The R4 narrative leg shares the audit's trace_id (`lib/readmission/narrative.ts:114`) and is
+  // NOT a recon leg. Seeded so the statement's `stage <> 'readmit_narrative'` is exercised.
+  if (o.narrative !== false) {
+    await put('llm_request', 'readmit_narrative', { messages: [] });
+    await put('llm_response', 'readmit_narrative', { content: 'a narrative paragraph', model: 'opus', provider: 'bedrock' });
+  }
+}
+
+/** One row shaped like production's, ids replaced — with the trace production would have left. */
+async function seedFinding(db: Db, o: Partial<Record<string, unknown>> = {}, reply: (stage: string) => string = () => CLAIMS) {
   const row = {
     dedup_key: 'RX-1|RX-2', finding_class: 'even_even', index_encounter_id: 'IPX-1',
     readmit_encounter_id: 'IPX-2', form_uid: 'F-1', uhid: 'UH-000001', lane: 'tight_bounce',
@@ -70,6 +140,8 @@ async function seedFinding(db: Db, o: Partial<Record<string, unknown>> = {}) {
     cm_note: null, form_is_planned: false, form_same_condition: true,
     audit_status: 'audited', engine_version: 'readmission/0.2',
     finding: JSON.stringify({ avoidable: { verdict: 'avoidable' } }), model: 'gemini-x', provider: 'vertex',
+    // D2a — the two columns the statement gained, and the trace they point at.
+    promoted_to_full: false, trace_id: `TR-${String(o.dedup_key ?? 'RX-1|RX-2')}`,
     ...o,
   };
   const cols = Object.keys(row);
@@ -77,8 +149,12 @@ async function seedFinding(db: Db, o: Partial<Record<string, unknown>> = {}) {
     `INSERT INTO readmission_findings (${cols.join(', ')}) VALUES (${cols.map((_c, i) => `$${i + 1}`).join(', ')})`,
     cols.map((c) => (row as Record<string, unknown>)[c]),
   );
+  if (row.trace_id) await seedTrace(db, String(row.trace_id), expectedLegStages(row), reply);
   return row;
 }
+
+/** DECISION 114's seam, injected where a D1 test means to exercise the FRESH gateway path. */
+const NO_STEPS = { recordSteps: async () => ({}) } as const;
 
 const runner = (db: Db) => (async (statement: string, params: unknown[]) => db.query(statement, params)) as never;
 
@@ -233,8 +309,9 @@ const CLAIMS = JSON.stringify({
 test('§17.8 item 6: the adapter runs the production recon sequence and reports the verdict', async () => {
   const db = await readmissionDb();
   await seedFinding(db);
+  // Rule 1a / decision 114: FRESH, so this keeps testing the gateway and the stages an arm prices.
   const frozen = await freezeReadmissionFinding('RX-1|RX-2', {
-    run: runner(db), assemble: (async () => ASSEMBLED) as never, salt: SALT,
+    run: runner(db), assemble: (async () => ASSEMBLED) as never, salt: SALT, ...NO_STEPS,
   });
   const { ctx, stages, events } = ctxFor(frozen.frozen as unknown as Record<string, unknown>, () => CLAIMS);
   const out = await makeReadmissionAdapter().run(ctx);
@@ -261,7 +338,7 @@ test('§17.8 item 6: an out-of-network finding takes ONE leg, and the arm must h
   const db = await readmissionDb();
   await seedFinding(db, { dedup_key: 'OON-1', finding_class: 'out_of_network', lane: 'out_of_network', readmit_encounter_id: null });
   const frozen = await freezeReadmissionFinding('OON-1', {
-    run: runner(db), assemble: (async () => ASSEMBLED) as never, salt: SALT,
+    run: runner(db), assemble: (async () => ASSEMBLED) as never, salt: SALT, ...NO_STEPS,
   });
   const { ctx, stages } = ctxFor(frozen.frozen as unknown as Record<string, unknown>, () => CLAIMS);
   const out = await makeReadmissionAdapter().run(ctx);
@@ -273,7 +350,7 @@ test('§17.8 item 6: an unparseable leg is a FAILED execution, never an unassess
   const db = await readmissionDb();
   await seedFinding(db);
   const frozen = await freezeReadmissionFinding('RX-1|RX-2', {
-    run: runner(db), assemble: (async () => ASSEMBLED) as never, salt: SALT,
+    run: runner(db), assemble: (async () => ASSEMBLED) as never, salt: SALT, ...NO_STEPS,
   });
   const { ctx } = ctxFor(frozen.frozen as unknown as Record<string, unknown>, () => 'not json at all');
   const out = await makeReadmissionAdapter().run(ctx);
@@ -488,9 +565,11 @@ test('§17.8 item 9: the readmission golden A/B — five of five, or the round f
     });
     const stored = await auditedVerdict(g.dedup_key, { run: runner(db) });
 
-    // ── SIDE A: the adapter, through the gateway.
+    // ── SIDE A: the adapter, through the gateway. Rule 1a / decision 114: the freeze is told to
+    // record no steps, because "through the gateway" is what this comparison is OF; D2a's exact
+    // path has its own golden A/B in `d2a-readmission-replay.test.ts`.
     const frozen = await freezeReadmissionFinding(g.dedup_key, {
-      run: runner(db), assemble: (async () => ASSEMBLED) as never, salt: SALT,
+      run: runner(db), assemble: (async () => ASSEMBLED) as never, salt: SALT, ...NO_STEPS,
     });
     const { ctx } = ctxFor(frozen.frozen as unknown as Record<string, unknown>, () => reply);
     const out = await makeReadmissionAdapter().run(ctx);
@@ -632,9 +711,21 @@ test('§17.8 decision 111: the frozen READMISSION body carries exactly these key
   const frozen = await freezeReadmissionFinding('RX-1|RX-2', {
     run: runner(db), assemble: (async () => ASSEMBLED) as never, salt: SALT,
   });
-  assert.deepEqual(keyInventory(frozen.frozen), [
+  /**
+   * ⚠️ RULE 1a / DECISION 114 — THE HASHES ARE EXCLUDED, AND THAT IS NOT A HOLE IN THE INVENTORY.
+   * `frozen.steps` is keyed by `dependencyHash(params)`, so its keys are 64-hex digests that no
+   * list can name in advance. They are asserted by SHAPE in the test below — exactly 64 hex, one
+   * per leg the lane fires — and everything else in the body still has to be a key somebody
+   * classified. A non-hash key appearing under `steps` fails here, which is the property.
+   */
+  const inventory = keyInventory(frozen.frozen).filter((k) => !/^[0-9a-f]{64}$/.test(k));
+  assert.deepEqual(inventory, [
     // the body itself
-    'engine', 'index_discharge_at', 'inputs', 'row',
+    'engine', 'index_discharge_at', 'inputs', 'row', 'steps',
+    // frozen.steps[*] — decision 114's recorded leg
+    'request_hash', 'served', 'stage',
+    // steps[*].served — the POST-fallback identity on the stored reply
+    'model', 'provider',
     // frozen.row — the seven PendingRow columns runReconSequence reads
     'finding_class', 'form_is_planned', 'form_same_condition', 'gap_days', 'lane', 'readmit_admit_at',
     // frozen.inputs — ThreeSourceInputs
@@ -649,7 +740,7 @@ test('§17.8 decision 111: the frozen READMISSION body carries exactly these key
   ].sort());
   // ⚠️ THE TWO THAT REACHED PRODUCTION, ABSENT — asserted by name as well as by inventory.
   for (const k of DROPPED_PROVENANCE_KEYS) {
-    assert.ok(!keyInventory(frozen.frozen).includes(k), `${k} must not survive the freeze`);
+    assert.ok(!inventory.includes(k), `${k} must not survive the freeze`);
   }
   assert.ok(!JSON.stringify(frozen.frozen).includes('FIRESTORE-DOC-INDEX-1'));
   assert.ok(!JSON.stringify(frozen.frozen).includes('FIRESTORE-DOC-READMIT-1'));
@@ -660,7 +751,35 @@ test('§17.8 decision 111: the frozen READMISSION body carries exactly these key
   assert.equal(prov.extractionVersion, 'doc-extract/0.4');
   assert.deepEqual(prov.window, { from: '2026-07-18', to: '2026-08-03' });
   // Every key in the inventory passes the denylist — the two checks agree.
-  assert.deepEqual(keyInventory(frozen.frozen).filter(isIdentifyingKey), []);
+  assert.deepEqual(inventory.filter(isIdentifyingKey), []);
+});
+
+/**
+ * ⚠️ DECISION 114's KEYS ARE HASHES, so the inventory above cannot name them and this asserts their
+ * SHAPE instead: 64 hex characters, one per leg the lane fires, and nothing else in the map.
+ */
+test('§17.9 decision 114: the frozen readmission body carries `steps` keyed by 64-hex, one per leg', async () => {
+  const db = await readmissionDb();
+  await seedFinding(db);
+  const frozen = await freezeReadmissionFinding('RX-1|RX-2', {
+    run: runner(db), assemble: (async () => ASSEMBLED) as never, salt: SALT,
+  });
+  const steps = frozen.frozen.steps;
+  const keys = Object.keys(steps);
+  // `tight_bounce` is a full pair: recon A then recon B.
+  assert.equal(keys.length, 2);
+  for (const k of keys) assert.match(k, /^[0-9a-f]{64}$/, 'a step key is a request hash');
+  assert.deepEqual(Object.values(steps).map((v) => v.stage).sort(), ['readmit_recon_a', 'readmit_recon_b']);
+  for (const v of Object.values(steps)) {
+    assert.equal(v.request_hash, Object.entries(steps).find(([, x]) => x === v)![0], 'the key IS the hash');
+    assert.equal(v.text, CLAIMS, 'the step carries production’s stored reply, whole');
+    assert.deepEqual(v.served, { model: 'gemini-2.5-pro', provider: 'vertex' });
+  }
+  // The narrative leg shares the trace and is NOT a step.
+  assert.ok(!Object.values(steps).some((v) => v.stage === 'readmit_narrative'));
+  // Decision 99's walk covers the new keys, and the count rides on source_versions.
+  assert.deepEqual(identifyingKeys(frozen.frozen), []);
+  assert.equal(frozen.source_versions.recorded_steps, 2);
 });
 
 test('§17.8 decision 111: the frozen PREOP body carries exactly these keys, and no others', async () => {

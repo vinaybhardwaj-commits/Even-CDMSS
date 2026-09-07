@@ -22,12 +22,21 @@
  * adapter injects a writer that is a no-op; here the shorter path is available, so the store is
  * not reached at all rather than reached and neutered. Decision 104 puts the narrative leg
  * (`run.ts:545`) out of scope for D1 for the same reason: it writes.
+ *
+ * ⚠️ ROUND D2a, DECISIONS 114 AND 116 — THE EXACT REPLAY. A case frozen with `steps` answers every
+ * leg from production's own stored reply and never touches the gateway: zero calls, zero microusd,
+ * and a verdict that is production's verdict or a named divergence. The branch is
+ * `adapters/ipd-episode.ts:122` and `:195-224`, shape for shape, and the `attribution_status:
+ * 'replayed'` it declares is `:285-291`. A case frozen WITHOUT steps — every dataset made before
+ * this round — runs fresh, unchanged.
  */
 import { LabError } from '../contracts';
+import { dependencyHash } from '../gateway';
 import { runReconSequence } from '../../readmission/run';
 import { READMIT_ENGINE_VERSION, type PendingRow } from '../../readmission/store';
 import { parsePassClaims } from '../../readmission-prompts';
 import type { Adapter, AdapterContext, AdapterOutcome } from './types';
+import type { ReadmissionStep } from '../sources/readmission';
 import type { ThreeSourceInputs } from '../../readmission/assemble';
 
 /** §17.8 item 4 — the four labels `runReconSequence` passes, in the order it can pass them. */
@@ -60,6 +69,8 @@ interface FrozenReadmission {
   row?: Record<string, unknown>;
   inputs?: ThreeSourceInputs;
   index_discharge_at?: string | null;
+  /** Decision 114 — production's stored replies, keyed by `dependencyHash` of the request. */
+  steps?: Record<string, ReadmissionStep>;
 }
 
 export function makeReadmissionAdapter(): Adapter {
@@ -67,7 +78,7 @@ export function makeReadmissionAdapter(): Adapter {
     engine: 'readmission',
     stages: READMISSION_STAGES,
     engineVersion: () => READMIT_ENGINE_VERSION,
-    frozenInputs: ['row', 'inputs', 'index_discharge_at'],
+    frozenInputs: ['row', 'inputs', 'index_discharge_at', 'steps'],
     perAttemptTimeoutMs: READMISSION_PER_ATTEMPT_MS,
 
     async run(ctx: AdapterContext): Promise<AdapterOutcome> {
@@ -81,7 +92,26 @@ export function makeReadmissionAdapter(): Adapter {
       }
 
       /**
-       * The gateway as `PassFn`. Three things happen here and nowhere else:
+       * DECISION 114 — EXACT IS "THE CASE CARRIES STEPS", exactly as `ipd-episode.ts:122`.
+       * An old dataset carries none and runs fresh; nothing about it changes.
+       */
+      const stored = frozen.steps ?? {};
+      const exact = Object.keys(stored).length > 0;
+      let servedSteps = 0;
+
+      /**
+       * ⚠️ A DIVERGENCE IS HELD AND RE-THROWN, THE `ipd-episode.ts:197-224` SHAPE AND FOR ITS
+       * REASON. `runReconSequence` propagates a throw from a leg today — but every frame between
+       * this closure and the worker is somebody else's code, and the IPD round learned what it
+       * costs when one of them catches: a replay that silently answered a DIFFERENT question
+       * arrives looking exactly like a slow provider. Held here, re-thrown at `:242-244`'s
+       * position, so the item fails with the code decision 45 names whatever the sequence does.
+       */
+      let diverged: LabError | null = null;
+
+      /**
+       * The gateway as `PassFn`, and in exact mode production's own stored reply instead.
+       * Three things happen here and nowhere else:
        *   · the stage NAME is the leg label, so the arm prices what actually fired;
        *   · the reply is parsed with the engine's OWN `parsePassClaims`, so an unparseable leg
        *     is null here for the same reason it is null in production;
@@ -91,14 +121,36 @@ export function makeReadmissionAdapter(): Adapter {
       let legs = 0;
       const pass = async (label: string, prompt: { system: string; user: string }) => {
         legs += 1;
-        const staged = await ctx.gateway.call(label, {
+        const params = {
           messages: [
             { role: 'system', content: prompt.system },
             { role: 'user', content: prompt.user },
           ],
           temperature: 0.1,
           max_tokens: 3000,
-        });
+        };
+        if (exact) {
+          /**
+           * ⚠️ THE HASH OF THE REQUEST, NOT THE STAGE. The freeze recorded
+           * `dependencyHash(params)` over this same object (`sources/readmission.ts`
+           * `recordReadmissionSteps`), so a miss means the REBUILT PROMPT DIFFERS from the one
+           * production sent — db13 has moved under the finding since the audit. Decision 114(a):
+           * that is a measurement, it is reported with the stage named, and it is never smoothed
+           * into a fresh call that would quietly cost money and answer a different question.
+           */
+          const want = dependencyHash(params);
+          const step = stored[want];
+          if (!step) {
+            diverged = new LabError('REPLAY_DIVERGED',
+              `no stored step for stage '${label}': the request hash ${want.slice(0, 12)}… is not `
+              + `among the ${Object.keys(stored).length} the case carries`);
+            throw diverged;
+          }
+          servedSteps += 1;
+          ctx.event('stage_replayed', { stage: label, request_hash: want });
+          return parsePassClaims(step.text);
+        }
+        const staged = await ctx.gateway.call(label, params);
         const completion = staged.completion as { choices?: { message?: { content?: string } }[] } | null;
         const content = completion?.choices?.[0]?.message?.content ?? staged.text ?? '';
         ctx.event('readmit_leg', { label, chars: String(content).length });
@@ -112,6 +164,8 @@ export function makeReadmissionAdapter(): Adapter {
           indexDischargeAt: frozen.index_discharge_at ?? null,
           pass,
         });
+        // Held, not swallowed — see the note above the closure.
+        if (diverged) throw diverged as LabError;
         const verdict = seq.finding?.avoidable?.verdict ?? null;
         // §17.8 item 6 — the assessable key, and the only place the two statuses can differ.
         const assessed = verdict != null && (AVOIDABLE_VERDICTS as readonly string[]).includes(String(verdict));
@@ -127,11 +181,23 @@ export function makeReadmissionAdapter(): Adapter {
             finding_class: frozen.row.finding_class ?? null,
             lane: frozen.row.lane ?? null,
             legs,
+            /**
+             * DECISION 116. A frozen run never touches the gateway, so §9's `unknown` would be
+             * the wrong word: the model on the record IS the model that answered, earlier. Every
+             * leg was served from `steps` or this line was never reached — a miss throws
+             * REPLAY_DIVERGED — so `replayed` is a statement about all of them.
+             * `worker.ts:257-263` honours it only when the gateway saw no call at all.
+             */
+            ...(exact ? { attribution_status: 'replayed' as const, replayed_stages: servedSteps } : {}),
           },
           execution_status: 'succeeded',
           assessment_status: assessed ? 'assessed' : 'unassessable',
         };
       } catch (e) {
+        // ⚠️ A DIVERGENCE LEAVES THE ADAPTER, whatever the sequence did with the throw. It is not
+        // an execution failure of the engine: it is the platform declining to answer a different
+        // question from the one the frozen reply answers.
+        if (diverged) throw diverged as LabError;
         // ⚠️ A THROWN LEG IS AN EXECUTION FAILURE, NOT AN UNASSESSABLE CASE. `runReconSequence`
         // throws when a leg is unparseable or the model was unavailable; production leaves the row
         // `detected` and lets the sweep retry. Here that is `failed` / `not_reached`, and the two

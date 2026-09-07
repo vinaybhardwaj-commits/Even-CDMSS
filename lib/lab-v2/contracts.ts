@@ -314,8 +314,24 @@ export const ASSESSMENT_STATUSES = ['assessed', 'unassessable', 'not_reached'] a
  * ⚠️ `replayed` MAY ONLY BE CLAIMED WHERE NO CALL HAPPENED. The gateway's verdict wins whenever it
  * saw one, so this value cannot launder a real attribution failure into a reassuring word — which
  * is the only way a fourth status could do damage.
+ *
+ * DECISION 115's FIFTH VALUE — `not_applicable`.
+ *
+ * `unknown` is a verdict about a call: one was made and its receipt did not arrive. An item that
+ * made NO call has nothing to attribute, and reporting that as `unknown` says "something went
+ * unmeasured" about a measurement nobody attempted. Preop with both rails absent
+ * (`adapters/preop.ts:118-121`) tiers an episode with zero model calls and is the case this
+ * exists for; a replayed item is `replayed`, not this, because its answer does have a model
+ * behind it.
+ *
+ * ⚠️ AND IT IS SET FROM ONE SIGNAL THAT CANNOT TELL THE TWO CASES APART TODAY. `worker.ts:257-263`
+ * reads `Gateway.attributionStatus()`, which returns `unknown` BOTH for "no call was made" and for
+ * "a call was made and could not be attributed" (`gateway.ts:90-92`) — the distinguishing flag
+ * `sawAnyCall` is private and `gateway.ts` is out of D2a's file contract. So an item whose only
+ * call settled with no usage also reports `not_applicable`. FLAGGED in the D2a report; the fix is
+ * one accessor on the gateway in a round that may edit it.
  */
-export const ATTRIBUTION_STATUSES = ['verified', 'invalid', 'unknown', 'replayed'] as const;
+export const ATTRIBUTION_STATUSES = ['verified', 'invalid', 'unknown', 'replayed', 'not_applicable'] as const;
 export type ExecutionStatus = (typeof EXECUTION_STATUSES)[number];
 export type AssessmentStatus = (typeof ASSESSMENT_STATUSES)[number];
 export type AttributionStatus = (typeof ATTRIBUTION_STATUSES)[number];

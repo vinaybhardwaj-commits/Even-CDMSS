@@ -62,6 +62,15 @@ export const COMPARE_SCHEMAS = {
         note_quality_index_after: z.number().nullable(),
         band_before: z.string().nullable(),
         band_after: z.string().nullable(),
+        /**
+         * §17.9 item 5 — the two OTHER engines' assessable keys, so `run_diff` can answer
+         * "what changed" for a readmission or preop run instead of four nulls and a hash.
+         * `null` for an engine whose summary carries neither, which is every OPD run.
+         */
+        avoidable_verdict_before: z.string().nullable(),
+        avoidable_verdict_after: z.string().nullable(),
+        tier_before: z.string().nullable(),
+        tier_after: z.string().nullable(),
         result_hash_a: z.string().nullable(),
         result_hash_b: z.string().nullable(),
         result_hash_equal: z.boolean(),
@@ -98,9 +107,23 @@ export const COMPARE_SCHEMAS = {
 export const COMPARE_CAVEAT =
   'One run is one sample. Judged findings at temperature 0 recur at about 0.58 across same-config pairs.';
 
+/**
+ * The fields `run_diff` knows how to read off an item's stored summary (`worker.ts:215`).
+ *
+ * ⚠️ §17.9 ITEM 5 — TWO MORE, AND THEY ARE ALREADY BEING WRITTEN. `adapters/readmission.ts:125`
+ * puts `avoidable_verdict` on its summary and `adapters/preop.ts:171` puts `tier` on its; before
+ * this round `run_diff` could not see either, so a diff of two readmission runs reported only the
+ * three statuses and whether the result hashes matched — never that a verdict had moved from
+ * `avoidable` to `justified`, which is the whole question. Nothing new is computed here: the two
+ * fields are read from where the adapters already put them.
+ */
 interface Summary {
   findings?: number; n_low_value?: number; note_quality_index?: number | null;
   band?: string | null; finding_subjects?: (string | null)[];
+  /** `adapters/readmission.ts:125`. Absent on every other engine. */
+  avoidable_verdict?: string | null;
+  /** `adapters/preop.ts:171`. Absent on every other engine. */
+  tier?: string | null;
 }
 
 const summaryOf = (i: Item): Summary =>
@@ -226,6 +249,12 @@ export async function runDiff(deps: CompareDeps, args: { run_a: string; run_b: s
       note_quality_index_after: typeof sy.note_quality_index === 'number' ? sy.note_quality_index : null,
       band_before: sx.band ?? null,
       band_after: sy.band ?? null,
+      // §17.9 item 5. A summary that carries neither reports null on both sides — an OPD run is
+      // not "unchanged verdict", it is an engine that has no verdict, and null says so.
+      avoidable_verdict_before: sx.avoidable_verdict ?? null,
+      avoidable_verdict_after: sy.avoidable_verdict ?? null,
+      tier_before: sx.tier ?? null,
+      tier_after: sy.tier ?? null,
       result_hash_a: ha,
       result_hash_b: hb,
       result_hash_equal: ha != null && ha === hb,
