@@ -5329,6 +5329,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "readmission",
+    "to": "opd-ingest-core",
+    "kind": "value"
+  },
+  {
+    "from": "readmission",
     "to": "readmission-ask-core",
     "kind": "value"
   },
