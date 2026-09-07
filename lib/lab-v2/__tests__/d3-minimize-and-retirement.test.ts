@@ -21,7 +21,7 @@ import { applyMigrations, ensureBudget, getBudget, itemsOf, putObject, submitRun
 import { tick } from '../worker';
 import { callTool } from '../service';
 import { failureCluster } from '../tools/cluster';
-import { failureMinimize, MAX_MINIMIZE_CASES, MINIMIZE_CAVEAT } from '../tools/minimize';
+import { failureMinimize, nextMove, MAX_MINIMIZE_CASES, MINIMIZE_CAVEAT } from '../tools/minimize';
 import { exitLabExecution, withLabExecution } from '../../lab-execution-context';
 import { makeRouteAdapter, assessStream, eventTypes } from '../adapters/types';
 import { makeOpdAdapter } from '../adapters/opd';
@@ -32,6 +32,8 @@ import type { Adapter } from '../adapters/types';
 import type { RetrieveOptions, RetrieveResult } from '../../retrieve';
 
 const BAD = 'c3';
+/** A PRICED model, for the one test that needs money to actually move. */
+const MODEL = 'global.anthropic.claude-opus-4-6-v1';
 const CASES = ['c1', 'c2', 'c3', 'c4'];
 
 const ARM_BODY = armBodySchema.parse({
@@ -45,7 +47,7 @@ const ARM_BODY = armBodySchema.parse({
  * the group key to match on — and then a throw for the bad case, whose message is identical every
  * time so every occurrence lands in ONE `failure_cluster` group.
  */
-function stubAdapter(bad: Set<string>, calls: string[]): Adapter {
+function stubAdapter(bad: Set<string>, calls: string[], model = 'local-model'): Adapter {
   return {
     engine: 'opd_note_audit',
     stages: ['analysis'],
@@ -54,7 +56,7 @@ function stubAdapter(bad: Set<string>, calls: string[]): Adapter {
     perAttemptTimeoutMs: 10_000,
     async run(ctx) {
       calls.push(ctx.caseKey);
-      await ctx.gateway.call('analysis', { model: 'local-model', messages: [{ role: 'user', content: ctx.caseKey }] });
+      await ctx.gateway.call('analysis', { model, messages: [{ role: 'user', content: ctx.caseKey }] });
       // A plain Error, which `worker.ts` files under category 'provider' — the shape a real engine
       // failure has, and the one `failure_cluster` groups on.
       if (bad.has(ctx.caseKey)) throw new Error('the analyze leg returned nothing parseable');
@@ -67,9 +69,9 @@ function stubAdapter(bad: Set<string>, calls: string[]): Adapter {
 }
 
 /** A source run in the shape `failure_minimize` reads: a dataset, an experiment, and failed items. */
-async function seedFailedRun(db: Db, bad: Set<string>) {
+async function seedFailedRun(db: Db, bad: Set<string>, armBody = ARM_BODY, model = 'local-model') {
   const budget = await ensureBudget(db, 'research', 'default', 20_000_000);
-  const { object: arm } = await putObject(db, 'research', 'arm', ARM_BODY, 'deidentified', 'arm-1');
+  const { object: arm } = await putObject(db, 'research', 'arm', armBody, 'deidentified', 'arm-1');
   const datasetBody = datasetBodySchema.parse({
     engine: 'opd_note_audit',
     cases: CASES.map((k) => ({ case_key: k, member_key: `mk-${k}`, frozen: { note: k } })),
@@ -88,10 +90,10 @@ async function seedFailedRun(db: Db, bad: Set<string>) {
   const { run } = await submitRun(db, 'research', 'experiment_run', experiment.id, budget.id, 'src-1', 'h', 86_400_000,
     CASES.map((k) => ({
       case_key: k, arm_hash: arm.hash, repetition: 1,
-      payload: { engine: 'opd_note_audit', frozen: { note: k }, arm: ARM_BODY, budget_id: budget.id, arm_id: arm.id },
+      payload: { engine: 'opd_note_audit', frozen: { note: k }, arm: armBody, budget_id: budget.id, arm_id: arm.id },
     })));
   const calls: string[] = [];
-  const adapters = { opd_note_audit: stubAdapter(bad, calls) };
+  const adapters = { opd_note_audit: stubAdapter(bad, calls, model) };
   for (let p = 0; p < 10; p += 1) {
     const r = await tick({ db, transport: fixtureTransport(), adapters, maxItems: 4 });
     if (r.claimed === 0) break;
@@ -100,52 +102,104 @@ async function seedFailedRun(db: Db, bad: Set<string>) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════════════
-// failure_minimize
+// failure_minimize — §17.11 decision 150, the resumable search
+//
+// ⚠️ THE TEST TURNS THE WORKER, NOT THE TOOL. Decision 150 took the inline drive out: a call
+// submits a step and returns, and the queue settles it whenever the tick next runs. So every test
+// below is a CALL SEQUENCE — call, tick, call, tick — which is exactly the sequence a real client
+// makes across separate MCP requests. The adapter seam lives on `tick`, where the engine is, and
+// no longer on the tool, which is why `callTool` can drive the whole thing.
 // ═════════════════════════════════════════════════════════════════════════════════════
 
-test('§17.11 item 6: the bisection converges on the one case that reproduces the group', async () => {
-  const db = await freshDb();
-  const bad = new Set([BAD]);
-  const { run, adapters } = await seedFailedRun(db, bad);
+type Running = { minimize_id: string; state: 'running'; step: number; run_id: string | null; run_state: string; case_keys: string[]; spend_microusd: number; note: string };
+type Report = {
+  minimize_id: string; state: 'done' | 'stopped'; source_run_id: string; candidates: number;
+  started_with: string[]; minimal_case_keys: string[]; reproducing_run_ids: string[];
+  steps: { step: number; case_keys: string[]; run_id: string | null; run_state: string; reproduced: boolean; matching_items: number; estimated_microusd: number; spent_microusd: number; note: string | null }[];
+  spend_microusd: number; budget_cap_microusd: number; stopped: string; caveat: string;
+};
+type MinimizeOut = Running | Report;
 
-  // The group key comes from failure_cluster's own report, not from a literal here.
+const call = (db: Db, principal: string, args: Record<string, unknown>) =>
+  callTool({ db, principal, protocolVersion: 'p', sdkVersion: 's' } as never, 'failure_minimize', args) as Promise<MinimizeOut>;
+
+/** Settle whatever is queued, the way the cron would. */
+async function settle(db: Db, adapters: Record<string, Adapter>) {
+  for (let p = 0; p < 20; p += 1) {
+    const r = await tick({ db, transport: fixtureTransport(), adapters, maxItems: 8 });
+    if (r.claimed === 0) break;
+  }
+}
+
+/** Drive a search to its end, recording the shape of every response. */
+async function drive(db: Db, adapters: Record<string, Adapter>, args: Record<string, unknown>, log: MinimizeOut[] = []) {
+  for (let i = 0; i < 20; i += 1) {
+    const out = await call(db, 'research', args);
+    log.push(out);
+    if (out.state !== 'running') return { out: out as Report, log };
+    await settle(db, adapters);
+  }
+  throw new Error('the search did not finish');
+}
+
+test('§17.11 decision 150: the first call submits step 1 and returns running, and drives nothing', async () => {
+  const db = await freshDb();
+  const { run, adapters } = await seedFailedRun(db, new Set([BAD]));
   const cluster = await failureCluster(db, { window_hours: 24 }) as {
     groups: { key: { engine: string; stage: string; category: string; message_head: string }; items: number }[];
   };
   const group = cluster.groups.find((g) => g.key.category === 'provider')!;
-  assert.ok(group, 'the seeded run produced a provider group');
   assert.equal(group.key.stage, 'analysis', 'the stage of the last model call');
-  assert.equal(group.items, 1);
 
-  const out = await failureMinimize({ db, principal: 'research', transport: fixtureTransport(), adapters }, {
+  const first = await call(db, 'research', {
     group_key: group.key, run_id: run.id, budget_cap_microusd: 5_000_000, idempotency_key: 'min-1',
-  });
+  }) as Running;
+  assert.equal(first.state, 'running');
+  assert.equal(first.step, 1);
+  assert.ok(first.run_id, 'a run was submitted');
+  assert.equal(first.run_state, 'queued');
+  assert.deepEqual(first.case_keys, [BAD]);
+  assert.equal(first.spend_microusd, 0);
 
-  console.log('D3 BISECTION', JSON.stringify({
-    started_with: out.started_with,
-    steps: out.steps.map((s) => ({ step: s.step, cases: s.case_keys, reproduced: s.reproduced, matching: s.matching_items })),
-    minimal: out.minimal_case_keys,
-    stopped: out.stopped,
-  }));
+  // ⚠️ NOTHING RAN. The old version would have executed the whole step inside this call; the run
+  // is still queued, which is the entire point of decision 150.
+  const items = await itemsOf(db, first.run_id!, 100, 0);
+  assert.equal(items.length, 1);
+  assert.equal(items[0].state, 'queued');
 
-  assert.equal(out.source_run_id, run.id);
-  assert.equal(out.candidates, 1);
-  assert.deepEqual(out.started_with, [BAD]);
-  assert.deepEqual(out.minimal_case_keys, [BAD]);
-  assert.equal(out.stopped, 'minimal');
-  assert.equal(out.caveat, MINIMIZE_CAVEAT);
-  assert.equal(out.steps.length, 1, 'one candidate needs one step and no halving');
-  assert.equal(out.steps[0].reproduced, true);
-  assert.equal(out.steps[0].matching_items, 1);
-  assert.ok(out.reproducing_run_ids.length === 1);
+  // A repeat BEFORE settlement changes nothing and re-submits nothing.
+  const again = await call(db, 'research', {
+    group_key: group.key, run_id: run.id, budget_cap_microusd: 5_000_000, idempotency_key: 'min-1',
+  }) as Running;
+  assert.equal(again.state, 'running');
+  assert.equal(again.run_id, first.run_id, 'the same run, not a second one');
+  assert.equal(again.step, 1);
+  const runCount = await db.query<{ c: string }>(`SELECT count(*)::text AS c FROM lab_v2.runs WHERE operation = 'failure_minimize'`);
+  assert.equal(runCount[0].c, '1', 'a repeat before settlement submits nothing');
+
+  // Now settle it and advance.
+  await settle(db, adapters);
+  const done = await call(db, 'research', {
+    group_key: group.key, run_id: run.id, budget_cap_microusd: 5_000_000, idempotency_key: 'min-1',
+  }) as Report;
+  assert.equal(done.state, 'done');
+  assert.equal(done.stopped, 'minimal');
+  assert.deepEqual(done.minimal_case_keys, [BAD]);
+  assert.equal(done.candidates, 1);
+  assert.deepEqual(done.started_with, [BAD]);
+  assert.equal(done.steps.length, 1, 'one candidate needs one step and no halving');
+  assert.equal(done.steps[0].reproduced, true);
+  assert.equal(done.steps[0].matching_items, 1);
+  assert.equal(done.steps[0].run_state, 'failed');
+  assert.equal(done.caveat, MINIMIZE_CAVEAT);
   await db.close();
 });
 
-test('§17.11 item 6: four candidates halve to one, and every step is reported', async () => {
+test('§17.11 decision 150: four candidates halve to one across a call sequence, same path as the inline search', async () => {
   const db = await freshDb();
-  // Every case fails, but only ONE keeps failing when re-run — the transport is what decides, and
-  // it is swapped between the source run and the minimisation. That is the shape a real
-  // minimisation has: the source run recorded four failures and only one of them is reproducible.
+  // Every case fails, but only ONE keeps failing when re-run — the adapter is what decides, and it
+  // is swapped between the source run and the minimisation. That is the shape a real minimisation
+  // has: the source run recorded four failures and only one of them is reproducible.
   const { run } = await seedFailedRun(db, new Set(CASES));
   const cluster = await failureCluster(db, { window_hours: 24 }) as {
     groups: { key: { engine: string; stage: string; category: string; message_head: string }; items: number }[];
@@ -154,23 +208,27 @@ test('§17.11 item 6: four candidates halve to one, and every step is reported',
   assert.equal(group.items, 4);
 
   const replayCalls: string[] = [];
-  const out = await failureMinimize({
-    db, principal: 'research', transport: fixtureTransport(),
-    adapters: { opd_note_audit: stubAdapter(new Set([BAD]), replayCalls) },
-  }, {
+  const adapters = { opd_note_audit: stubAdapter(new Set([BAD]), replayCalls) };
+  const log: MinimizeOut[] = [];
+  const { out } = await drive(db, adapters, {
     group_key: group.key, run_id: run.id, budget_cap_microusd: 5_000_000, idempotency_key: 'min-2',
-  });
+  }, log);
 
   console.log('D3 BISECTION', JSON.stringify({
-    started_with: out.started_with,
+    calls: log.map((o) => (o.state === 'running'
+      ? { state: o.state, step: o.step, cases: o.case_keys, run_state: o.run_state }
+      : { state: o.state, stopped: o.stopped, minimal: o.minimal_case_keys })),
     steps: out.steps.map((s) => ({ step: s.step, cases: s.case_keys, reproduced: s.reproduced, matching: s.matching_items })),
     minimal: out.minimal_case_keys, stopped: out.stopped, spend: out.spend_microusd,
   }));
 
   assert.deepEqual(out.started_with, CASES);
   assert.deepEqual(out.minimal_case_keys, [BAD]);
+  assert.equal(out.state, 'done');
   assert.equal(out.stopped, 'minimal');
-  // ⚠️ THE PATH, NOT JUST THE ANSWER. Four, then the two halves, then the winning half's first.
+  // ⚠️ THE PATH, NOT JUST THE ANSWER, AND IT IS THE PATH THE INLINE SEARCH TOOK. Four, then the
+  // two halves, then the winning half's first. Decision 150 changed who turns the queue, and this
+  // asserts it changed nothing about what the bisection decides.
   assert.deepEqual(out.steps.map((s) => s.case_keys), [
     ['c1', 'c2', 'c3', 'c4'],
     ['c1', 'c2'],
@@ -183,23 +241,61 @@ test('§17.11 item 6: four candidates halve to one, and every step is reported',
   assert.equal(replayCalls.length, 9);
   // The estimate is the arm's own ceiling times the cases in the step, never a guess at a price.
   assert.deepEqual(out.steps.map((s) => s.estimated_microusd), [200_000, 100_000, 100_000, 50_000]);
+  // A step that succeeded for every case is reported as the succeeded run it is.
+  // ⚠️ 'partial', NOT 'failed', for the mixed steps: `deriveRunState` calls a run failed only when
+  // EVERY item failed. Step 1 is three successes and one failure, step 3 is one of each, and step 4
+  // is the bad case alone. The state a step reports is the run's own, not a summary of the search.
+  assert.deepEqual(out.steps.map((s) => s.run_state), ['partial', 'succeeded', 'partial', 'failed']);
+  // Four steps, so five calls: one per step plus the one that reads the last step and finishes.
+  assert.equal(log.length, 5);
+  assert.deepEqual(log.map((o) => o.state), ['running', 'running', 'running', 'running', 'done']);
+  await db.close();
+});
+
+test('§17.11 decision 150: a repeat after the search is done returns the same report and runs nothing', async () => {
+  const db = await freshDb();
+  const { run } = await seedFailedRun(db, new Set(CASES));
+  const cluster = await failureCluster(db, { window_hours: 24 }) as {
+    groups: { key: { engine: string; stage: string; category: string; message_head: string } }[];
+  };
+  const key = cluster.groups.find((g) => g.key.category === 'provider')!.key;
+  const adapters = { opd_note_audit: stubAdapter(new Set([BAD]), []) };
+  const args = { group_key: key, run_id: run.id, budget_cap_microusd: 5_000_000, idempotency_key: 'min-8' };
+
+  const { out } = await drive(db, adapters, args);
+  assert.equal(out.state, 'done');
+
+  const runsBefore = await db.query<{ c: string }>(`SELECT count(*)::text AS c FROM lab_v2.runs WHERE operation = 'failure_minimize'`);
+  const repeat = await call(db, 'research', args) as Report;
+  const runsAfter = await db.query<{ c: string }>(`SELECT count(*)::text AS c FROM lab_v2.runs WHERE operation = 'failure_minimize'`);
+
+  assert.deepEqual(repeat, out, 'a finished search is a fact, and a repeat restates it');
+  assert.equal(runsAfter[0].c, runsBefore[0].c, 'and submits nothing');
+  // Each advance wrote its own immutable version; the newest is the one a repeat reads.
+  const versions = await db.query<{ c: string }>(`SELECT count(*)::text AS c FROM lab_v2.objects WHERE kind = 'minimize'`);
+  assert.equal(versions[0].c, '5', 'four steps plus the finish, each an object of its own');
   await db.close();
 });
 
 test('§17.11 decision 131: the cap refuses a step BEFORE it runs, and says what it would have cost', async () => {
   const db = await freshDb();
-  const { run, adapters } = await seedFailedRun(db, new Set(CASES));
+  const { run } = await seedFailedRun(db, new Set(CASES));
   const cluster = await failureCluster(db, { window_hours: 24 }) as {
     groups: { key: { engine: string | null; stage: string | null; category: string | null; message_head: string | null } }[];
   };
   const key = cluster.groups.find((g) => g.key.category === 'provider')!.key;
 
-  const out = await failureMinimize({ db, principal: 'research', transport: fixtureTransport(), adapters }, {
+  const out = await call(db, 'research', {
     group_key: key, run_id: run.id, budget_cap_microusd: 1_000, idempotency_key: 'min-3',
-  });
+  }) as Report;
+  // ⚠️ THE REFUSAL IS STILL SYNCHRONOUS. Decision 150 made the search resumable, not lazy: a cap
+  // that cannot afford step 1 is known before anything is submitted, so the FIRST call is already
+  // terminal and the caller is never told to come back for a refusal.
+  assert.equal(out.state, 'stopped');
   assert.equal(out.stopped, 'budget_cap');
   assert.equal(out.steps.length, 1);
   assert.equal(out.steps[0].run_id, null, 'no run was submitted');
+  assert.equal(out.steps[0].run_state, 'refused');
   assert.equal(out.steps[0].spent_microusd, 0);
   assert.match(String(out.steps[0].note), /refused before the step/);
   assert.match(String(out.steps[0].note), /worst case 200000 would exceed the cap of 1000/);
@@ -207,6 +303,104 @@ test('§17.11 decision 131: the cap refuses a step BEFORE it runs, and says what
   const runs = await db.query<{ c: string }>(`SELECT count(*)::text AS c FROM lab_v2.runs WHERE operation = 'failure_minimize'`);
   assert.equal(runs[0].c, '0');
   await db.close();
+});
+
+test('§17.11 decision 150: the cap also refuses a LATER step, mid-search, and the partial answer is kept', async () => {
+  const db = await freshDb();
+  /**
+   * ⚠️ A PRICED ARM, BECAUSE A MID-SEARCH REFUSAL IS UNREACHABLE WITHOUT ONE. Every step after the
+   * first is HALF the size of its parent, so with a free arm — `ollama`, which §6.3 prices at zero
+   * — nothing accumulates and a cap that afforded step 1 can always afford step 2. Money has to
+   * actually move for the cap to bite in the middle, so this arm bills a real Bedrock rate:
+   * 1000 in + 200 out at $5/$25 per M tokens is 10_000 microusd a call, against a declared
+   * ceiling of 12_000.
+   */
+  const PRICED = armBodySchema.parse({
+    engine: 'opd_note_audit',
+    engine_version: 'test/1.0',
+    stages: { analysis: { provider: 'bedrock', model: MODEL, max_cost_microusd: 12_000 } },
+  });
+  const { run } = await seedFailedRun(db, new Set(CASES), PRICED, MODEL);
+  const cluster = await failureCluster(db, { window_hours: 24 }) as {
+    groups: { key: { engine: string; stage: string; category: string; message_head: string } }[];
+  };
+  const key = cluster.groups.find((g) => g.key.category === 'provider')!.key;
+  const adapters = { opd_note_audit: stubAdapter(new Set([BAD]), [], MODEL) };
+  /**
+   * The arithmetic, in the order it happens. The SOURCE run already spent 4 × 10_000 = 40_000
+   * against this budget before the minimisation was asked for — the cap is a line under everything
+   * committed, not a fresh allowance, which is the whole reason it is checked against the budget
+   * and not against this search's own total. So: step 1's worst case is 4 × 12_000 = 48_000, and
+   * 40_000 + 48_000 = 88_000 fits under 90_000. Step 1 then really spends 40_000, taking the
+   * committed total to 80_000; step 2's worst case of 2 × 12_000 = 24_000 would make 104_000, and
+   * that is over the line. The refusal arrives on the call that WOULD have submitted step 2 —
+   * before it exists, never after the money is gone.
+   */
+  const { out, log } = await drive(db, adapters, {
+    group_key: key, run_id: run.id, budget_cap_microusd: 90_000, idempotency_key: 'min-9',
+  });
+  assert.equal(out.state, 'stopped');
+  assert.equal(out.stopped, 'budget_cap');
+  assert.equal(out.steps.length, 2, 'step 1 ran, step 2 was refused');
+  assert.equal(out.steps[0].reproduced, true);
+  assert.equal(out.steps[0].spent_microusd, 40_000, 'the money the step actually moved');
+  assert.equal(out.steps[1].run_id, null);
+  assert.equal(out.steps[1].run_state, 'refused');
+  assert.match(String(out.steps[1].note), /would exceed the cap of 90000/);
+  assert.match(String(out.steps[1].note), /80000 microusd already committed/);
+  assert.equal(out.spend_microusd, 40_000);
+  // ⚠️ THE PARTIAL ANSWER IS KEPT, AND IT IS HONEST: the last set that DID reproduce. Not an empty
+  // list, which would read as "nothing reproduced", and not a claim of minimality the search never
+  // earned — `stopped: 'budget_cap'` is what says the search was cut short.
+  assert.deepEqual(out.minimal_case_keys, CASES);
+  assert.deepEqual(log.map((o) => o.state), ['running', 'stopped']);
+  // Only step 1's run was ever created.
+  const runs = await db.query<{ c: string }>(`SELECT count(*)::text AS c FROM lab_v2.runs WHERE operation = 'failure_minimize'`);
+  assert.equal(runs[0].c, '1');
+  await db.close();
+});
+
+test('§17.11 decision 150: a step that reproduces nothing ends the search on the first answer', async () => {
+  const db = await freshDb();
+  const { run } = await seedFailedRun(db, new Set(CASES));
+  const cluster = await failureCluster(db, { window_hours: 24 }) as {
+    groups: { key: { engine: string; stage: string; category: string; message_head: string } }[];
+  };
+  const key = cluster.groups.find((g) => g.key.category === 'provider')!.key;
+  // Nothing fails on the re-run, so step 1 answers the question by itself.
+  const { out, log } = await drive(db, { opd_note_audit: stubAdapter(new Set(), []) }, {
+    group_key: key, run_id: run.id, budget_cap_microusd: 5_000_000, idempotency_key: 'min-10',
+  });
+  assert.equal(out.state, 'done');
+  assert.equal(out.stopped, 'not_reproduced');
+  assert.deepEqual(out.minimal_case_keys, [], 'no set reproduced it, and none is claimed');
+  assert.equal(out.steps.length, 1);
+  assert.equal(out.steps[0].run_state, 'succeeded');
+  assert.equal(out.steps[0].matching_items, 0);
+  assert.deepEqual(log.map((o) => o.state), ['running', 'done']);
+  await db.close();
+});
+
+test('§17.11 decision 150: the bisection is a pure function of the steps already settled', () => {
+  // ⚠️ THE REDUCER, ALONE. The position of the search is not stored — it is replayed from the
+  // record — so this asserts the replay directly, over the same path the queue test drives.
+  const started = ['c1', 'c2', 'c3', 'c4'];
+  const step = (case_keys: string[], reproduced: boolean) => ({ case_keys, reproduced });
+  assert.deepEqual(nextMove(started, []), { kind: 'run', case_keys: started });
+  assert.deepEqual(nextMove(started, [step(started, true)]), { kind: 'run', case_keys: ['c1', 'c2'] });
+  assert.deepEqual(nextMove(started, [step(started, true), step(['c1', 'c2'], false)]),
+    { kind: 'run', case_keys: ['c3', 'c4'] });
+  assert.deepEqual(nextMove(started, [step(started, true), step(['c1', 'c2'], false), step(['c3', 'c4'], true)]),
+    { kind: 'run', case_keys: ['c3'] });
+  assert.deepEqual(nextMove(started, [step(started, true), step(['c1', 'c2'], false), step(['c3', 'c4'], true), step(['c3'], true)]),
+    { kind: 'end', minimal: ['c3'], reason: 'minimal' });
+  // Step 1 not reproducing is the end, and the answer is an empty set rather than a guess.
+  assert.deepEqual(nextMove(started, [step(started, false)]), { kind: 'end', minimal: [], reason: 'not_reproduced' });
+  // Neither half alone reproduces: the pair is minimal for THIS search. See the caveat.
+  assert.deepEqual(nextMove(['a', 'b'], [step(['a', 'b'], true), step(['a'], false), step(['b'], false)]),
+    { kind: 'end', minimal: ['a', 'b'], reason: 'minimal' });
+  // One candidate needs one step and no halving.
+  assert.deepEqual(nextMove(['x'], [step(['x'], true)]), { kind: 'end', minimal: ['x'], reason: 'minimal' });
 });
 
 test('§17.11 decision 131: at most eight cases reach a first step', async () => {
@@ -241,11 +435,10 @@ test('§17.11 decision 109: failure_minimize is reachable through callTool', asy
       groups: { key: { engine: string; stage: string; category: string; message_head: string } }[];
     };
   const key = cluster.groups.find((g) => g.key.category === 'provider')!.key;
-  // Through dispatch: the schema, the scope, the handler and the output validation.
-  const out = await callTool({ db, principal: 'research', protocolVersion: 'p', sdkVersion: 's' } as never,
-    'failure_minimize', { group_key: key, run_id: run.id, budget_cap_microusd: 1_000, idempotency_key: 'min-6' }) as {
-      stopped: string; minimal_case_keys: string[]; caveat: string;
-    };
+  // Through dispatch: the schema, the scope, the handler and the output validation — and decision
+  // 150's output is a UNION, so this also proves the running branch validates on the way out.
+  const out = await call(db, 'research',
+    { group_key: key, run_id: run.id, budget_cap_microusd: 1_000, idempotency_key: 'min-6' }) as Report;
   // A cap of 1_000 refuses the first step, which is the cheapest reachable proof that dispatch,
   // schema validation and the handler all agree — and it spends nothing to get it.
   assert.equal(out.stopped, 'budget_cap');

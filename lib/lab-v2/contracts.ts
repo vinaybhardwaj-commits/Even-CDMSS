@@ -301,7 +301,7 @@ export const OPD_STAGES = ['analysis'] as const;
  * ledger, and deliberately: `lab_v2.objects` is immutable and content-addressed, so an artifact
  * cannot be edited after it was approved — which is the whole of decision 81.
  */
-export const OBJECT_KINDS = ['dataset', 'arm', 'experiment', 'artifact', 'report', 'operation_plan', 'staged_set', 'release'] as const;
+export const OBJECT_KINDS = ['dataset', 'arm', 'experiment', 'artifact', 'report', 'operation_plan', 'staged_set', 'release', 'minimize'] as const;
 export type ObjectKind = (typeof OBJECT_KINDS)[number];
 
 /**
@@ -403,6 +403,63 @@ export type RunState = ItemState;
 
 export const ATTEMPT_OUTCOMES = ['succeeded', 'failed', 'abandoned', 'cancelled', 'lease_lost'] as const;
 export const CALL_STATES = ['reserved', 'settled', 'unknown', 'refused'] as const;
+
+/**
+ * §17.11 DECISION 150 — `failure_minimize`'s STATE, AS AN OBJECT.
+ *
+ * The tool used to drive the queue inline: submit a step's run, turn `tick` until it settled,
+ * decide the next step, repeat — all inside one MCP call. That works only while the whole
+ * bisection fits inside one request, and it does not: a v2 MCP route is capped at 60 s and a
+ * single step of a real engine is not. Worse, the inline drive turned the caller's request into a
+ * worker, which is the one thing this platform's queue exists to avoid.
+ *
+ * So the search is now RESUMABLE, and this is where it keeps what it knows between calls. Each
+ * advance writes a NEW object — `lab_v2.objects` is immutable and content-addressed, so a step can
+ * never be edited after the fact — and the caller's own `idempotency_key` ties the versions
+ * together. A repeat call loads the newest and moves it forward by however much has settled.
+ *
+ * ⚠️ THE VERSION LIVES IN THE IDEMPOTENCY KEY, not in the body, because `objects_owner_kind_idem`
+ * is UNIQUE on (owner, kind, idempotency_key): one key addresses exactly one object, so the
+ * versions are `<key>:minimize:1`, `:2`, … and "the newest" is the highest suffix that exists.
+ * A version in the body instead would collide with the first write on every advance.
+ *
+ * ⚠️ `step.note` IS NOT DERIVABLE AND SO IT IS STORED. Every other field of a step can be
+ * recomputed — `estimated_microusd` is the arm's own declared ceilings times the cases — but a
+ * budget refusal quotes the money already committed AT THE MOMENT IT WAS REFUSED, and that number
+ * is gone by the next call. Storing the sentence is the only way the report stays true.
+ */
+export const minimizeStepSchema = z.object({
+  step: z.number().int().positive(),
+  case_keys: z.array(z.string()),
+  /** Null when the step was refused before submission — decision 131's cap. */
+  run_id: z.string().uuid().nullable(),
+  /** The run's derived state, or 'refused' when the cap stopped it before a run existed. */
+  state: z.enum([...RUN_STATES, 'refused'] as [string, ...string[]]),
+  reproduced: z.boolean(),
+  matching_items: z.number().int().nonnegative(),
+  spent_microusd: z.number().int().nonnegative(),
+  note: z.string().nullable(),
+});
+
+export const minimizeBodySchema = z.object({
+  group_key: z.object({
+    engine: z.string().nullable(), stage: z.string().nullable(),
+    category: z.string().nullable(), message_head: z.string().nullable(),
+  }),
+  source_run_id: z.string().uuid(),
+  owner: z.string().min(1),
+  budget_cap_microusd: z.number().int().positive(),
+  /** How many of the source run's items belonged to the group, before decision 131's cap of 8. */
+  candidates: z.number().int().nonnegative(),
+  steps: z.array(minimizeStepSchema),
+  state: z.enum(['running', 'done', 'stopped']),
+  /** Null while the search is still running. */
+  stopped_reason: z.enum(['minimal', 'not_reproduced', 'budget_cap', 'step_cap']).nullable(),
+  /** Empty until the search ends. */
+  minimal_case_keys: z.array(z.string()),
+  spend_microusd: z.number().int().nonnegative(),
+});
+export type MinimizeBody = z.infer<typeof minimizeBodySchema>;
 
 /** §9 — three independent fields, all three set on every finished item. */
 export const EXECUTION_STATUSES = ['succeeded', 'failed', 'partial', 'cancelled', 'expired'] as const;
