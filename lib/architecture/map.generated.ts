@@ -6226,6 +6226,12 @@ export const VERSION_REGISTRY: VersionRow[] = [
     "derived": false
   },
   {
+    "constName": "REACTION_SCHEMA_VERSION",
+    "value": "reaction/0.1",
+    "file": "lib/cognition/schema.ts",
+    "derived": false
+  },
+  {
     "constName": "READMIT_ENGINE_VERSION",
     "value": "readmission/0.2",
     "file": "lib/readmission/store.ts",

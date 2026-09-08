@@ -90,13 +90,22 @@ export interface BeliefUpdate {
   physicianId: string;
   /** Fixed by construction: a person's stated reaction is a reported belief and nothing else. */
   provenance: 'CLINICIAN_REPORTED_BELIEF';
-  /** What they said back, in the programme's controlled vocabulary (not yet defined — v0 writes none). */
+  /** The programme's controlled vocabulary: ReactionVerb. Written by the signal-reaction route from reaction/0.1. */
   reaction: string;
   /** Whether the reaction was recorded AFTER the clinician saw the CDMSS output. */
   afterCdmss: boolean;
   /** ISO timestamp of the reaction. */
   at: string;
 }
+
+/** The three non-escalating things a doctor can press on a Findings card. Controlled vocabulary:
+ *  a reaction is one of exactly these, and nothing widens it but a version bump. */
+export const REACTION_VERBS = ['already_knew', 'surprised', 'dismiss'] as const;
+export type ReactionVerb = typeof REACTION_VERBS[number];
+
+/** The reaction vocabulary's version, stamped on every cognition_reactions row. Separate from
+ *  COGNITION_SCHEMA_VERSION on purpose: the two move independently. */
+export const REACTION_SCHEMA_VERSION = 'reaction/0.1' as const;
 
 /** The cognition vocabulary's version. Bump when any type above changes shape. */
 export const COGNITION_SCHEMA_VERSION = 'cognition/0.1' as const;
