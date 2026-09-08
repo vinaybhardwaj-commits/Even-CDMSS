@@ -31,6 +31,9 @@ process.env.METABASE_API_KEY = 'test-metabase-key';
 const UID = 'ind_abc123';
 const PRESC = 'presc_aaa111';
 const PRESC2 = 'presc_bbb222';
+/** The audit row's own primary key. NOT the same identifier as PRESC — that is the whole point of
+ *  the reaction join: B2a writes this id into clinical_state_ref, and event_ref is the uid. */
+const AUDIT_ID = '7f1c2d3e-4a5b-6c7d-8e9f-0a1b2c3d4e5f';
 
 type Row = Record<string, unknown>;
 const issued: { text: string; params: unknown[] }[] = [];
@@ -41,6 +44,7 @@ let shadowEvents: Row[] = [];
 let snapshotRows: Row[] = [];
 let tripleRows: Row[] = [];
 let reactionRows: Row[] = [];
+let auditRows: Row[] = [];
 let labRows: Row[] = [];
 let resolveMap: Record<string, string | null> = {};
 let resolveThrows = false;
@@ -49,6 +53,7 @@ let seq = 0;
 function reset(): void {
   issued.length = 0; db13.length = 0;
   snapshotRows = []; tripleRows = []; reactionRows = []; labRows = [];
+  auditRows = [{ id: AUDIT_ID, uid: PRESC }];
   resolveThrows = false; seq = 0;
   resolveMap = { [PRESC]: UID, [PRESC2]: UID };
   shadowEvents = [{
@@ -197,8 +202,14 @@ globalThis.fetch = (async (url: unknown, init: { body?: unknown } = {}) => {
   }
 
   if (/FROM cognition_reactions\b/i.test(text)) {
-    const [ref] = params as string[];
-    return okJson(neonBody(reactionRows.filter((r) => r.clinical_state_ref === ref)));
+    // The joined shape: cognition_reactions.clinical_state_ref = opd_note_audits.id::text, matched
+    // to the triple's event_ref through opd_note_audits.uid.
+    assert.match(text, /JOIN opd_note_audits a ON a\.id::text = r\.clinical_state_ref/);
+    const [uid] = params as string[];
+    const ids = auditRows.filter((a) => a.uid === uid).map((a) => String(a.id));
+    return okJson(neonBody(reactionRows
+      .filter((r) => ids.includes(String(r.clinical_state_ref)))
+      .map((r) => ({ id: r.id, after_cdmss: r.after_cdmss }))));
   }
   return okJson(neonBody([]));
 }) as typeof fetch;
@@ -376,7 +387,8 @@ test('phase 1: a failed capture is recorded as an outage, not as an empty record
 test('phase 2: sets present and the four y fields, and attaches a reaction when one exists', async () => {
   reset();
   snapshotByDay = { '2026-08-10': { version: 'member-state/1.2', asOf: '2026-08-10' } };
-  reactionRows = [{ id: 'reaction-1', clinical_state_ref: PRESC, after_cdmss: true, created_at: '2026-08-12T00:00:00.000Z' }];
+  // clinical_state_ref is the AUDIT ID — what B2a actually writes — not the uid.
+  reactionRows = [{ id: 'reaction-1', clinical_state_ref: AUDIT_ID, after_cdmss: true, created_at: '2026-08-12T00:00:00.000Z' }];
   labRows = [
     { booking_id: 'b1', test_result_uid: 'r1', test_date: '2026-08-11T04:00:00.000Z', _create_time: '2026-08-11T09:00:00.000Z', investigation_name: 'CRP' },
   ];
@@ -402,6 +414,33 @@ test('phase 2: sets present and the four y fields, and attaches a reaction when 
   assert.ok(yq, 'the Y query ran');
   assert.ok(yq!.includes("'2026-08-10 00:00:00'::timestamp"), 'lower bound is the note IST day');
   assert.ok(yq!.includes("interval '45 days'"), 'the read window, wider than the horizon');
+});
+
+test('phase 2: a reaction keyed on the uid — the old wrong key — does not attach', async () => {
+  reset();
+  snapshotByDay = { '2026-08-10': { version: 'member-state/1.2', asOf: '2026-08-10' } };
+  // WM3 flag 4, measured in production on 8 Sep 2026: clinical_state_ref holds opd_note_audits.id,
+  // never the uid. A row carrying the uid is not this event's reaction and must not be attached —
+  // and the failure it guards is silent, because a join that matches nothing raises nothing.
+  reactionRows = [{ id: 'reaction-wrong-key', clinical_state_ref: PRESC, after_cdmss: true, created_at: '2026-08-12T00:00:00.000Z' }];
+  labRows = [{ booking_id: 'b1', test_result_uid: 'r1', test_date: '2026-08-11T04:00:00.000Z', _create_time: '2026-08-11T09:00:00.000Z', investigation_name: 'CRP' }];
+  const { runJoinPhase1, runJoinPhase2 } = await import('../cognition/join-sweep.ts');
+  await runJoinPhase1(100, DEPS());
+
+  const out = await runJoinPhase2(200, DEPS());
+  assert.equal(out.present, 1, 'the Y is still found');
+  assert.equal(out.reactions, 0, 'but nothing attaches');
+  assert.equal(tripleRows[0].reaction_ref, null);
+  assert.equal(tripleRows[0].reaction_after_cdmss, null);
+
+  // …and the same row, re-keyed onto the audit id, does attach.
+  reset();
+  reactionRows = [{ id: 'reaction-right-key', clinical_state_ref: AUDIT_ID, after_cdmss: true, created_at: '2026-08-12T00:00:00.000Z' }];
+  labRows = [{ booking_id: 'b1', test_result_uid: 'r1', test_date: '2026-08-11T04:00:00.000Z', _create_time: '2026-08-11T09:00:00.000Z', investigation_name: 'CRP' }];
+  await runJoinPhase1(100, DEPS());
+  const attached = await runJoinPhase2(200, DEPS());
+  assert.equal(attached.reactions, 1);
+  assert.equal(tripleRows[0].reaction_ref, 'reaction-right-key');
 });
 
 test('phase 2: nothing within the horizon is a conclusion only once the horizon has passed', async () => {

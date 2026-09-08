@@ -301,13 +301,25 @@ export async function attachReaction(id: string, reactionRef: string, afterCdmss
 }
 
 /**
- * The reaction for one event, if a doctor pressed one. Keyed on `clinical_state_ref`, which B2a
- * fills with the representative audit id of the signal the card was showing.
+ * The reaction for one event, if a doctor pressed one.
+ *
+ * ⚠️ THE TWO IDENTIFIERS ARE NOT THE SAME ONE, AND THE JOIN IS WHAT BRIDGES THEM. B2a fills
+ * `cognition_reactions.clinical_state_ref` with `resolveInstances(...).representative.audit_id` —
+ * an `opd_note_audits.id`, a uuid rendered as text. A triple's `event_ref` is the shadow event's
+ * `opd_note_audits.uid`, the db13 prescription uid. Matching one against the other directly (WM3
+ * flag 4, measured in production on 8 Sep 2026: the one live reaction row carries the id, not the
+ * uid) matches nothing, silently — no error, just a count that never leaves zero. So the two are
+ * joined through the audit row that holds both. `opd_note_audits.id` is UUID in this repo's DDL
+ * (migrations/0007_opd_note_audits.sql), so `::text` is the cast that meets a TEXT column.
  */
 export async function reactionForEvent(eventRef: string): Promise<{ id: string; after_cdmss: boolean } | null> {
   const rows = await run(
-    `SELECT id::text AS id, after_cdmss FROM cognition_reactions
-      WHERE clinical_state_ref = $1 ORDER BY created_at ASC LIMIT 1`, [eventRef]);
+    `SELECT r.id, r.after_cdmss
+  FROM cognition_reactions r
+  JOIN opd_note_audits a ON a.id::text = r.clinical_state_ref
+ WHERE a.uid = $1
+ ORDER BY r.created_at ASC
+ LIMIT 1`, [eventRef]);
   return rows[0] ? { id: String(rows[0].id), after_cdmss: bool(rows[0].after_cdmss) === true } : null;
 }
 
