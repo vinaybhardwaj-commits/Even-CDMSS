@@ -111,6 +111,11 @@ export const REACTION_SCHEMA_VERSION = 'reaction/0.1' as const;
 /** The review vocabulary's version, stamped on every session and every belief row. */
 export const REVIEW_SCHEMA_VERSION = 'review/0.1' as const;
 
+/** The join's version, stamped on every snapshot and every triple. It is part of the triple's
+ *  identity key, so bumping it re-opens the backlog under the new shape rather than leaving rows
+ *  built by an older rule to be read as current ones. */
+export const JOIN_SCHEMA_VERSION = 'cognition-join/0.1' as const;
+
 /** The perturbation catalogue's ids, in the order they are offered and recorded. The overlay text
  *  for each lives in lib/review/perturbations.ts — one id, one sentence, nothing generated. */
 export const REVIEW_VARIANT_IDS = ['fever_39_5', 'ct_done_normal', 'age_plus_30'] as const;

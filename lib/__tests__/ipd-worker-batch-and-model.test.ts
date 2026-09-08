@@ -62,7 +62,9 @@ test('restoring the cron did not disturb any other schedule', () => {
   // is 16:30 UTC and a half-hour offset cannot be written as whole hours (decision 53). Additive.
   // 21 → 22 on 5 Sep 2026: the Lab MCP v2 tick (lab-v2 decision 25). Dark on arrival; the
   // composition string below is extended with it so the count and its explanation stay in step.
-  assert.equal(VERCEL.crons.length, 22, '14 + IPD worker + readmission + pre-op + shadow sweep + 3 episode-window entries + lab-v2 tick');
+  // 22 → 23 on 8 Sep 2026: WM3's join sweep, one hour after the shadow sweep so the eligible events
+  // it opens over are already written. Additive; every schedule below is untouched.
+  assert.equal(VERCEL.crons.length, 23, '14 + IPD worker + readmission + pre-op + shadow sweep + 3 episode-window entries + lab-v2 tick + WM3 join');
   // ⚠️ The OPD entry lost its `?conc=4` on 3 Aug (Unit D, Task 11) so the route's re-sized defaults
   // (max=8, conc=8 — one wave) apply. Production had been sending conc=4 against a default max of
   // 15, i.e. FOUR waves, and the guard has to be computed against what the cron actually sends.

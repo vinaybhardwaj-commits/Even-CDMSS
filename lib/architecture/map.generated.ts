@@ -3018,12 +3018,27 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "cognition",
+    "to": "ccb-dossier-core",
+    "kind": "value"
+  },
+  {
+    "from": "cognition",
     "to": "db",
     "kind": "value"
   },
   {
     "from": "cognition",
     "to": "member-state",
+    "kind": "value"
+  },
+  {
+    "from": "cognition",
+    "to": "metabase",
+    "kind": "value"
+  },
+  {
+    "from": "cognition",
+    "to": "world-model",
     "kind": "value"
   },
   {
@@ -6013,6 +6028,12 @@ export const VERSION_REGISTRY: VersionRow[] = [
     "constName": "IPD_STAY_ENGINE_VERSION",
     "value": "ipd-stay-audit/0.1",
     "file": "lib/ipd-audit/stay-material.ts",
+    "derived": false
+  },
+  {
+    "constName": "JOIN_SCHEMA_VERSION",
+    "value": "cognition-join/0.1",
+    "file": "lib/cognition/schema.ts",
     "derived": false
   },
   {

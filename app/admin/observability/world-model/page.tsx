@@ -327,6 +327,8 @@ export default async function WorldModelWalkPage({ searchParams }: { searchParam
           <Link href="/admin/observability/world-model/shadow" className="whitespace-nowrap text-xs font-medium text-brand hover:underline">Shadow Agent →</Link>
           {/* WM6 — the sequential review over this walk. Belief records only; nobody is scored. */}
           <Link href="/admin/observability/review" className="whitespace-nowrap text-xs font-medium text-brand hover:underline">Sequential review →</Link>
+          {/* WM3 — the join: O_before, the first visible result, O_after. */}
+          <Link href="/admin/observability/world-model/join" className="whitespace-nowrap text-xs font-medium text-brand hover:underline">Join →</Link>
           <Link href="/admin/observability" className="whitespace-nowrap text-xs font-medium text-brand hover:underline">← Observability</Link>
         </div>
       </div>
