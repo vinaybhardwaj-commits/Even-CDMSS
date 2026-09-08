@@ -27,7 +27,7 @@ import { isAdminUnlocked } from '@/lib/admin-cookie';
 import {
   runJoinSweep, runJoinBackfill, runJoinRetryFailed,
   JOIN_TRIGGER_KIND, JOIN_MICROWORLD, JOIN_Y_KIND, Y_HORIZON_DAYS,
-  PHASE1_CAP, PHASE2_CAP, PHASE3_CAP, BACKFILL_CAP, PACING_MS,
+  PHASE1_CAP, PHASE2_CAP, PHASE3_CAP, BACKFILL_CAP, PACING_MS, SWEEP_BUDGET_MS,
 } from '@/lib/cognition/join-sweep';
 import { BURDEN_POLICY_VERSION, JOIN_SCHEMA_VERSION } from '@/lib/cognition/schema';
 
@@ -41,7 +41,7 @@ const META = {
   microworld: JOIN_MICROWORLD,
   yKind: JOIN_Y_KIND,
   horizonDays: Y_HORIZON_DAYS,
-  caps: { phase1: PHASE1_CAP, phase2: PHASE2_CAP, phase3: PHASE3_CAP, backfill: BACKFILL_CAP, pacingMs: PACING_MS },
+  caps: { phase1: PHASE1_CAP, phase2: PHASE2_CAP, phase3: PHASE3_CAP, backfill: BACKFILL_CAP, pacingMs: PACING_MS, budgetMs: SWEEP_BUDGET_MS },
   policyVersion: BURDEN_POLICY_VERSION,
   schemaVersion: JOIN_SCHEMA_VERSION,
 };

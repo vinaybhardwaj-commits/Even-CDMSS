@@ -331,7 +331,7 @@ test('phase 1: one snapshot and one triple per eligible event, and a second run 
   const { runJoinPhase1 } = await import('../cognition/join-sweep.ts');
 
   const first = await runJoinPhase1(100, DEPS());
-  assert.deepEqual(first, { scanned: 1, opened: 1, unresolved: 0, deferred: 0 });
+  assert.deepEqual(first, { scanned: 1, opened: 1, unresolved: 0, deferred: 0, budgetStopped: false });
   assert.equal(snapshotRows.length, 1);
   assert.equal(tripleRows.length, 1);
   assert.equal(snapshotRows[0].cut_status, 'ok');
@@ -344,7 +344,7 @@ test('phase 1: one snapshot and one triple per eligible event, and a second run 
 
   issued.length = 0;
   const second = await runJoinPhase1(100, DEPS());
-  assert.deepEqual(second, { scanned: 0, opened: 0, unresolved: 0, deferred: 0 }, 'the event already has a triple');
+  assert.deepEqual(second, { scanned: 0, opened: 0, unresolved: 0, deferred: 0, budgetStopped: false }, 'the event already has a triple');
   assert.deepEqual(writes(), [], 'idempotent: nothing written on a re-run');
   assert.equal(snapshotRows.length, 1);
   assert.equal(tripleRows.length, 1);
@@ -356,7 +356,7 @@ test('phase 1: an unresolved note is closed with no snapshot; a db13 outage defe
   const { runJoinPhase1 } = await import('../cognition/join-sweep.ts');
 
   const out = await runJoinPhase1(100, DEPS());
-  assert.deepEqual(out, { scanned: 1, opened: 1, unresolved: 1, deferred: 0 });
+  assert.deepEqual(out, { scanned: 1, opened: 1, unresolved: 1, deferred: 0, budgetStopped: false });
   assert.equal(snapshotRows.length, 0, 'no state is invented for a note with no individual');
   assert.equal(tripleRows[0].resolve_status, 'unresolved');
   assert.equal(tripleRows[0].individual_uid, null);
@@ -366,7 +366,7 @@ test('phase 1: an unresolved note is closed with no snapshot; a db13 outage defe
   reset();
   resolveThrows = true;
   const deferred = await runJoinPhase1(100, DEPS());
-  assert.deepEqual(deferred, { scanned: 1, opened: 0, unresolved: 0, deferred: 1 });
+  assert.deepEqual(deferred, { scanned: 1, opened: 0, unresolved: 0, deferred: 1, budgetStopped: false });
   assert.equal(tripleRows.length, 0, 'an outage must never close a note as unresolved');
   assert.deepEqual(writes(), []);
 });
@@ -563,4 +563,76 @@ test('the sweep calls the frozen reconstruct and never reaches into the as-of cu
   const entry = vercel.crons.find((c) => c.path === '/api/admin/wm3-join?auto=1');
   assert.ok(entry, 'the join cron is registered');
   assert.equal(entry!.schedule, '0 1,7,13,19 * * *');
+});
+
+// ── 9. Fix 2 — one tick must finish ───────────────────────────────────────────
+test('the caps and the budget fit one invocation, and the route declares the box they fit in', async () => {
+  const sweep = await import('../cognition/join-sweep.ts');
+  // Re-sized 8 Sep 2026 after a manual full run returned 504 with phase 3 never started.
+  assert.equal(sweep.PHASE1_CAP, 50);
+  assert.equal(sweep.PHASE2_CAP, 60);
+  assert.equal(sweep.PHASE3_CAP, 30);
+  assert.equal(sweep.BACKFILL_CAP, 50, 'the backfill cap is unchanged');
+  assert.equal(sweep.PACING_MS, 100, 'the pacing pause is unchanged');
+  assert.equal(sweep.SWEEP_BUDGET_MS, 240_000);
+
+  // The budget must leave headroom inside the route's box, or it guards nothing.
+  const route = readFileSync('app/api/admin/wm3-join/route.ts', 'utf8');
+  const m = /export const maxDuration = (\d+);/.exec(route);
+  assert.ok(m, 'the route declares a maxDuration');
+  const boxMs = Number(m![1]) * 1000;
+  assert.ok(sweep.SWEEP_BUDGET_MS < boxMs, `budget ${sweep.SWEEP_BUDGET_MS}ms must fit inside the ${boxMs}ms box`);
+  assert.ok(boxMs - sweep.SWEEP_BUDGET_MS >= 30_000, 'and leave headroom for the response');
+
+  // the same box the sibling sweep runs in
+  const shadow = readFileSync('app/api/admin/shadow-sweep/route.ts', 'utf8');
+  assert.match(shadow, new RegExp(`export const maxDuration = ${m![1]};`),
+    'the join runs in the same box as the shadow sweep it follows');
+});
+
+test('the budget stops a run between items, and names the phase it stopped in', async () => {
+  reset();
+  snapshotByDay = { '2026-08-10': { version: 'member-state/1.2' }, '2026-09-05': { version: 'member-state/1.2' } };
+  shadowEvents.push({
+    trigger_kind: 'opd_note_audited', event_ref: PRESC2, event_at: '2026-09-05T09:30:00.000Z',
+    created_at: '2026-09-08T07:00:00.000Z', eligible: true, policy_version: 'burden-policy/0.1',
+  });
+  const { runJoinPhase1, runJoinSweep } = await import('../cognition/join-sweep.ts');
+
+  // a clock that is already past the deadline: the first item is refused, nothing is written
+  const spent = await runJoinPhase1(100, { ...DEPS(), deadlineAt: 0 });
+  assert.equal(spent.budgetStopped, true);
+  assert.equal(spent.opened, 0, 'the check happens BEFORE the item, so none was taken');
+  assert.deepEqual(writes(), [], 'a run that stops on arrival writes nothing');
+
+  // A clock the WORK advances: the budget expires while the first item is being captured, so the
+  // second check refuses. Driven off the capture rather than off a call count, which would couple
+  // the test to how many times the sweep happens to consult the clock.
+  const deadline = 1_000_000;
+  let clock = deadline - 1;
+  const out = await runJoinPhase1(100, {
+    ...DEPS(), deadlineAt: deadline,
+    now: () => new Date(clock),
+    reconstruct: async () => { clock = deadline + 1; return { version: 'member-state/1.2' }; },
+  });
+  assert.equal(out.budgetStopped, true);
+  assert.equal(out.opened, 1, 'the item it did start is finished and committed');
+  assert.equal(tripleRows.length, 1);
+
+  // the whole sweep names the phase, and does not run the phases after it
+  reset();
+  snapshotByDay = { '2026-08-10': { version: 'member-state/1.2' } };
+  const stopped = await runJoinSweep({ ...DEPS(), deadlineAt: 0 });
+  assert.equal(stopped.budget_stopped, 'phase1');
+  assert.equal(stopped.phase1?.budgetStopped, true);
+  assert.equal(stopped.phase2, null, 'phase 2 never ran');
+  assert.equal(stopped.phase3, null, 'nor phase 3');
+  assert.equal(stopped.ok, true, 'a spent budget is a bounded run, not a failure');
+
+  // …and with budget to spare, all three phases run and the field stays false
+  reset();
+  snapshotByDay = { '2026-08-10': { version: 'member-state/1.2' } };
+  const full = await runJoinSweep(DEPS());
+  assert.equal(full.budget_stopped, false);
+  assert.ok(full.phase1 && full.phase2 && full.phase3, 'all three phases ran');
 });

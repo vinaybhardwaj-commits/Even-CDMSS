@@ -59,10 +59,30 @@ export const Y_HORIZON_DAYS = 14;
 /** The read bound on the Y query. Wider than the horizon so a horizon change needs no new query. */
 export const Y_QUERY_WINDOW_DAYS = 45;
 
-export const PHASE1_CAP = 100;
-export const PHASE2_CAP = 200;
-export const PHASE3_CAP = 100;
+/**
+ * The per-phase caps, RE-SIZED 8 Sep 2026 after a manual full run returned HTTP 504.
+ *
+ * The first sizing (100/200/100) was a guess at a safe batch and was wrong in the way batch sizes
+ * usually are: phase 2 spent the whole invocation on its own 200 items and phase 3 never started,
+ * so the rows that make a triple COMPLETE were never written, tick after tick. A run that always
+ * dies in the same phase does not drain a backlog — it grinds one queue and starves the next.
+ * These numbers are sized so all three phases fit inside one invocation with room to spare, and
+ * the wall-clock budget below is the guard that holds even when an individual read is slow.
+ */
+export const PHASE1_CAP = 50;
+export const PHASE2_CAP = 60;
+export const PHASE3_CAP = 30;
 export const BACKFILL_CAP = 50;
+
+/**
+ * The wall-clock budget for one run: 240 s inside the route's 300 s `maxDuration`, leaving 60 s of
+ * headroom for the response and for a request already in flight when the budget expires.
+ *
+ * Checked BEFORE each item, never mid-item, so a run stops between two individuals with its work
+ * committed rather than being cut off inside one. Everything a phase completed before it stopped is
+ * already written — every write in this sweep is its own statement and its own idempotent decision.
+ */
+export const SWEEP_BUDGET_MS = 240_000;
 
 /** One db13 read at a time from this module, and `getMemberSnapshotAsOf` fires two in parallel —
  *  so at most two are ever in flight. The pause sits between individuals, not between statements. */
@@ -118,6 +138,9 @@ export interface JoinDeps {
   flags?: WalkFlags;
   sleep?: (ms: number) => Promise<void>;
   now?: () => Date;
+  /** Epoch ms after which a phase stops taking new items. Set by `runJoinSweep`; absent means no
+   *  budget, which is what a directly-invoked phase gets. */
+  deadlineAt?: number;
 }
 
 /**
@@ -179,9 +202,15 @@ async function maybeAttachReaction(triple: TripleRow): Promise<boolean> {
   return true;
 }
 
-export interface Phase1Result { scanned: number; opened: number; unresolved: number; deferred: number }
-export interface Phase2Result { scanned: number; present: number; missing: number; stillPending: number; deferred: number; reactions: number }
-export interface Phase3Result { scanned: number; closed: number; failed: number; repaired: number; reactions: number }
+export interface Phase1Result { scanned: number; opened: number; unresolved: number; deferred: number; budgetStopped: boolean }
+export interface Phase2Result { scanned: number; present: number; missing: number; stillPending: number; deferred: number; reactions: number; budgetStopped: boolean }
+export interface Phase3Result { scanned: number; closed: number; failed: number; repaired: number; reactions: number; budgetStopped: boolean }
+
+/** True when the budget is spent. Checked before each item, so a stop is always between two. */
+function outOfBudget(deps: JoinDeps): boolean {
+  const nowFn = deps.now ?? (() => new Date());
+  return deps.deadlineAt != null && nowFn().getTime() >= deps.deadlineAt;
+}
 
 /**
  * Phase 1 — open a triple for every eligible event that has none.
@@ -200,9 +229,10 @@ export async function runJoinPhase1(limit: number, deps: JoinDeps = {}): Promise
 
   const first = await firstRunAt();
   const candidates = await listOpenCandidates(BURDEN_POLICY_VERSION, JOIN_TRIGGER_KIND, limit);
-  const out: Phase1Result = { scanned: candidates.length, opened: 0, unresolved: 0, deferred: 0 };
+  const out: Phase1Result = { scanned: candidates.length, opened: 0, unresolved: 0, deferred: 0, budgetStopped: false };
 
   for (const c of candidates) {
+    if (outOfBudget(deps)) { out.budgetStopped = true; break; }
     const provenance = provenanceFor(new Date(c.created_at), first);
     let individualUid: string | null;
     try {
@@ -248,9 +278,10 @@ export async function runJoinPhase2(limit: number, deps: JoinDeps = {}): Promise
   const nowFn = deps.now ?? (() => new Date());
 
   const triples = await listPendingY(limit);
-  const out: Phase2Result = { scanned: triples.length, present: 0, missing: 0, stillPending: 0, deferred: 0, reactions: 0 };
+  const out: Phase2Result = { scanned: triples.length, present: 0, missing: 0, stillPending: 0, deferred: 0, reactions: 0, budgetStopped: false };
 
   for (const t of triples) {
+    if (outOfBudget(deps)) { out.budgetStopped = true; break; }
     if (await maybeAttachReaction(t)) out.reactions++;
     if (!t.individual_uid) { out.deferred++; continue; }
 
@@ -302,9 +333,10 @@ export async function runJoinPhase3(limit: number, deps: JoinDeps = {}, retryFai
   const computedAt = nowFn().toISOString();
 
   const triples = retryFailed ? await listFailedAfter(limit) : await listOpenAfter(limit);
-  const out: Phase3Result = { scanned: triples.length, closed: 0, failed: 0, repaired: 0, reactions: 0 };
+  const out: Phase3Result = { scanned: triples.length, closed: 0, failed: 0, repaired: 0, reactions: 0, budgetStopped: false };
 
   for (const t of triples) {
+    if (outOfBudget(deps)) { out.budgetStopped = true; break; }
     if (await maybeAttachReaction(t)) out.reactions++;
     if (!t.individual_uid || !t.y_visible_at) continue;
 
@@ -335,11 +367,19 @@ export interface JoinSweepResult {
   phase1: Phase1Result | null;
   phase2: Phase2Result | null;
   phase3: Phase3Result | null;
+  /**
+   * `false` when the run finished its caps inside the budget; otherwise the phase it stopped in.
+   *
+   * ONE field carrying both facts the order asks for — that the budget was hit, and where. A
+   * consumer that only wants the boolean reads it as truthy; a consumer that wants to know which
+   * queue is the bottleneck reads the name. See the report's Fix 2 for the alternative considered.
+   */
+  budget_stopped: false | 'phase1' | 'phase2' | 'phase3';
 }
 
 const EMPTY: Omit<JoinSweepResult, 'mode'> = {
   ok: true, error: null, schemaVersion: JOIN_SCHEMA_VERSION, policyVersion: BURDEN_POLICY_VERSION,
-  phase1: null, phase2: null, phase3: null,
+  phase1: null, phase2: null, phase3: null, budget_stopped: false,
 };
 
 /**
@@ -350,10 +390,19 @@ const EMPTY: Omit<JoinSweepResult, 'mode'> = {
  */
 export async function runJoinSweep(deps: JoinDeps = {}): Promise<JoinSweepResult> {
   const result: JoinSweepResult = { ...EMPTY, mode: 'sweep' };
+  const nowFn = deps.now ?? (() => new Date());
+  // One deadline for the whole run, set once, so the three phases share the budget rather than
+  // each getting a fresh one.
+  const budgeted: JoinDeps = { ...deps, deadlineAt: deps.deadlineAt ?? nowFn().getTime() + SWEEP_BUDGET_MS };
   try {
-    result.phase1 = await runJoinPhase1(PHASE1_CAP, deps);
-    result.phase2 = await runJoinPhase2(PHASE2_CAP, deps);
-    result.phase3 = await runJoinPhase3(PHASE3_CAP, deps);
+    result.phase1 = await runJoinPhase1(PHASE1_CAP, budgeted);
+    if (result.phase1.budgetStopped) { result.budget_stopped = 'phase1'; return result; }
+
+    result.phase2 = await runJoinPhase2(PHASE2_CAP, budgeted);
+    if (result.phase2.budgetStopped) { result.budget_stopped = 'phase2'; return result; }
+
+    result.phase3 = await runJoinPhase3(PHASE3_CAP, budgeted);
+    if (result.phase3.budgetStopped) result.budget_stopped = 'phase3';
     return result;
   } catch (e) {
     return { ...result, ok: false, error: String((e as Error).message).slice(0, 300) };
@@ -364,7 +413,10 @@ export async function runJoinSweep(deps: JoinDeps = {}): Promise<JoinSweepResult
 export async function runJoinBackfill(limit = BACKFILL_CAP, deps: JoinDeps = {}): Promise<JoinSweepResult> {
   const result: JoinSweepResult = { ...EMPTY, mode: 'backfill' };
   try {
-    result.phase1 = await runJoinPhase1(Math.max(1, Math.min(BACKFILL_CAP, limit)), deps);
+    const nowFn = deps.now ?? (() => new Date());
+    const budgeted: JoinDeps = { ...deps, deadlineAt: deps.deadlineAt ?? nowFn().getTime() + SWEEP_BUDGET_MS };
+    result.phase1 = await runJoinPhase1(Math.max(1, Math.min(BACKFILL_CAP, limit)), budgeted);
+    if (result.phase1.budgetStopped) result.budget_stopped = 'phase1';
     return result;
   } catch (e) {
     return { ...result, ok: false, error: String((e as Error).message).slice(0, 300) };
@@ -375,7 +427,10 @@ export async function runJoinBackfill(limit = BACKFILL_CAP, deps: JoinDeps = {})
 export async function runJoinRetryFailed(limit = PHASE3_CAP, deps: JoinDeps = {}): Promise<JoinSweepResult> {
   const result: JoinSweepResult = { ...EMPTY, mode: 'retry_failed' };
   try {
-    result.phase3 = await runJoinPhase3(Math.max(1, Math.min(PHASE3_CAP, limit)), deps, true);
+    const nowFn = deps.now ?? (() => new Date());
+    const budgeted: JoinDeps = { ...deps, deadlineAt: deps.deadlineAt ?? nowFn().getTime() + SWEEP_BUDGET_MS };
+    result.phase3 = await runJoinPhase3(Math.max(1, Math.min(PHASE3_CAP, limit)), budgeted, true);
+    if (result.phase3.budgetStopped) result.budget_stopped = 'phase3';
     return result;
   } catch (e) {
     return { ...result, ok: false, error: String((e as Error).message).slice(0, 300) };
