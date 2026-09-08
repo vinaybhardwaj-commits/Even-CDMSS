@@ -951,6 +951,10 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "unregistered"
   },
   {
+    "id": "review",
+    "plane": "spine"
+  },
+  {
     "id": "review-navigator-core",
     "plane": "unregistered"
   },
@@ -2279,6 +2283,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "app/api",
+    "to": "review",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
     "to": "review-queue-core",
     "kind": "value"
   },
@@ -2335,6 +2344,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "app/api",
     "to": "trace",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
+    "to": "world-model",
     "kind": "value"
   },
   {
@@ -5548,6 +5562,16 @@ export const MAP_EDGES: MapEdge[] = [
     "kind": "value"
   },
   {
+    "from": "review",
+    "to": "cognition",
+    "kind": "value"
+  },
+  {
+    "from": "review",
+    "to": "db",
+    "kind": "value"
+  },
+  {
     "from": "review-stats-core",
     "to": "review-queue-core",
     "kind": "value"
@@ -6250,6 +6274,12 @@ export const VERSION_REGISTRY: VersionRow[] = [
     "derived": false
   },
   {
+    "constName": "REVIEW_SCHEMA_VERSION",
+    "value": "review/0.1",
+    "file": "lib/cognition/schema.ts",
+    "derived": false
+  },
+  {
     "constName": "RIGHT_CARE_CHECK_GOLD_2_VERSION",
     "value": "right-care-check-gold/2.0",
     "file": "lib/right-care-ground-eval-core.ts",
@@ -6300,9 +6330,9 @@ export const VERSION_REGISTRY: VersionRow[] = [
 ];
 
 export const COVERAGE = {
-  "registered": 23,
+  "registered": 24,
   "unregistered": 45,
-  "total": 68,
+  "total": 69,
   "unregisteredIds": [
     "calculators",
     "care-call-core",

@@ -77,6 +77,17 @@ export const MODULE_MANIFESTS: ModuleManifest[] = [
     versionConst: 'COGNITION_SCHEMA_VERSION',
   },
   {
+    id: 'review',
+    title: 'Walking a case forward, one day at a time',
+    blurb: 'Lets a reviewer read one patient’s record the way it arrived — a day at a time, with no way to peek ahead — and write down what they thought at each point. Nobody is scored.',
+    plane: 'spine',
+    paths: ['lib/review/**'],
+    lifecycle: 'implemented', // WM6 B4 — admin-only measurement surface, no doctor-facing reader, no live validation yet
+    // Declared with the rest of the cognition vocabulary in lib/cognition/schema.ts, beside
+    // REACTION_SCHEMA_VERSION — one place names the programme's versions.
+    versionConst: 'REVIEW_SCHEMA_VERSION',
+  },
+  {
     id: 'opd-note-score-core',
     title: 'The scoring engine',
     blurb: 'Turns the quality findings on a note into the 0–100 grade. This is the one and only place the score is worked out.',

@@ -325,6 +325,8 @@ export default async function WorldModelWalkPage({ searchParams }: { searchParam
         <div className="flex items-center gap-3">
           {/* WM1 — the shadow agent's readout. Shadow only; nothing there is doctor-facing. */}
           <Link href="/admin/observability/world-model/shadow" className="whitespace-nowrap text-xs font-medium text-brand hover:underline">Shadow Agent →</Link>
+          {/* WM6 — the sequential review over this walk. Belief records only; nobody is scored. */}
+          <Link href="/admin/observability/review" className="whitespace-nowrap text-xs font-medium text-brand hover:underline">Sequential review →</Link>
           <Link href="/admin/observability" className="whitespace-nowrap text-xs font-medium text-brand hover:underline">← Observability</Link>
         </div>
       </div>
