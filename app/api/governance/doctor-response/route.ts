@@ -3,6 +3,8 @@
  * The doctor's answer to a routed signal, from the portal (EPI proxies with GOV_API_KEY). Type must
  * match the signal's response_required; an explanation needs a comment + agree/disagree. A `disagree`
  * escalates the thread back to the CM AND writes to opd_audit_feedback (the calibration corpus).
+ * One response per thread: a repeat of the same answer reads back the current state and writes
+ * nothing; a different answer to an answered thread is a 409.
  */
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -12,7 +14,7 @@ import { sql } from '@/lib/db';
 import { isAdminUnlocked } from '@/lib/admin-cookie';
 import { govKeyValid } from '@/lib/gov-auth';
 import { getByReference, getBySignalId, applyDoctorResponse, toSignalRow } from '@/lib/opd-gov-signal-store';
-import { validateDoctorResponse, signalObject, type DoctorResponseInput } from '@/lib/opd-gov-signal-core';
+import { validateDoctorResponse, classifyDoctorResponse, signalObject, type DoctorResponseInput } from '@/lib/opd-gov-signal-core';
 import { resolveInstances } from '@/lib/opd-gov-read';
 
 const run = sql as unknown as (text: string, params?: unknown[]) => Promise<Record<string, unknown>[]>;
@@ -30,10 +32,18 @@ export async function POST(req: NextRequest) {
   const v = validateDoctorResponse(body, signal);
   if (!v.ok) return NextResponse.json({ ok: false, error: v.error }, { status: v.code });
 
-  const updated = await applyDoctorResponse(signal, v.value);
+  // One response per thread (IG-D1..D3). The same answer again is a replay: return the thread's
+  // current state and write nothing. A different answer to an answered thread is a conflict.
+  const disposition = classifyDoctorResponse(signal.latest_response, v.value);
+  if (disposition === 'conflict') {
+    return NextResponse.json({ ok: false, error: 'already responded — revisions go through your care manager' }, { status: 409 });
+  }
+  const replay = disposition === 'replay';
+
+  const updated = replay ? signal : await applyDoctorResponse(signal, v.value);
 
   // A disagree feeds the calibration corpus (opd_audit_feedback), keyed on the representative note.
-  if (v.value.type === 'explanation' && v.value.verdict === 'disagree') {
+  if (!replay && v.value.type === 'explanation' && v.value.verdict === 'disagree') {
     try {
       const { representative } = await resolveInstances(signal.doctor_uid, signal.signal_type, signal.window_from, signal.window_to);
       if (representative?.audit_id) {

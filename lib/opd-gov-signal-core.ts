@@ -98,6 +98,36 @@ export function validateDoctorResponse(
   return { ok: true, value: { type: 'acknowledgment', verdict: null, comment: dstr(input.comment) } };
 }
 
+/** The comment as the idempotency comparison sees it: trimmed, internal whitespace runs collapsed
+ *  to one space. `null` and `''` both become `''`, so they compare equal (IG-D4). */
+function normalizeComment(v: unknown): string {
+  return v == null ? '' : String(v).trim().replace(/\s+/g, ' ');
+}
+
+/**
+ * One response per thread (IG-D1..D3). Classify an incoming answer against the thread's stored
+ * `latest_response`:
+ *   'first'    — no stored response; the caller follows today's path unchanged.
+ *   'replay'   — the same answer again; the caller returns the current state and writes nothing.
+ *   'conflict' — a different answer to an answered thread; the caller returns 409 and writes nothing.
+ * `type` and `verdict` compare exactly (absent and null are the same absence in JSON); only the
+ * comment is normalized. A stored value that is present but is not a recorded answer is a
+ * conflict, not a first response — the thread has been answered.
+ */
+export function classifyDoctorResponse(
+  stored: unknown | null,
+  incoming: { type: string; verdict: string | null; comment: string | null },
+): 'first' | 'replay' | 'conflict' {
+  if (stored == null) return 'first';
+  if (typeof stored !== 'object') return 'conflict';
+  const s = stored as { type?: string | null; verdict?: string | null; comment?: unknown };
+  const same =
+    s.type === incoming.type &&
+    (s.verdict ?? null) === (incoming.verdict ?? null) &&
+    normalizeComment(s.comment) === normalizeComment(incoming.comment);
+  return same ? 'replay' : 'conflict';
+}
+
 // ── Validation: POST /signal-action (contract §5.2) ───────────────────────────
 export interface SignalActionInput {
   reference?: string; signal_id?: string;
