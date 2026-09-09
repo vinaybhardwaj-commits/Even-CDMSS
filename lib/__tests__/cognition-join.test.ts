@@ -46,19 +46,24 @@ let tripleRows: Row[] = [];
 let reactionRows: Row[] = [];
 let auditRows: Row[] = [];
 let labRows: Row[] = [];
+let rawNoteRows: Row[] = [];
+let stabilityRuns: Row[] = [];
 let resolveMap: Record<string, string | null> = {};
 let resolveThrows = false;
+let rawNotesThrow = false;
 let seq = 0;
 
 function reset(): void {
   issued.length = 0; db13.length = 0;
   snapshotRows = []; tripleRows = []; reactionRows = []; labRows = [];
+  rawNoteRows = []; stabilityRuns = [];
   auditRows = [{ id: AUDIT_ID, uid: PRESC }];
-  resolveThrows = false; seq = 0;
+  resolveThrows = false; rawNotesThrow = false; seq = 0;
   resolveMap = { [PRESC]: UID, [PRESC2]: UID };
   shadowEvents = [{
     trigger_kind: 'opd_note_audited', event_ref: PRESC, event_at: '2026-08-10T09:30:00.000Z',
     created_at: '2026-08-10T10:00:00.000Z', eligible: true, policy_version: 'burden-policy/0.1',
+    reason: 'would_ask', microworld: 'headache',
   }];
 }
 
@@ -88,6 +93,12 @@ globalThis.fetch = (async (url: unknown, init: { body?: unknown } = {}) => {
     const sent = JSON.parse(String(init?.body ?? '{}')) as { native?: { query?: string } };
     const query = String(sent.native?.query ?? '');
     db13.push(query);
+    // The raw-note candidate read. Checked FIRST: it also names "individuals-prescriptions", and the
+    // identity read below would otherwise swallow it.
+    if (/presenting_complaints/.test(query)) {
+      if (rawNotesThrow) return new Response('db13 down', { status: 500 });
+      return okJson(metabaseBody(rawNoteRows));
+    }
     if (/individuals-prescriptions/.test(query)) {
       if (resolveThrows) return new Response('db13 down', { status: 500 });
       const m = /uid = '([^']+)'/.exec(query);
@@ -105,7 +116,7 @@ globalThis.fetch = (async (url: unknown, init: { body?: unknown } = {}) => {
   issued.push({ text, params });
 
   if (/^\s*INSERT INTO cognition_triples\b/i.test(text)) {
-    const [trigger, eventRef, eventAt, uid, microworld, provenance, resolveStatus, oBefore, yStatus, horizon, policyV, schemaV] = params as unknown[];
+    const [trigger, eventRef, eventAt, uid, microworld, provenance, resolveStatus, oBefore, yStatus, horizon, policyV, schemaV, eraStatus] = params as unknown[];
     if (tripleRows.some((r) => r.trigger_kind === trigger && r.event_ref === eventRef && r.schema_version === schemaV)) {
       return okJson(neonBody([]));                        // ON CONFLICT DO NOTHING
     }
@@ -116,7 +127,7 @@ globalThis.fetch = (async (url: unknown, init: { body?: unknown } = {}) => {
       y_kind: null, y_ref: null, y_test_date: null, y_create_time: null, y_visible_at: null,
       y_visible_rule: null, y_status: yStatus, y_horizon_days: Number(horizon), o_after_id: null,
       o_after_as_of: null, reaction_ref: null, reaction_after_cdmss: null,
-      policy_version: policyV, schema_version: schemaV,
+      policy_version: policyV, schema_version: schemaV, era_status: eraStatus,
     };
     tripleRows.push(row);
     return okJson(neonBody([{ id: row.id }]));
@@ -144,11 +155,47 @@ globalThis.fetch = (async (url: unknown, init: { body?: unknown } = {}) => {
   }
   if (/FROM cognition_shadow_events\b/i.test(text)) {
     const [policyV, trigger, schemaV] = params as unknown[];
-    return okJson(neonBody(shadowEvents.filter((e) => e.eligible === true && e.policy_version === policyV
+    // The era predicate is the ONLY difference between the two forms of this query, so the fake
+    // reads it out of the SQL rather than being told which one was asked for.
+    const stale = /e\.eligible = FALSE/.test(text);
+    const eraOk = (e: Row) => (stale
+      ? e.eligible === false && e.reason === 'stale_era' && e.microworld === 'headache'
+      : e.eligible === true);
+    return okJson(neonBody(shadowEvents.filter((e) => eraOk(e) && e.policy_version === policyV
       && e.trigger_kind === trigger
       && !tripleRows.some((t) => t.trigger_kind === e.trigger_kind && t.event_ref === e.event_ref && t.schema_version === schemaV))));
   }
   if (/FROM cognition_triples\b/i.test(text)) {
+    // tripleExistsForNote — the event_ref alone, across every trigger kind.
+    if (/^\s*SELECT 1 FROM cognition_triples\b/i.test(text)) {
+      const [eventRef, schemaV] = params as unknown[];
+      return okJson(neonBody(tripleRows.filter((r) => r.event_ref === eventRef && r.schema_version === schemaV).slice(0, 1)));
+    }
+    // rawNoteCursor — the OLDEST raw triple's event time.
+    if (/min\(event_at\)/i.test(text)) {
+      const [trigger, schemaV] = params as unknown[];
+      const mine = tripleRows.filter((r) => r.trigger_kind === trigger && r.schema_version === schemaV);
+      const min = mine.map((r) => String(r.event_at)).sort()[0] ?? null;
+      return okJson(neonBody([{ t: min }]));
+    }
+    // the stability sample — triples joined to their O_before capture.
+    if (/JOIN cognition_snapshots s ON s\.id = t\.o_before_id/i.test(text)) {
+      const [schemaV, limit] = params as unknown[];
+      const out: Row[] = [];
+      for (const t of tripleRows) {
+        if (t.schema_version !== schemaV || t.resolve_status !== 'resolved' || t.o_before_id == null) continue;
+        const snap = snapshotRows.find((sr) => sr.id === t.o_before_id && sr.cut_status === 'ok' && sr.schema_version === schemaV);
+        if (!snap) continue;
+        let computedAt: string | null = null;
+        try { computedAt = (JSON.parse(String(snap.snapshot_json)) as { computedAt?: string }).computedAt ?? null; } catch { computedAt = null; }
+        out.push({
+          triple_id: t.id, individual_uid: t.individual_uid, as_of: snap.as_of,
+          snapshot_hash: snap.snapshot_hash, computed_at: computedAt,
+        });
+        if (out.length >= Number(limit)) break;
+      }
+      return okJson(neonBody(out));
+    }
     if (/min\(created_at\)/i.test(text)) {
       const min = tripleRows.map((r) => String(r.created_at)).sort()[0] ?? null;
       return okJson(neonBody([{ t: min }]));
@@ -199,6 +246,20 @@ globalThis.fetch = (async (url: unknown, init: { body?: unknown } = {}) => {
     const [uid, asOf, walkV, msV, ipdFold, provenance] = params as unknown[];
     return okJson(neonBody(snapshotRows.filter((r) => r.individual_uid === uid && r.as_of === asOf
       && r.walk_version === walkV && r.member_state_version === msV && r.ipd_fold === ipdFold && r.provenance === provenance)));
+  }
+
+  if (/^\s*INSERT INTO cognition_join_stability\b/i.test(text)) {
+    const [sampleN, matchedN, failedN, tripleIds, mismatchedIds, walkV, msV, schemaV] = params as unknown[];
+    stabilityRuns.push({
+      id: `stability-${++seq}`, run_at: '2026-09-09T06:00:00.000Z', sample_n: sampleN,
+      matched_n: matchedN, failed_n: failedN, triple_ids: tripleIds, mismatched_ids: mismatchedIds,
+      walk_version: walkV, member_state_version: msV, schema_version: schemaV,
+    });
+    return okJson(neonBody([]));
+  }
+  if (/FROM cognition_join_stability\b/i.test(text)) {
+    const last = stabilityRuns[stabilityRuns.length - 1];
+    return okJson(neonBody(last ? [{ run_at: last.run_at, sample_n: last.sample_n, matched_n: last.matched_n, failed_n: last.failed_n }] : []));
   }
 
   if (/FROM cognition_reactions\b/i.test(text)) {
@@ -576,6 +637,13 @@ test('the caps and the budget fit one invocation, and the route declares the box
   assert.equal(sweep.PACING_MS, 100, 'the pacing pause is unchanged');
   assert.equal(sweep.SWEEP_BUDGET_MS, 240_000);
 
+  // WM3 fix 3 — phase 0 joins the same one invocation, so its cron cap is the smallest of the four.
+  assert.equal(sweep.RAW_PHASE_CAP, 40);
+  assert.equal(sweep.RAW_MANUAL_CAP, 100);
+  assert.equal(sweep.STABILITY_SAMPLE_N, 30);
+  assert.ok(sweep.RAW_PHASE_CAP <= sweep.PHASE1_CAP,
+    'the phase that reads an unbounded pool must not out-cap the one draining a finite queue');
+
   // The budget must leave headroom inside the route's box, or it guards nothing.
   const route = readFileSync('app/api/admin/wm3-join/route.ts', 'utf8');
   const m = /export const maxDuration = (\d+);/.exec(route);
@@ -635,4 +703,275 @@ test('the budget stops a run between items, and names the phase it stopped in', 
   const full = await runJoinSweep(DEPS());
   assert.equal(full.budget_stopped, false);
   assert.ok(full.phase1 && full.phase2 && full.phase3, 'all three phases ran');
+});
+
+// ── 10. WM3 fix 3 · N6 the stale-era backfill ─────────────────────────────────
+test('the stale era: only stale_era refusals are re-opened, and the triple says so', async () => {
+  reset();
+  snapshotByDay = {
+    '2026-08-10': { version: 'member-state/1.2', asOf: '2026-08-10' },
+    '2026-07-01': { version: 'member-state/1.2', asOf: '2026-07-01' },
+    '2026-06-01': { version: 'member-state/1.2', asOf: '2026-06-01' },
+  };
+  const STALE = 'presc_stale1';
+  const NODOC = 'presc_nodoc1';
+  resolveMap = { [PRESC]: UID, [STALE]: UID, [NODOC]: UID };
+  shadowEvents.push(
+    { trigger_kind: 'opd_note_audited', event_ref: STALE, event_at: '2026-07-01T09:30:00.000Z',
+      created_at: '2026-07-01T10:00:00.000Z', eligible: false, reason: 'stale_era',
+      microworld: 'headache', policy_version: 'burden-policy/0.1' },
+    // A DIFFERENT refusal. `eligible = FALSE` alone would sweep this up, and it must not: the
+    // policy refused it because the note has no doctor, which is not a statement about the era.
+    { trigger_kind: 'opd_note_audited', event_ref: NODOC, event_at: '2026-06-01T09:30:00.000Z',
+      created_at: '2026-06-01T10:00:00.000Z', eligible: false, reason: 'no_doctor',
+      microworld: 'headache', policy_version: 'burden-policy/0.1' },
+  );
+  const { runJoinPhase1, runJoinBackfill } = await import('../cognition/join-sweep.ts');
+
+  const stale = await runJoinPhase1(100, DEPS(), 'stale');
+  assert.equal(stale.scanned, 1, 'exactly one candidate — the no_doctor row is not an era refusal');
+  assert.equal(stale.opened, 1);
+  assert.equal(tripleRows.length, 1);
+  assert.equal(tripleRows[0].event_ref, STALE);
+  assert.equal(tripleRows[0].era_status, 'stale');
+  assert.equal(tripleRows[0].y_status, 'pending', 'everything after phase 1 treats it as any other triple');
+
+  // …and the current pass still sees only the eligible one, carrying era_status 'current'.
+  const current = await runJoinPhase1(100, DEPS(), 'current');
+  assert.equal(current.opened, 1);
+  assert.equal(tripleRows.find((r) => r.event_ref === PRESC)!.era_status, 'current');
+
+  // the backfill runs both passes only when asked, and reports them apart
+  reset();
+  resolveMap = { [PRESC]: UID, [STALE]: UID };
+  shadowEvents.push({ trigger_kind: 'opd_note_audited', event_ref: STALE, event_at: '2026-07-01T09:30:00.000Z',
+    created_at: '2026-07-01T10:00:00.000Z', eligible: false, reason: 'stale_era',
+    microworld: 'headache', policy_version: 'burden-policy/0.1' });
+
+  const plain = await runJoinBackfill(50, DEPS());
+  assert.equal(plain.phase1?.opened, 1);
+  assert.equal(plain.phase1_stale, null, 'without the flag the stale backlog is not even looked at');
+  assert.equal(tripleRows.length, 1);
+
+  const withStale = await runJoinBackfill(50, DEPS(), { include_stale_era: true });
+  assert.equal(withStale.phase1?.opened, 0, 'the current backlog is already drained');
+  assert.equal(withStale.phase1_stale?.opened, 1);
+  assert.equal(tripleRows.length, 2);
+  assert.deepEqual(
+    tripleRows.map((r) => [r.event_ref, r.era_status]).sort(),
+    [[PRESC, 'current'], [STALE, 'stale']].sort());
+});
+
+// ── 11. WM3 fix 3 · N8 the raw-note trigger ───────────────────────────────────
+const RAW_UID = 'presc_raw001';
+
+test('phase 0: a note with a triple is skipped, a note without one is opened as unaudited', async () => {
+  reset();
+  snapshotByDay = {
+    '2026-08-10': { version: 'member-state/1.2', asOf: '2026-08-10' },
+    '2026-09-01': { version: 'member-state/1.2', asOf: '2026-09-01' },
+  };
+  // PRESC already has an audit-trigger triple (phase 1 opens it below); RAW_UID has none.
+  rawNoteRows = [
+    { uid: RAW_UID, individual_uid: UID, doctor_uid: 'doc_1', event_at: '2026-09-01T09:30:00Z' },
+    { uid: PRESC, individual_uid: UID, doctor_uid: 'doc_1', event_at: '2026-08-10T09:30:00Z' },
+  ];
+  const { runJoinPhase0, runJoinPhase1 } = await import('../cognition/join-sweep.ts');
+  await runJoinPhase1(100, DEPS());
+  assert.equal(tripleRows.length, 1);
+
+  const out = await runJoinPhase0(100, DEPS());
+  assert.equal(out.scanned, 2);
+  assert.equal(out.opened, 1);
+  assert.equal(out.skipped_existing, 1, 'one triple per note, and the audit-trigger triple wins');
+  assert.equal(out.skipped_bad_row, 0);
+  assert.equal(out.error, null);
+  assert.equal(tripleRows.length, 2);
+
+  const raw = tripleRows.find((r) => r.event_ref === RAW_UID)!;
+  assert.equal(raw.trigger_kind, 'opd_note_matched');
+  assert.equal(raw.era_status, 'unaudited');
+  assert.equal(raw.provenance, 'reconstructed', 'a note matched by a query run later was never captured live');
+  assert.equal(raw.microworld, 'headache');
+  assert.equal(raw.resolve_status, 'resolved');
+  assert.equal(raw.y_status, 'pending');
+  assert.equal(raw.y_horizon_days, 14);
+  assert.equal(raw.individual_uid, UID, 'the identity came off the row, with no second db13 round trip');
+  // O_before was reconstructed at the note's IST day
+  const before = snapshotRows.find((sn) => sn.id === raw.o_before_id)!;
+  assert.equal(before.as_of, '2026-09-01');
+  assert.equal(before.cut_status, 'ok');
+
+  // …and a second run opens nothing new
+  issued.length = 0;
+  const again = await runJoinPhase0(100, DEPS());
+  assert.equal(again.opened, 0);
+  assert.equal(again.skipped_existing, 2);
+  assert.deepEqual(writes(), [], 'idempotent');
+});
+
+test('phase 0: a bad row is counted and never inserted, a row with no individual is closed, and db13 never throws out', async () => {
+  reset();
+  snapshotByDay = { '2026-09-01': { version: 'member-state/1.2' } };
+  rawNoteRows = [
+    { uid: '!!', individual_uid: UID, doctor_uid: 'doc_1', event_at: '2026-09-01T09:30:00Z' },
+    { uid: 'presc_baddate', individual_uid: UID, doctor_uid: 'doc_1', event_at: 'not-a-time' },
+    { uid: 'presc_noind0', individual_uid: '', doctor_uid: 'doc_1', event_at: '2026-09-01T09:30:00Z' },
+  ];
+  const { runJoinPhase0 } = await import('../cognition/join-sweep.ts');
+
+  const out = await runJoinPhase0(100, DEPS());
+  assert.equal(out.skipped_bad_row, 2, 'a uid that is not a uid, and a timestamp that will not parse');
+  assert.equal(out.opened, 1);
+  assert.equal(out.unresolved, 1);
+  const closed = tripleRows.find((r) => r.event_ref === 'presc_noind0')!;
+  assert.equal(closed.resolve_status, 'unresolved');
+  assert.equal(closed.individual_uid, null);
+  assert.equal(closed.o_before_id, null, 'no state is invented for a note with no individual');
+  assert.equal(closed.y_status, 'missing_within_horizon');
+  assert.equal(closed.era_status, 'unaudited');
+  assert.equal(snapshotRows.length, 0);
+
+  // a db13 outage ENDS phase 0 and reports itself — it does not throw, and it does not look empty
+  reset();
+  rawNotesThrow = true;
+  const failed = await runJoinPhase0(100, DEPS());
+  assert.ok(failed.error, 'the phase says it could not look');
+  assert.equal(failed.scanned, 0);
+  assert.equal(failed.opened, 0);
+  assert.deepEqual(writes(), []);
+
+  // …and the sweep behind it still runs its three phases
+  reset();
+  rawNotesThrow = true;
+  snapshotByDay = { '2026-08-10': { version: 'member-state/1.2' } };
+  const { runJoinSweep } = await import('../cognition/join-sweep.ts');
+  const sweep = await runJoinSweep(DEPS());
+  assert.equal(sweep.ok, true, 'a db13 failure in phase 0 is not the run failing');
+  assert.ok(sweep.phase0?.error);
+  assert.ok(sweep.phase1 && sweep.phase2 && sweep.phase3, 'phases 1 to 3 all ran');
+  assert.equal(sweep.phase1?.opened, 1);
+});
+
+test('phase 0 cursor: the next run asks for notes strictly older than the oldest raw triple', async () => {
+  reset();
+  snapshotByDay = { '2026-09-01': { version: 'member-state/1.2' } };
+  rawNoteRows = [{ uid: RAW_UID, individual_uid: UID, doctor_uid: 'doc_1', event_at: '2026-09-01T09:30:00Z' }];
+  const { runJoinPhase0 } = await import('../cognition/join-sweep.ts');
+
+  await runJoinPhase0(100, DEPS());
+  const firstQuery = db13.find((q) => q.includes('presenting_complaints'))!;
+  assert.ok(!firstQuery.includes('p.timestamp <'), 'the first run has no cursor');
+  assert.ok(firstQuery.includes("p.timestamp >= '2024-01-01'"), 'and it never reaches below the measured floor');
+
+  db13.length = 0;
+  await runJoinPhase0(100, DEPS());
+  const secondQuery = db13.find((q) => q.includes('presenting_complaints'))!;
+  assert.ok(secondQuery.includes("p.timestamp < '2026-09-01T09:30:00Z'"),
+    'the cursor is the OLDEST raw triple, read to the second');
+});
+
+test('the raw rule is its own rule, and the SQL is the seven fields that were measured', async () => {
+  const mw = await import('../cognition/microworld.ts');
+  const store = await import('../cognition/join-store.ts');
+  assert.equal(mw.RAW_MATCH_RULE, 'headache-raw/1');
+  assert.equal(mw.MATCH_RULE, 'headache-strict/1', 'the audit-text rule is untouched');
+  assert.equal(mw.HEADACHE_RAW_PATTERN, '(headache|cephalgia|cephalalgia|migraine)');
+
+  const sqlText = store.listRawNoteCandidatesSql(null, 40);
+  for (const col of ['presenting_complaints', 'general_practitioner_prescription__presenting_complaints',
+    'assessments', 'reason_for_consultation', 'visit_notes', 'relevant_medical_history', 'free_text']) {
+    assert.ok(sqlText.includes(col), `the rule names ${col}`);
+  }
+  assert.ok(sqlText.includes("~* '(headache|cephalgia|cephalalgia|migraine)'"));
+  assert.ok(sqlText.includes('p.is_draft = false'));
+  assert.ok(!/doctor_uid\s*=/.test(sqlText), 'no doctor filter — the rule string names what was measured');
+  assert.ok(sqlText.includes('LIMIT 120'), 'over-fetches 3x the limit, because some rows already have a triple');
+  assert.ok(sqlText.includes('ORDER BY p.timestamp DESC'), 'newest first');
+
+  // a cursor that is not a whole-second ISO instant is never inlined
+  assert.throws(() => store.listRawNoteCandidatesSql("2026-09-01'; DROP TABLE x; --", 40), /bad beforeTs/);
+  assert.throws(() => store.listRawNoteCandidatesSql('2026-09-01T09:30:00.000Z', 40), /bad beforeTs/);
+  assert.ok(store.listRawNoteCandidatesSql('2026-09-01T09:30:00Z', 40).includes("p.timestamp < '2026-09-01T09:30:00Z'"));
+});
+
+// ── 12. WM3 fix 3 · N5 the stability check ────────────────────────────────────
+test('stability: a re-reconstruction that differs is a mismatch, one that throws is a failure', async () => {
+  reset();
+  const SNAP_A = { version: 'member-state/1.2', asOf: '2026-08-10', computedAt: '2026-09-08T06:00:00.000Z', problems: [] };
+  const SNAP_B = { version: 'member-state/1.2', asOf: '2026-09-05', computedAt: '2026-09-08T06:00:00.000Z', problems: [] };
+  snapshotByDay = { '2026-08-10': SNAP_A, '2026-09-05': SNAP_B };
+  shadowEvents.push({
+    trigger_kind: 'opd_note_audited', event_ref: PRESC2, event_at: '2026-09-05T09:30:00.000Z',
+    created_at: '2026-09-05T10:00:00.000Z', eligible: true, policy_version: 'burden-policy/0.1',
+    reason: 'would_ask', microworld: 'headache',
+  });
+  const { runJoinPhase1, runJoinStability } = await import('../cognition/join-sweep.ts');
+  await runJoinPhase1(100, DEPS());
+  assert.equal(tripleRows.length, 2);
+  const tripleA = tripleRows.find((r) => r.event_ref === PRESC)!.id;
+  const tripleB = tripleRows.find((r) => r.event_ref === PRESC2)!.id;
+
+  // one day re-reads the same, the other has moved underneath us
+  issued.length = 0;
+  const out = await runJoinStability({
+    ...DEPS(),
+    reconstruct: async (_uid: string, asOf: string) => (asOf === '2026-08-10'
+      ? SNAP_A
+      : { ...SNAP_B, problems: [{ normalizedConcept: { raw: 'migraine' } }] }),
+  });
+  assert.equal(out.ok, true);
+  assert.equal(out.sample_n, 2);
+  assert.equal(out.matched_n, 1);
+  assert.equal(out.failed_n, 0);
+  assert.deepEqual(out.mismatched_ids, [tripleB]);
+  assert.equal(out.match_rate, 0.5);
+  assert.ok(!issued.some((q) => /^\s*(INSERT|UPDATE) .*cognition_snapshots/i.test(q.text)),
+    'the check READS the spine and writes nothing back — overwriting would destroy the evidence');
+  assert.equal(stabilityRuns.length, 1);
+  assert.equal(Number(stabilityRuns[0].sample_n), 2);
+  assert.deepEqual(JSON.parse(String(stabilityRuns[0].triple_ids)).sort(), [tripleA, tripleB].sort());
+  assert.deepEqual(JSON.parse(String(stabilityRuns[0].mismatched_ids)), [tripleB]);
+
+  // a THROW is a failure, never a mismatch, and it comes out of the denominator
+  const thrown = await runJoinStability({
+    ...DEPS(),
+    reconstruct: async (_uid: string, asOf: string) => {
+      if (asOf === '2026-09-05') throw new Error('db13 down');
+      return SNAP_A;
+    },
+  });
+  assert.equal(thrown.sample_n, 2);
+  assert.equal(thrown.matched_n, 1);
+  assert.equal(thrown.failed_n, 1);
+  assert.deepEqual(thrown.mismatched_ids, [], 'a reading we could not take is not evidence of drift');
+  assert.equal(thrown.match_rate, 1, 'matched / (sampled − failed)');
+
+  // every read failing is NOT a 0% match rate — it is nothing measured
+  const allFailed = await runJoinStability({
+    ...DEPS(), reconstruct: async () => { throw new Error('db13 down'); },
+  });
+  assert.equal(allFailed.failed_n, 2);
+  assert.equal(allFailed.match_rate, null, 'zero over zero is "not measured", never 0%');
+});
+
+test('stability: the sample is deterministic, and the readout reads the last run', async () => {
+  reset();
+  const SNAP = { version: 'member-state/1.2', asOf: '2026-08-10', computedAt: '2026-09-08T06:00:00.000Z' };
+  snapshotByDay = { '2026-08-10': SNAP };
+  const { runJoinPhase1, runJoinStability } = await import('../cognition/join-sweep.ts');
+  await runJoinPhase1(100, DEPS());
+
+  const a = await runJoinStability({ ...DEPS(), reconstruct: async () => SNAP });
+  const b = await runJoinStability({ ...DEPS(), reconstruct: async () => SNAP });
+  assert.deepEqual(JSON.parse(String(stabilityRuns[0].triple_ids)), JSON.parse(String(stabilityRuns[1].triple_ids)),
+    're-running compares the same rows, or the two rates are not comparable');
+  assert.equal(a.match_rate, 1);
+  assert.equal(b.match_rate, 1);
+
+  const { latestStabilityRun } = await import('../cognition/join-store.ts');
+  const latest = await latestStabilityRun();
+  assert.equal(latest?.sample_n, 1);
+  assert.equal(latest?.matched_n, 1);
+  assert.equal(latest?.match_rate, 1);
 });
