@@ -37,6 +37,7 @@ import { fetchExtractedCases } from '@/lib/discharge-extract-store';
 import { fetchStayBillTotals } from '@/lib/readmission/db13';
 import { asJson, indexDocumentIdOf, readmitDocumentIdOf, returnContextOf, toFinding, toIndexCaseSummary, type Identity } from '@/lib/readmission/surface-row';
 import { caseLine, computeTiles, groupByLane, returnBillFor, toFindingClass, type FindingBlob } from '@/lib/readmission-surface-core';
+import { canonicalFacility } from '@/lib/readmission-rates-core';
 import { stripCaseArtefacts } from '@/lib/readmission-narrative-core';
 import { readClinicalReviewDecisions } from '@/lib/readmission/ask-store';
 
@@ -97,7 +98,9 @@ async function namesFromAdt(ids: string[]): Promise<Map<string, Identity>> {
         // R6 (Readmissions R6 PRD v1.0, R6-1): the hospital rides THIS join — facility_name is on
         // every kx_discharged_completed_patients row (measured: two facilities, zero nulls) and was
         // already fetched by the SELECT * above. No new query; null when the join finds nothing.
-        facility: s(r.facility_name),
+        // READMIT-EHRC-RELABEL-BUILDER-BRIEF-16-SEP-2026: canonicalised so a raw `Even-EHRC` (the
+        // 19-Aug relabel) never becomes a separate facility on the surface.
+        facility: canonicalFacility(s(r.facility_name)),
       });
     }
     return out;

@@ -58,6 +58,20 @@ export const FACILITY_EHRC = 'Even';
 export const FACILITY_EHBR = 'Even-EHBR';
 export const FACILITIES: readonly string[] = [FACILITY_EHRC, FACILITY_EHBR];
 
+/** READMIT-EHRC-RELABEL-BUILDER-BRIEF-16-SEP-2026: since 19 Aug 2026 the KareXpert ADT feed labels
+ *  EHRC encounters `Even-EHRC` instead of `Even` (db13 kx_discharged_completed_patients.facility_name).
+ *  The canonical key stays `Even` — everything that reads a raw facility_name off db13 must canonicalise
+ *  through here before comparing, grouping, or displaying it. */
+export const FACILITY_EHRC_ALIASES: readonly string[] = ['Even', 'Even-EHRC'];
+
+/** Maps a raw db13 facility_name to its canonical key: any FACILITY_EHRC_ALIASES member, trimmed, becomes
+ *  FACILITY_EHRC; every other non-empty value is returned verbatim; empty or null returns null. */
+export function canonicalFacility(name: string | null | undefined): string | null {
+  const trimmed = (name ?? '').trim();
+  if (!trimmed) return null;
+  return (FACILITY_EHRC_ALIASES as readonly string[]).includes(trimmed) ? FACILITY_EHRC : trimmed;
+}
+
 export type DenominatorKey = 'eligible' | 'true_ipd' | 'all_in_window';
 export const DENOMINATORS: readonly DenominatorKey[] = ['eligible', 'true_ipd', 'all_in_window'];
 export const DENOMINATOR_LABEL: Readonly<Record<DenominatorKey, string>> = {
@@ -176,7 +190,8 @@ export function monthsBetween(fromMonth: string, toMonth: string): string[] {
 /** Facility of a finding: the R6 name when the route carries it, else the encounter-prefix fallback
  *  (measured: 'IP-' = Even / EHRC; 'IPNO-' and 'ADM' = Even-EHBR). Unknown prefix → null. */
 export function facilityOfEncounter(encounterId: string | null | undefined, facilityName?: string | null): string | null {
-  if (facilityName && (FACILITIES as readonly string[]).includes(facilityName)) return facilityName;
+  const canon = canonicalFacility(facilityName);
+  if (canon && (FACILITIES as readonly string[]).includes(canon)) return canon;
   const id = (encounterId ?? '').trim().toUpperCase();
   if (id.startsWith('IPNO') || id.startsWith('ADM')) return FACILITY_EHBR;
   if (id.startsWith('IP-')) return FACILITY_EHRC;
@@ -369,7 +384,7 @@ export function computeIncidence(input: {
   const people = new Set<string>();
   let excludedByDepartment = 0, outOfClockWindow = 0, notCountable = 0;
   for (const p of input.pairs) {
-    if ((p.facility ?? facilityOfEncounter(p.index_encounter_id)) !== fac) continue;
+    if ((canonicalFacility(p.facility) ?? facilityOfEncounter(p.index_encounter_id)) !== fac) continue;
     if (!inWindow(p.index_day, start, end30)) continue;
     if (isIncidenceExcludedDepartment(p.index_department)) { excludedByDepartment++; continue; }
     const hours = clockHoursBetween(p.index_discharge_at, p.readmit_admit_at);
@@ -415,8 +430,8 @@ export function computeRates(input: {
   const end90 = addDays(ceiling, -FOLLOW_UP_90);
   const facilities: FacilityRates[] = [];
   for (const fac of FACILITIES) {
-    const pairs = input.pairs.filter((p) => (p.facility ?? facilityOfEncounter(p.index_encounter_id)) === fac);
-    const disch = input.discharges.filter((d) => d.facility === fac && d.day != null);
+    const pairs = input.pairs.filter((p) => (canonicalFacility(p.facility) ?? facilityOfEncounter(p.index_encounter_id)) === fac);
+    const disch = input.discharges.filter((d) => canonicalFacility(d.facility) === fac && d.day != null);
     const heldOutD = (d: DischargeBucket) => isHeldOutDepartment(d.department);
     const heldOutP = (p: RatePair) => isHeldOutDepartment(p.index_department);
     const excludedDisp = (d: DischargeBucket) => d.disposition != null && TRUE_IPD_EXCLUDED_DISPOSITIONS.includes(d.disposition.trim());

@@ -5457,6 +5457,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "readmission-filter-core",
+    "to": "readmission-rates-core",
+    "kind": "value"
+  },
+  {
+    "from": "readmission-filter-core",
     "to": "readmission-surface-core",
     "kind": "value"
   },

@@ -289,7 +289,8 @@ test('incidenceDenominatorSql: distinct PEOPLE, Even only, ip_admission, IST app
   assert.match(sql, /SELECT count\(DISTINCT uhid\)::int AS n/);
   assert.match(sql, /FROM kx_discharged_completed_patients/);
   assert.match(sql, /encounter_type = 'ip_admission'/);
-  assert.match(sql, /facility_name = 'Even'/);
+  // READMIT-EHRC-RELABEL-BUILDER-BRIEF-16-SEP-2026: Even-EHRC (the 19-Aug relabel) is an EHRC alias too.
+  assert.match(sql, /facility_name IN \('Even','Even-EHRC'\)/);
   // T4 — one IST expression, compared against both ends. No DB-time floor, no IST-only ceiling.
   assert.match(sql, /to_char\(discharge_date AT TIME ZONE 'Asia\/Kolkata', 'YYYY-MM-DD'\) BETWEEN '2025-09-22' AND '2026-07-20'/);
   assert.ok(!/discharge_date >= '/.test(sql), 'T4: no raw DB-time floor alongside the IST ceiling');

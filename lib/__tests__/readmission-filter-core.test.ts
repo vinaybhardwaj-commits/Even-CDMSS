@@ -226,11 +226,13 @@ test('R6: composition — hospital AND verdict AND gap; unknown-facility cases r
 test('R6: the list route maps facility_name off the ADT row the name join ALREADY fetches — no new SQL; the summary-record fallback carries no facility; toFinding passes it through; the card renders it verbatim', () => {
   const { readFileSync } = require('node:fs') as typeof import('node:fs');
   const route = readFileSync('app/api/care/readmissions/list/route.ts', 'utf8');
-  assert.match(route, /facility: s\(r\.facility_name\),/);
+  // READMIT-EHRC-RELABEL-BUILDER-BRIEF-16-SEP-2026: canonicalised so a raw `Even-EHRC` (19-Aug relabel) never becomes a separate facility.
+  assert.match(route, /facility: canonicalFacility\(s\(r\.facility_name\)\),/);
   assert.match(route, /facility: a\?\.facility \?\? null/);
   assert.equal((route.match(/metabaseQuery\(/g) ?? []).length, 3, 'the three pre-existing db13 reads — no new query');
   assert.ok(!/facility_name/.test(route.slice(0, route.indexOf('function namesFromAdt'))), 'no new SELECT names the column — it rides SELECT *');
-  assert.match(readFileSync('lib/readmission/surface-row.ts', 'utf8'), /facility: id\?\.facility \?\? null,/);
+  // READMIT-EHRC-RELABEL-BUILDER-BRIEF-16-SEP-2026: canonicalised again here (defence in depth).
+  assert.match(readFileSync('lib/readmission/surface-row.ts', 'utf8'), /facility: canonicalFacility\(id\?\.facility\) \?\? null,/);
   assert.match(readFileSync('components/care/ReadmissionsBoard.tsx', 'utf8'), /\{f\.facility && <span[^>]*>· \{f\.facility\}<\/span>\}/);
   assert.match(readFileSync('components/care/ReadmissionsBoard.tsx', 'utf8'), /<option value="">All hospitals<\/option>/);
 });
