@@ -1047,6 +1047,10 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "unregistered"
   },
   {
+    "id": "triage",
+    "plane": "unregistered"
+  },
+  {
     "id": "value-score-core",
     "plane": "unregistered"
   },
@@ -1489,11 +1493,6 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "app/api",
     "to": "appropriateness-runs",
-    "kind": "value"
-  },
-  {
-    "from": "app/api",
-    "to": "audit-canonical",
     "kind": "value"
   },
   {
@@ -2344,6 +2343,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "app/api",
     "to": "trace",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
+    "to": "triage",
     "kind": "value"
   },
   {
@@ -5812,6 +5816,51 @@ export const MAP_EDGES: MapEdge[] = [
     "kind": "value"
   },
   {
+    "from": "triage",
+    "to": "audit-canonical",
+    "kind": "value"
+  },
+  {
+    "from": "triage",
+    "to": "citations-core",
+    "kind": "type"
+  },
+  {
+    "from": "triage",
+    "to": "db",
+    "kind": "value"
+  },
+  {
+    "from": "triage",
+    "to": "even-ground-core",
+    "kind": "value"
+  },
+  {
+    "from": "triage",
+    "to": "metabase",
+    "kind": "value"
+  },
+  {
+    "from": "triage",
+    "to": "opd-audit-ui",
+    "kind": "value"
+  },
+  {
+    "from": "triage",
+    "to": "opd-note-audit-core",
+    "kind": "value"
+  },
+  {
+    "from": "triage",
+    "to": "opd-triage-core",
+    "kind": "value"
+  },
+  {
+    "from": "triage",
+    "to": "opd-triage-store",
+    "kind": "value"
+  },
+  {
     "from": "value-score-core",
     "to": "doc-audit-core",
     "kind": "type"
@@ -6352,8 +6401,8 @@ export const VERSION_REGISTRY: VersionRow[] = [
 
 export const COVERAGE = {
   "registered": 24,
-  "unregistered": 45,
-  "total": 69,
+  "unregistered": 46,
+  "total": 70,
   "unregisteredIds": [
     "calculators",
     "care-call-core",
@@ -6399,7 +6448,8 @@ export const COVERAGE = {
     "readmission-versions-core",
     "reasoning",
     "right-care-ground-eval-core",
-    "stay-library"
+    "stay-library",
+    "triage"
   ]
 } as const;
 
