@@ -54,7 +54,7 @@ import {
   EMPTY_FILTERS, GAP_PRESETS, VERDICTS, VERDICT_LABEL, type FilterState,
 } from '@/lib/readmission-filter-core';
 import {
-  CHECK_FAILED_COPY, CHECKING_COPY, classifyLoadFailure, LOAD_TIMEOUT_MS, LOADING_COPY, REFRESH_FAILED_COPY, RETRY_LABEL, SLOW_AFTER_MS, SLOW_LOAD_COPY,
+  CHECK_FAILED_COPY, CHECKING_COPY, CHECK_TIMEOUT_MS, classifyLoadFailure, LOAD_TIMEOUT_MS, LOADING_COPY, REFRESH_FAILED_COPY, RETRY_LABEL, SLOW_AFTER_MS, SLOW_LOAD_COPY,
   type LoadFailure,
 } from '@/lib/readmission-load-core';
 
@@ -282,6 +282,9 @@ export default function ReadmissionsBoard() {
   const [checking, setChecking] = useState(false);
   const [checkFailed, setCheckFailed] = useState(false);
   const [checkedJustNow, setCheckedJustNow] = useState<number | null>(null);
+  // ORCHESTRATOR RULING 1 (17 Sep 2026, item 2): bumped after a successful check so the rates module
+  // re-fetches (the Last-30-days tile and the freshness line's own numbers move with it).
+  const [ratesRefreshKey, setRatesRefreshKey] = useState(0);
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -328,17 +331,24 @@ export default function ReadmissionsBoard() {
   // READMIT-RECENT-VIEW (17 Sep 2026, item D): the Refresh button's new behaviour — POST /check (the
   // deterministic detection sweep, no model, no worker), THEN the existing list reload. A failed check
   // never blocks the reload; it only shows an inline note and the freshness line stays as it was.
+  // ORCHESTRATOR RULING 1 (17 Sep 2026): the check fetch gets its OWN AbortController at
+  // CHECK_TIMEOUT_MS — independent of the list load's — so a slow /check cannot hold up Refresh past
+  // its own ceiling; on abort or any other failure the reload still runs (item 1). A successful check
+  // also bumps `ratesRefreshKey` so the rates module re-fetches (item 2).
   const refresh = useCallback(async () => {
     setChecking(true); setCheckFailed(false); setCheckedJustNow(null);
+    const ctrl = new AbortController();
+    const killer = setTimeout(() => ctrl.abort(), CHECK_TIMEOUT_MS);
     try {
-      const r = await fetch('/api/care/readmissions/check', { method: 'POST' });
+      const r = await fetch('/api/care/readmissions/check', { method: 'POST', signal: ctrl.signal });
       const j = (await r.json()) as { ok?: boolean; newDetected?: number; skipped?: string };
       if (!r.ok || !j.ok) setCheckFailed(true);
       // A cooldown skip is not a failure — no sweep ran, so there is no fresh N to show.
-      else if (j.skipped == null) setCheckedJustNow(typeof j.newDetected === 'number' ? j.newDetected : 0);
+      else if (j.skipped == null) { setCheckedJustNow(typeof j.newDetected === 'number' ? j.newDetected : 0); setRatesRefreshKey((k) => k + 1); }
     } catch {
       setCheckFailed(true);
     } finally {
+      clearTimeout(killer);
       setChecking(false);
     }
     await load();
@@ -394,7 +404,7 @@ export default function ReadmissionsBoard() {
 
       {/* R7 (R7-1) — the rates module, above the counts line; its own fetch, its own fail-safe. The
           facility tabs honour R6's hospital filter when one is applied (R7-4). */}
-      <ReadmissionRatesModule facility={applied.fac} />
+      <ReadmissionRatesModule facility={applied.fac} refreshKey={ratesRefreshKey} />
 
       {data && (
         <p className="mt-4 text-[12.5px] text-slate-700">{countsLine(data.reviewCount, data.pendingCount)}</p>

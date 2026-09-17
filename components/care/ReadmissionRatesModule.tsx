@@ -19,6 +19,11 @@
  *
  * Its own fetch of /api/care/readmissions/rates, independent of the card list: a rates fault shows
  * "rates unavailable right now" inside the module and the board is unaffected.
+ *
+ * ORCHESTRATOR RULING 1 (17 Sep 2026): `refreshKey` is an optional re-fetch trigger — the board bumps
+ * it after a successful Refresh-time check so the Last-30-days tile and the freshness line's own
+ * "checked just now" move without adding any polling; a fresh mount (key 0, the default) behaves
+ * exactly as before.
  */
 import { useEffect, useMemo, useState } from 'react';
 import {
@@ -28,7 +33,7 @@ import {
 
 type RatesPayload = { ok: true; rates: RatesResult; computedAt: string; cached: boolean } | { ok: false; error?: string; reason?: string; computedAt?: string };
 
-export default function ReadmissionRatesModule({ facility }: { facility: string | null }) {
+export default function ReadmissionRatesModule({ facility, refreshKey = 0 }: { facility: string | null; refreshKey?: number }) {
   const [payload, setPayload] = useState<RatesPayload | null>(null);
   const [tab, setTab] = useState<string | null>(null);
   const [denom, setDenom] = useState<DenominatorKey>(DEFAULT_DENOMINATOR);
@@ -43,7 +48,7 @@ export default function ReadmissionRatesModule({ facility }: { facility: string 
       .catch(() => { if (alive) setPayload({ ok: false }); })
       .finally(() => clearTimeout(killer));
     return () => { alive = false; ctrl.abort(); };
-  }, []);
+  }, [refreshKey]);
 
   const rates = payload?.ok ? payload.rates : null;
   const fac = useMemo(() => (rates ? moduleFacility(rates, facility, tab) : null), [rates, facility, tab]);

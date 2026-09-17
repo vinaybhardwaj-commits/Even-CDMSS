@@ -14,6 +14,7 @@ import {
   type DischargeBucket, type RatePair,
 } from '../readmission-rates-core.ts';
 import { CHECK_COOLDOWN_MS, newDetectedCount, withinCooldown } from '../readmission-check-core.ts';
+import { CHECK_TIMEOUT_MS } from '../readmission-load-core.ts';
 
 const code = (p: string) => readFileSync(join(process.cwd(), p), 'utf8');
 
@@ -201,7 +202,7 @@ test('ReadmissionsBoard: Refresh POSTs /check before the list reload; a failed /
   const checkCallIdx = refreshFn.indexOf("fetch('/api/care/readmissions/check'");
   const loadCallIdx = refreshFn.indexOf('await load();');
   assert.ok(checkCallIdx >= 0, 'the refresh handler POSTs /check');
-  assert.match(refreshFn, /fetch\('\/api\/care\/readmissions\/check', \{ method: 'POST' \}\)/);
+  assert.match(refreshFn, /fetch\('\/api\/care\/readmissions\/check', \{ method: 'POST', signal: ctrl\.signal \}\)/);
   assert.ok(loadCallIdx > checkCallIdx, 'the list reload runs AFTER the check, not before');
   // the check leg is wrapped in its own try/catch that only ever sets local state — nothing in that
   // block can throw past it and skip the reload below.
@@ -211,4 +212,45 @@ test('ReadmissionsBoard: Refresh POSTs /check before the list reload; a failed /
   assert.match(board, /freshnessLine\(data\.freshness, checkedJustNow\)/);
   assert.match(board, /CHECK_FAILED_COPY/);
   assert.match(board, /CHECKING_COPY/);
+});
+
+// ── ORCHESTRATOR RULING 1 (17 Sep 2026): /check gets its own 45 s timeout; the rates module refetches ──
+
+test('CHECK_TIMEOUT_MS is 45_000', () => {
+  assert.equal(CHECK_TIMEOUT_MS, 45_000);
+});
+
+test('ReadmissionsBoard: the check fetch runs under its OWN AbortController, aborted at CHECK_TIMEOUT_MS — independent of the list load\'s own controller', () => {
+  const board = code('components/care/ReadmissionsBoard.tsx');
+  const refreshFn = board.slice(board.indexOf('const refresh = useCallback'), board.indexOf('const flat = useMemo'));
+  assert.match(refreshFn, /const ctrl = new AbortController\(\)/);
+  assert.match(refreshFn, /setTimeout\(\(\) => ctrl\.abort\(\), CHECK_TIMEOUT_MS\)/);
+  assert.match(refreshFn, /signal: ctrl\.signal/);
+  assert.match(refreshFn, /clearTimeout\(killer\)/);
+  // a second, independent AbortController from the one `load()` already owns (readmission-load-core.test.ts
+  // pins that one at LOAD_TIMEOUT_MS) — this file only has to show refresh() builds its own.
+  assert.equal((refreshFn.match(/new AbortController\(\)/g) ?? []).length, 1);
+});
+
+test('ReadmissionsBoard: an aborted / failed /check still runs the list reload (item 1) — the reload sits OUTSIDE the try/catch/finally, not gated on success', () => {
+  const board = code('components/care/ReadmissionsBoard.tsx');
+  const refreshFn = board.slice(board.indexOf('const refresh = useCallback'), board.indexOf('const flat = useMemo'));
+  // the catch block (abort included — isAbortError is not special-cased here, any thrown error sets
+  // checkFailed) never returns and never throws past itself, so control always reaches `await load()`.
+  const catchBlock = refreshFn.slice(refreshFn.indexOf('} catch {'), refreshFn.indexOf('} finally {'));
+  assert.match(catchBlock, /setCheckFailed\(true\)/);
+  assert.ok(!/return/.test(catchBlock), 'the catch block never returns early — load() below still runs');
+  const afterFinally = refreshFn.slice(refreshFn.indexOf('} finally {'));
+  assert.match(afterFinally, /await load\(\);/);
+});
+
+test('ReadmissionsBoard: a successful (non-cooldown) check bumps ratesRefreshKey, and ReadmissionRatesModule re-fetches on refreshKey; a cooldown skip or a failure never bumps it', () => {
+  const board = code('components/care/ReadmissionsBoard.tsx');
+  const refreshFn = board.slice(board.indexOf('const refresh = useCallback'), board.indexOf('const flat = useMemo'));
+  assert.match(refreshFn, /j\.skipped == null.*setRatesRefreshKey\(\(k\) => k \+ 1\)/);
+  assert.equal((refreshFn.match(/setRatesRefreshKey/g) ?? []).length, 1, 'only the success path bumps it');
+  assert.match(board, /<ReadmissionRatesModule facility=\{applied\.fac\} refreshKey=\{ratesRefreshKey\} \/>/);
+  const module = code('components/care/ReadmissionRatesModule.tsx');
+  assert.match(module, /refreshKey = 0/, 'a fresh mount (no bump yet) behaves exactly as before');
+  assert.match(module, /\}, \[refreshKey\]\);/, 'the rates fetch effect re-runs when refreshKey changes');
 });

@@ -24,6 +24,10 @@ export const REFRESH_FAILED_COPY = 'Refresh did not work.';
  *  failed check never blocks the reload (the stored list still loads); this line says so, inline. */
 export const CHECK_FAILED_COPY = 'Could not check for new readmissions — showing stored data.';
 export const CHECKING_COPY = 'Checking for new readmissions…';
+/** ORCHESTRATOR RULING 1 (17 Sep 2026): the check fetch gets its OWN AbortController — 45 s, same
+ *  ceiling as the list load but independent of it — so a slow /check cannot hang Refresh past the
+ *  point where the list reload should already be running. */
+export const CHECK_TIMEOUT_MS = 45_000;
 
 export type LoadFailureKind = 'timeout' | 'other';
 export interface LoadFailure { kind: LoadFailureKind; heading: string; detail: string }
