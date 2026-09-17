@@ -761,6 +761,8 @@ export interface FreshnessInfo {
 }
 export const FRESHNESS_NULL = '—';
 export const FRESHNESS_CADENCE = 'checks every 30 min';
+/** Brief item 10: appended after `checked just now: N new` when N > 0 — new pairs audit at the next cron tick. */
+export const FRESHNESS_AUDIT_PENDING = '— audits run within 30 min';
 
 /** PURE: the one-line freshness stamp. Every null renders as FRESHNESS_NULL; `checkedJustNow` is the
  *  live count from a just-completed /check press (the route's own `lastCheckAt` is not read here —
@@ -770,7 +772,9 @@ export function freshnessLine(info: FreshnessInfo, checkedJustNow?: number | nul
   const ret = istDay(info.newestReturnAt) ?? FRESHNESS_NULL;
   const audit = istTimestamp(info.lastAuditAt) ?? FRESHNESS_NULL;
   const base = `Data feed current to ${feed} · newest return ${ret} · last audit ${audit} · ${FRESHNESS_CADENCE}`;
-  return typeof checkedJustNow === 'number' ? `${base} · checked just now: ${checkedJustNow} new` : base;
+  if (typeof checkedJustNow !== 'number') return base;
+  const checked = `${base} · checked just now: ${checkedJustNow} new`;
+  return checkedJustNow > 0 ? `${checked} ${FRESHNESS_AUDIT_PENDING}` : checked;
 }
 
 /** The card / case-page marker lines (R7-5 / R7-6) — exact copy; nothing else changes on the card. */

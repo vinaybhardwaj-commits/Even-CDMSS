@@ -146,7 +146,8 @@ test('freshnessLine: every null renders FRESHNESS_NULL ("—"); real values prin
   assert.match(withValues, /newest return 2026-09-17/);   // 2026-09-16T20:00Z is 2026-09-17 01:30 IST
   assert.match(withValues, /last audit 2026-09-17 10:00 IST/);
   assert.ok(!/checked just now/.test(withValues));
-  assert.match(freshnessLine({ feedCurrentTo: null, newestReturnAt: null, lastAuditAt: null, lastCheckAt: null }, 3), /checked just now: 3 new$/);
+  // Brief item 10: N > 0 adds `— audits run within 30 min` (they are audited at the next cron tick); N = 0 does not.
+  assert.match(freshnessLine({ feedCurrentTo: null, newestReturnAt: null, lastAuditAt: null, lastCheckAt: null }, 3), /checked just now: 3 new — audits run within 30 min$/);
   assert.match(freshnessLine({ feedCurrentTo: null, newestReturnAt: null, lastAuditAt: null, lastCheckAt: null }, 0), /checked just now: 0 new$/);
 });
 
