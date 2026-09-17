@@ -78,7 +78,7 @@ test('maxTrendPct: a complete month\'s STACKED total (reviewable + held-out) can
 test('maxTrendPct: an incomplete month\'s PROVISIONAL height can exceed every complete month\'s stack — the Aug 26 overflow bug (21/189 = 11.1%)', () => {
   const bars: TrendBar[] = [
     bar({ month: '2026-07', reviewablePct: 4, heldOutPct: 1 }),
-    bar({ month: '2026-08', complete: false, reviewablePct: null, heldOutPct: null, provisionalPct: 11.11, soFarLabel: '21 / 189 so far' }),
+    bar({ month: '2026-08', complete: false, reviewablePct: null, heldOutPct: null, provisionalPct: 11.11, soFarLabel: '21/189' }),
   ];
   assert.equal(maxTrendPct(bars), 11.11);
 });
@@ -88,7 +88,7 @@ test('maxTrendPct: an incomplete month\'s PROVISIONAL height can exceed every co
 test('trendLabelRows: row 2 is a STRING for every bar — "" for a complete month, the count for a provisional one — so every label block has the same height', () => {
   const bars: TrendBar[] = [
     bar({ month: '2026-07', label: 'Jul 26', complete: true, soFarLabel: null }),
-    bar({ month: '2026-08', label: 'Aug 26', complete: false, reviewablePct: null, heldOutPct: null, provisionalPct: 11.11, soFarLabel: '21 / 189 so far' }),
+    bar({ month: '2026-08', label: 'Aug 26', complete: false, reviewablePct: null, heldOutPct: null, provisionalPct: 11.11, soFarLabel: '21/189' }),
   ];
   const rows = trendLabelRows(bars);
   assert.equal(rows.length, 2);
@@ -98,5 +98,5 @@ test('trendLabelRows: row 2 is a STRING for every bar — "" for a complete mont
   }
   assert.deepEqual(rows[0], { month: '2026-07', row1: 'Jul 26', row2: '' });
   assert.equal(rows[1].row1, 'Aug 26');
-  assert.equal(rows[1].row2, '21 / 189 so far');
+  assert.equal(rows[1].row2, '21/189');
 });

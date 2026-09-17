@@ -718,7 +718,7 @@ export function trendBars(f: FacilityRates): TrendBar[] {
     const title = live
       ? `${monthLabel(m.month)}: ${m.returns30} of ${m.discharges} (${fmtPct(m.rate30)}) — reviewable ${m.returns30_reviewable} (${fmtPct(rPct)}), held-out ${m.returns30_held_out} (${fmtPct(hPct)})`
       : `${monthLabel(m.month)}: ${m.returns30} of ${m.discharges} so far — 30-day follow-up not complete, no rate`;
-    const soFarLabel = m.complete ? null : `${fmtCount(m.returns30)} / ${fmtCount(m.discharges)} so far`;
+    const soFarLabel = m.complete ? null : `${fmtCount(m.returns30)}/${fmtCount(m.discharges)}`;   // V 17 Sep layout: compact, fits the column; legend explains n/N
     return {
       month: m.month, label: monthLabel(m.month), complete: m.complete, reviewablePct: rPct, heldOutPct: hPct, provisionalPct, soFarLabel,
       discharges: m.discharges, returns30: m.returns30, returns30_reviewable: m.returns30_reviewable, returns30_held_out: m.returns30_held_out, title,

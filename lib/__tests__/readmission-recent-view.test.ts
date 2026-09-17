@@ -126,7 +126,7 @@ test('EHBR gate: provisional values (the tile rate, the trend-bar height) are hi
   const thisMonthBar = openBars[openBars.length - 1];
   assert.equal(thisMonthBar.complete, false);
   assert.ok(thisMonthBar.provisionalPct != null, 'gate open — the incomplete month gets a provisional height');
-  assert.ok(thisMonthBar.soFarLabel != null && /so far$/.test(thisMonthBar.soFarLabel));
+  assert.ok(thisMonthBar.soFarLabel != null && /^[0-9,]+\/[0-9,]+$/.test(thisMonthBar.soFarLabel));   // V 17 Sep layout: compact n/N label
 });
 
 test('the sixth tile: title, caption, and the "recent" key land after the five (D8 strip order untouched)', () => {
