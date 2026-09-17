@@ -726,6 +726,53 @@ export function trendBars(f: FacilityRates): TrendBar[] {
   });
 }
 
+// ── READMIT-LAYOUT-FIX (17 Sep 2026) — provisional-strip formatting + the chart's shared y-scale ────
+
+/** `D Mon` (e.g. `19 Aug`) — no leading zero, no year. The day is already an IST calendar day. */
+export function shortDate(day: string): string {
+  const [y, m, d] = day.split('-').map(Number);
+  return `${d} ${MONTH_ABBR[(m || 1) - 1]}`;
+}
+
+/** `D Mon – D Mon`, year appended to BOTH ends only when the two days fall in different years —
+ *  same-year ranges (the common case) stay bare so the strip's one line never wraps. */
+export function shortDateRange(startDay: string, endDay: string): string {
+  const startYear = startDay.slice(0, 4), endYear = endDay.slice(0, 4);
+  return startYear === endYear
+    ? `${shortDate(startDay)} – ${shortDate(endDay)}`
+    : `${shortDate(startDay)} ${startYear} – ${shortDate(endDay)} ${endYear}`;
+}
+
+/** 1-decimal percent — the provisional strip's own rounding (every other rate on this module is 2dp). */
+export const fmtPct1 = (v: number | null): string => (v == null ? '—' : `${v.toFixed(1)}%`);
+
+/** The provisional strip's line 1 (READMIT-LAYOUT-FIX, 17 Sep 2026). Counts always show; the rate
+ *  appends only where `ratesAllowed` — the EHBR gate rule is unchanged (R7-4), just relocated off the
+ *  tile grid. */
+export function recentStripLine(rec: RecentBlock, ratesAllowed: boolean): string {
+  const parts = [
+    `${fmtCount(rec.returnsSoFar)} returns of ${fmtCount(rec.discharges)} discharges (${shortDateRange(rec.windowStart, rec.windowEnd)})`,
+    `audited ${fmtCount(rec.audited)}`,
+    `proposed avoidable ${fmtCount(rec.proposedAvoidable)}`,
+    `needs adjudication ${fmtCount(rec.needsAdjudication)}`,
+  ];
+  if (ratesAllowed) parts.push(`provisional rate ${fmtPct1(rec.provisionalRate)}`);
+  return parts.join(' · ');
+}
+
+/** The trend chart's one shared y-scale max: the tallest bar across every complete month's stacked
+ *  total AND every provisional height, with a small floor so a flat trend still plots legibly. Pulled
+ *  out of the component so the "nothing overflows" invariant is unit-testable. */
+export function maxTrendPct(bars: readonly TrendBar[], floor = 2): number {
+  return Math.max(floor, ...bars.map((b) => Math.max((b.reviewablePct ?? 0) + (b.heldOutPct ?? 0), b.provisionalPct ?? 0)));
+}
+
+/** Both label rows for a trend column, row 2 always a STRING (never null) so every month's label
+ *  block has the same fixed height whether or not it carries a `n/N so far` count. */
+export function trendLabelRows(bars: readonly TrendBar[]): Array<{ month: string; row1: string; row2: string }> {
+  return bars.map((b) => ({ month: b.month, row1: b.label, row2: b.soFarLabel ?? '' }));
+}
+
 /** The facility the module shows: the R6 filter's hospital when it names one the rates know, else the
  *  module's own tab, else the first facility with any discharges (EHRC). */
 export function moduleFacility(rates: RatesResult, r6Facility: string | null | undefined, tab: string | null | undefined): FacilityRates | null {

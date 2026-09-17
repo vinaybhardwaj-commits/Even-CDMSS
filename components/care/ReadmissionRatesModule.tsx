@@ -24,11 +24,17 @@
  * it after a successful Refresh-time check so the Last-30-days tile and the freshness line's own
  * "checked just now" move without adding any polling; a fresh mount (key 0, the default) behaves
  * exactly as before.
+ *
+ * READMIT-LAYOUT-FIX (17 Sep 2026, V ruling — layout fix): five headline tiles only — the sixth,
+ * 'recent', is still what `rateCards` returns (unchanged, byte-stable), just no longer rendered INSIDE
+ * the grid. It renders as its own full-width band below the tiles via `recentStripLine`, and the chart
+ * gets one fixed-height, bottom-anchored plot area sized off `maxTrendPct`. No number, copy constant,
+ * data field, API or payload changed — layout plus the date/rounding helpers only.
  */
 import { useEffect, useMemo, useState } from 'react';
 import {
-  DEFAULT_DENOMINATOR, DENOMINATORS, DENOMINATOR_LABEL, EHBR_GATE_COPY, INCIDENCE_FOOTNOTE, INCOMPLETE_MONTH_LEGEND, RATES_UNAVAILABLE_COPY, THIS_HOSPITAL_ONLY_FOOTNOTE,
-  computedAtLabel, judgementStatsLine, moduleFacility, rateCards, trendBars, type DenominatorKey, type RatesResult,
+  DEFAULT_DENOMINATOR, DENOMINATORS, DENOMINATOR_LABEL, EHBR_GATE_COPY, INCIDENCE_FOOTNOTE, INCOMPLETE_MONTH_LEGEND, RATES_UNAVAILABLE_COPY, RECENT_TILE_CAPTION, RECENT_TILE_TITLE, THIS_HOSPITAL_ONLY_FOOTNOTE,
+  computedAtLabel, judgementStatsLine, maxTrendPct, moduleFacility, rateCards, recentStripLine, trendBars, trendLabelRows, type DenominatorKey, type RatesResult,
 } from '@/lib/readmission-rates-core';
 
 type RatesPayload = { ok: true; rates: RatesResult; computedAt: string; cached: boolean } | { ok: false; error?: string; reason?: string; computedAt?: string };
@@ -53,8 +59,12 @@ export default function ReadmissionRatesModule({ facility, refreshKey = 0 }: { f
   const rates = payload?.ok ? payload.rates : null;
   const fac = useMemo(() => (rates ? moduleFacility(rates, facility, tab) : null), [rates, facility, tab]);
   const cards = useMemo(() => (fac ? rateCards(fac, denom) : []), [fac, denom]);
+  // READMIT-LAYOUT-FIX (17 Sep 2026) — the tile grid is the five headline cards only; `recent` renders
+  // as its own band below (rateCards() itself is unchanged, still byte-stable at six).
+  const tileCards = useMemo(() => cards.filter((c) => c.key !== 'recent'), [cards]);
   const bars = useMemo(() => (fac ? trendBars(fac) : []), [fac]);
-  const maxPct = useMemo(() => Math.max(2, ...bars.map((b) => Math.max((b.reviewablePct ?? 0) + (b.heldOutPct ?? 0), b.provisionalPct ?? 0))), [bars]);
+  const maxPct = useMemo(() => maxTrendPct(bars), [bars]);
+  const labelRows = useMemo(() => trendLabelRows(bars), [bars]);
   const warning = fac?.denominators[denom].warning ?? null;
 
   return (
@@ -74,10 +84,12 @@ export default function ReadmissionRatesModule({ facility, refreshKey = 0 }: { f
             ))}
           </span>
         )}
-        {/* R7-2 — the denominator selector, visible: the choice is the point. */}
+        {/* R7-2 — the denominator selector, visible: the choice is the point. READMIT-LAYOUT-FIX
+            (17 Sep 2026): full width on its own line under 390px so its longest option can't force
+            the page to scroll horizontally; auto width and right-aligned from sm up. */}
         {rates && (
           <select value={denom} onChange={(e) => setDenom(e.target.value as DenominatorKey)}
-            className="ml-auto rounded-lg border border-line bg-white px-2 py-1 text-[11.5px] text-slate-600" title="Denominator">
+            className="w-full rounded-lg border border-line bg-white px-2 py-1 text-[11.5px] text-slate-600 sm:ml-auto sm:w-auto" title="Denominator">
             {DENOMINATORS.map((k) => <option key={k} value={k}>{DENOMINATOR_LABEL[k]}</option>)}
           </select>
         )}
@@ -94,9 +106,10 @@ export default function ReadmissionRatesModule({ facility, refreshKey = 0 }: { f
 
       {fac && (
         <>
-          <div className="mt-3 grid grid-cols-2 gap-2 md:grid-cols-6">
-            {cards.map((c) => (
-              <div key={c.key} className={`rounded-lg border p-2.5 ${
+          {/* READMIT-LAYOUT-FIX (17 Sep 2026) — five headline tiles, equal height, no dead space. */}
+          <div className="mt-3 grid grid-cols-2 gap-2 md:grid-cols-5 items-stretch">
+            {tileCards.map((c) => (
+              <div key={c.key} className={`flex h-full flex-col rounded-lg border p-2.5 ${
                 c.tone === 'advisory' ? 'border-dashed border-amber-300 bg-amber-50/40'
                 : c.tone === 'lead' ? 'border-brand/40 bg-brand-faint/40 ring-1 ring-brand/20'
                 : c.tone === 'unavailable' ? 'border-dashed border-slate-300 bg-slate-50'
@@ -110,6 +123,15 @@ export default function ReadmissionRatesModule({ facility, refreshKey = 0 }: { f
               </div>
             ))}
           </div>
+
+          {/* READMIT-LAYOUT-FIX (17 Sep 2026) — the 'recent' tile, as one full-width band, not a grid cell. */}
+          <div className="mt-2 rounded border border-dashed border-amber-300 bg-amber-50/40 px-3 py-2">
+            <p className="text-[11.5px] leading-snug text-amber-900">
+              <span className="font-semibold">{RECENT_TILE_TITLE}</span> — {recentStripLine(fac.recent, fac.ratesAllowed)}
+            </p>
+            <p className="mt-0.5 text-[10.5px] italic leading-snug text-amber-700">{RECENT_TILE_CAPTION}</p>
+          </div>
+
           {/* D6 — required on the incidence card: the two exclusions this spine cannot tag, and the
               sentence that stops the lead number being read as the insurer's calendar. */}
           <p className="mt-1.5 text-[10.5px] leading-relaxed text-slate-500">{INCIDENCE_FOOTNOTE}</p>
@@ -119,38 +141,52 @@ export default function ReadmissionRatesModule({ facility, refreshKey = 0 }: { f
               its PROVISIONAL height when the gate is open — dashed outline, lighter fill, counts can
               only rise — and a fixed dashed ghost box only when the gate is closed (no rate to show
               at all). Every incomplete bar carries a visible `n / N so far` label; the hover title is
-              unchanged. */}
+              unchanged. READMIT-LAYOUT-FIX (17 Sep 2026): one fixed-height, overflow-hidden plot area —
+              every bar bottom-anchored on a shared baseline, sized off `maxTrendPct` so the tallest bar
+              reaches the top and nothing overflows into the footnote above. */}
           {bars.length > 0 && (
-            <div className="mt-3">
-              <div className="flex items-end gap-1.5" style={{ height: 72 }}>
-                {bars.map((b) => {
-                  const live = b.reviewablePct != null;
-                  const provisional = !live && b.provisionalPct != null;
-                  const rH = live ? Math.max(1, Math.round(((b.reviewablePct ?? 0) / maxPct) * 60)) : 0;
-                  const hH = live ? Math.round(((b.heldOutPct ?? 0) / maxPct) * 60) : 0;
-                  const pH = provisional ? Math.max(1, Math.round(((b.provisionalPct ?? 0) / maxPct) * 60)) : 0;
-                  return (
-                    <div key={b.month} className="flex flex-1 flex-col items-center justify-end" title={b.title}>
-                      {live ? (
-                        <div className="flex w-full flex-col justify-end overflow-hidden rounded-t" style={{ height: rH + hH }}>
-                          <div className="w-full bg-slate-300" style={{ height: hH }} />
-                          <div className="w-full bg-brand" style={{ height: rH }} />
-                        </div>
-                      ) : provisional ? (
-                        <div className="w-full rounded-t border border-dashed border-brand/40 bg-brand-faint/50" style={{ height: pH }} />
-                      ) : (
-                        <div className="w-full rounded-t border border-dashed border-slate-300" style={{ height: 24 }} />
-                      )}
-                      <div className={`mt-1 text-[9.5px] ${live ? 'text-slate-500' : 'text-slate-400 italic'}`}>{b.label}</div>
-                      {b.soFarLabel && <div className="text-[9px] text-slate-400">{b.soFarLabel}</div>}
+            <div className="mt-4">
+              <div className="overflow-x-auto">
+                <div style={{ minWidth: Math.max(320, bars.length * 40) }}>
+                  <div className="relative h-28 overflow-hidden">
+                    <div className="absolute inset-x-0 bottom-0 flex items-end gap-1.5">
+                      {bars.map((b) => {
+                        const live = b.reviewablePct != null;
+                        const provisional = !live && b.provisionalPct != null;
+                        const rH = live ? Math.max(1, Math.round(((b.reviewablePct ?? 0) / maxPct) * 100)) : 0;
+                        const hH = live ? Math.round(((b.heldOutPct ?? 0) / maxPct) * 100) : 0;
+                        const pH = provisional ? Math.max(1, Math.round(((b.provisionalPct ?? 0) / maxPct) * 100)) : 0;
+                        return (
+                          <div key={b.month} className="flex flex-1 flex-col items-center justify-end" title={b.title}>
+                            {live ? (
+                              <div className="flex w-full flex-col justify-end overflow-hidden rounded-t" style={{ height: rH + hH }}>
+                                <div className="w-full bg-slate-300" style={{ height: hH }} />
+                                <div className="w-full bg-brand" style={{ height: rH }} />
+                              </div>
+                            ) : provisional ? (
+                              <div className="w-full rounded-t border border-dashed border-brand/40 bg-brand-faint/50" style={{ height: pH }} />
+                            ) : (
+                              <div className="w-full rounded-t border border-dashed border-slate-300" style={{ height: 24 }} />
+                            )}
+                          </div>
+                        );
+                      })}
                     </div>
-                  );
-                })}
+                  </div>
+                  <div className="flex items-start gap-1.5">
+                    {labelRows.map((r, i) => (
+                      <div key={r.month} className="flex h-[28px] flex-1 flex-col items-center justify-start">
+                        <div className={`w-full whitespace-nowrap text-center text-[11px] leading-[14px] ${bars[i].reviewablePct != null ? 'text-slate-500' : 'text-slate-400 italic'}`}>{r.row1}</div>
+                        <div className="w-full whitespace-nowrap text-center text-[11px] leading-[14px] text-slate-400">{r.row2}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
               </div>
               <div className="mt-1 flex flex-wrap items-center gap-3 text-[10.5px] text-slate-500">
                 <span><i className="mr-1 inline-block h-2 w-2 rounded-sm bg-brand align-middle" />reviewable</span>
                 <span><i className="mr-1 inline-block h-2 w-2 rounded-sm bg-slate-300 align-middle" />held-out (oncology · dialysis · obstetric)</span>
-                <span><i className="mr-1 inline-block h-2 w-3 rounded-sm border border-dashed border-brand/40 bg-brand-faint/50 align-middle" />{INCOMPLETE_MONTH_LEGEND}</span>
+                <span><i className="mr-1 inline-block h-2 w-3 rounded-sm border border-dashed border-brand/40 bg-brand-faint/50 align-middle" />{INCOMPLETE_MONTH_LEGEND} · n/N = returns/discharges so far</span>
               </div>
             </div>
           )}
