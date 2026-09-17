@@ -39,7 +39,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import ReadmissionRatesModule from './ReadmissionRatesModule';
-import { returnContextLines } from '@/lib/readmission-rates-core';
+import { freshnessLine, returnContextLines, type FreshnessInfo } from '@/lib/readmission-rates-core';
 import { RotateCw, Download } from 'lucide-react';
 import {
   BILLS_UNAVAILABLE_NOTICE, cardIdentityLine, caseHref, chipText, coverageChips, countsLine, isHeldOut, isReviewFinding,
@@ -53,7 +53,10 @@ import {
   REVIEW_FILTERS, REVIEW_FILTER_LABEL,
   EMPTY_FILTERS, GAP_PRESETS, VERDICTS, VERDICT_LABEL, type FilterState,
 } from '@/lib/readmission-filter-core';
-import { classifyLoadFailure, LOAD_TIMEOUT_MS, LOADING_COPY, REFRESH_FAILED_COPY, RETRY_LABEL, SLOW_AFTER_MS, SLOW_LOAD_COPY, type LoadFailure } from '@/lib/readmission-load-core';
+import {
+  CHECK_FAILED_COPY, CHECKING_COPY, classifyLoadFailure, LOAD_TIMEOUT_MS, LOADING_COPY, REFRESH_FAILED_COPY, RETRY_LABEL, SLOW_AFTER_MS, SLOW_LOAD_COPY,
+  type LoadFailure,
+} from '@/lib/readmission-load-core';
 
 type BoardData = {
   ok: boolean;
@@ -65,6 +68,8 @@ type BoardData = {
   namesResolved: boolean;
   /** R3: the batched bill fetch answered. Absent (older route) reads as resolved. */
   billsResolved?: boolean;
+  /** READMIT-RECENT-VIEW (17 Sep 2026): the freshness line under the page subtitle. */
+  freshness?: FreshnessInfo;
   error?: string;
 };
 
@@ -271,6 +276,12 @@ export default function ReadmissionsBoard() {
   // R6.1 (R61-1): a failed REFRESH over a loaded board keeps the cards and shows an inline notice by
   // the Refresh control with its own Retry; the control re-enables. First-load behaviour is R5.1's.
   const [refreshFailed, setRefreshFailed] = useState(false);
+  // READMIT-RECENT-VIEW (17 Sep 2026, item D): Refresh now runs the detection check first. `checking`
+  // covers just that leg (the list reload still uses `loading`); `checkFailed` never blocks the reload
+  // (item 10); `checkedJustNow` is the live N shown in the freshness line after a successful check.
+  const [checking, setChecking] = useState(false);
+  const [checkFailed, setCheckFailed] = useState(false);
+  const [checkedJustNow, setCheckedJustNow] = useState<number | null>(null);
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -314,6 +325,25 @@ export default function ReadmissionsBoard() {
 
   useEffect(() => { void load(); }, [load]);
 
+  // READMIT-RECENT-VIEW (17 Sep 2026, item D): the Refresh button's new behaviour — POST /check (the
+  // deterministic detection sweep, no model, no worker), THEN the existing list reload. A failed check
+  // never blocks the reload; it only shows an inline note and the freshness line stays as it was.
+  const refresh = useCallback(async () => {
+    setChecking(true); setCheckFailed(false); setCheckedJustNow(null);
+    try {
+      const r = await fetch('/api/care/readmissions/check', { method: 'POST' });
+      const j = (await r.json()) as { ok?: boolean; newDetected?: number; skipped?: string };
+      if (!r.ok || !j.ok) setCheckFailed(true);
+      // A cooldown skip is not a failure — no sweep ran, so there is no fresh N to show.
+      else if (j.skipped == null) setCheckedJustNow(typeof j.newDetected === 'number' ? j.newDetected : 0);
+    } catch {
+      setCheckFailed(true);
+    } finally {
+      setChecking(false);
+    }
+    await load();
+  }, [load]);
+
   // Decision 11: the payload stays lane-grouped; the board flattens and sorts here.
   const flat = useMemo(() => sortForCardList((data?.lanes ?? []).flatMap((g) => g.rows)), [data]);
   const heldOutCount = useMemo(() => flat.filter(isHeldOut).length, [flat]);
@@ -338,14 +368,18 @@ export default function ReadmissionsBoard() {
       <div className="flex items-center gap-2">
         <h1 className="font-serif text-[23px] font-semibold tracking-tight text-slate-900">Readmissions</h1>
         <span className="rounded-full bg-brand-faint px-2.5 py-0.5 text-[11px] font-medium text-brand-dark">Advisory · care management</span>
-        <button onClick={() => void load()} disabled={loading}
+        <button onClick={() => void refresh()} disabled={loading || checking}
           className="ml-auto inline-flex items-center gap-1.5 rounded-lg border border-line px-2.5 py-1 text-[12px] text-slate-600 transition hover:bg-slate-50 disabled:opacity-50">
-          <RotateCw className={`h-3 w-3 ${loading ? 'animate-spin' : ''}`} />Refresh
+          <RotateCw className={`h-3 w-3 ${loading || checking ? 'animate-spin' : ''}`} />Refresh
         </button>
       </div>
       {/* R6.1 (R61-1) — inline by the Refresh control: the slow line during a slow refresh, and the
-          failure line + Retry when a refresh failed. The loaded cards stay exactly as they were. */}
+          failure line + Retry when a refresh failed. The loaded cards stay exactly as they were.
+          READMIT-RECENT-VIEW (17 Sep 2026, item D) — the checking line and the check-failed note sit
+          beside them; a failed check never blocks the reload, so it never shows the Retry control. */}
+      {checking && <p className="mt-1 text-right text-[11.5px] text-slate-500">{CHECKING_COPY}</p>}
       {data && loading && slow && <p className="mt-1 text-right text-[11.5px] text-slate-500">{SLOW_LOAD_COPY}</p>}
+      {data && !loading && checkFailed && <p className="mt-1 text-right text-[11.5px] text-amber-800">{CHECK_FAILED_COPY}</p>}
       {data && !loading && refreshFailed && (
         <p className="mt-1 text-right text-[11.5px] text-amber-800">
           {REFRESH_FAILED_COPY}{' '}
@@ -355,6 +389,8 @@ export default function ReadmissionsBoard() {
       <p className="mt-1 text-[12.5px] text-slate-500">
         Every readmission the agent has audited, one card each. The agent proposes; you decide what to escalate.
       </p>
+      {/* READMIT-RECENT-VIEW (17 Sep 2026, item C) — the freshness line, under the subtitle. */}
+      {data && data.freshness && <p className="mt-0.5 text-[11.5px] text-slate-500">{freshnessLine(data.freshness, checkedJustNow)}</p>}
 
       {/* R7 (R7-1) — the rates module, above the counts line; its own fetch, its own fail-safe. The
           facility tabs honour R6's hospital filter when one is applied (R7-4). */}

@@ -20,6 +20,10 @@ export const LOAD_ERROR_OTHER_DETAIL = 'Something went wrong on the way to the s
 export const RETRY_LABEL = 'Retry';
 /** R6.1 (R61-1): a failed REFRESH over a loaded board — the cards stay; this line appears by the control. */
 export const REFRESH_FAILED_COPY = 'Refresh did not work.';
+/** READMIT-RECENT-VIEW (17 Sep 2026): Refresh now runs a detection check before the list reload. A
+ *  failed check never blocks the reload (the stored list still loads); this line says so, inline. */
+export const CHECK_FAILED_COPY = 'Could not check for new readmissions — showing stored data.';
+export const CHECKING_COPY = 'Checking for new readmissions…';
 
 export type LoadFailureKind = 'timeout' | 'other';
 export interface LoadFailure { kind: LoadFailureKind; heading: string; detail: string }

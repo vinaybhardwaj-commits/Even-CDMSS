@@ -223,7 +223,8 @@ test('§12.2 card strip: LEAD incidence · SECONDARY episodes · demoted 90-day 
   const stays: RatePair[] = [{ index_encounter_id: 'IP-1', index_day: '2026-01-10', gap_days: 3, index_department: 'Orthopedics', lane: 'tight_bounce', audit_status: 'audited', avoidable: 'avoidable', planned: 'unplanned' }];
   const r = computeRates({ pairs: stays, discharges, ceilingDay: CEILING, incidencePairs: [ip({ index_encounter_id: 'IP-1', person: 'U1' })], incidenceDenominator: 1_124 });
   const cards = rateCards(r.facilities[0], 'eligible');
-  assert.deepEqual(cards.map((c) => c.key), ['incidence', 'episodes30', 'all90', 'immediate', 'proposedAvoidable']);
+  // V ruling 17 Sep 2026 (READMIT-RECENT-VIEW brief): a sixth tile, 'recent', lands after the five.
+  assert.deepEqual(cards.map((c) => c.key), ['incidence', 'episodes30', 'all90', 'immediate', 'proposedAvoidable', 'recent']);
   const lead = cards[0];
   assert.equal(lead.tone, 'lead');
   assert.equal(lead.title, '30-day incidence · unique patients');

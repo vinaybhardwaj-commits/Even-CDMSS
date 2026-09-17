@@ -264,8 +264,10 @@ test('rateCards (R9 §12.2 strip): incidence LEAD then episodes secondary, 90-da
   const r = computeRates({ pairs, discharges, ceilingDay: CEILING });
   const ehrc = r.facilities.find((f) => f.facility === FACILITY_EHRC)!;
   const cards = rateCards(ehrc, 'eligible');
-  assert.equal(cards.length, 5);
-  assert.deepEqual(cards.map((c) => c.key), ['incidence', 'episodes30', 'all90', 'immediate', 'proposedAvoidable']);
+  // V ruling 17 Sep 2026 (READMIT-RECENT-VIEW brief): a sixth tile, 'recent', lands after the five —
+  // see lib/__tests__/readmission-recent-view.test.ts for its own contract.
+  assert.equal(cards.length, 6);
+  assert.deepEqual(cards.map((c) => c.key), ['incidence', 'episodes30', 'all90', 'immediate', 'proposedAvoidable', 'recent']);
   // D8 / §3.3 — the reviewable peer card is GONE from the strip.
   assert.ok(!cards.some((c) => c.key === 'reviewable30' || /reviewable/i.test(c.title)));
   // T5 — this computeRates had no incidence read at all, so the lead says so and shows NOTHING.

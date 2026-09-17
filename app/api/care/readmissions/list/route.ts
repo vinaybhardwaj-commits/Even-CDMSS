@@ -40,6 +40,7 @@ import { caseLine, computeTiles, groupByLane, returnBillFor, toFindingClass, typ
 import { canonicalFacility } from '@/lib/readmission-rates-core';
 import { stripCaseArtefacts } from '@/lib/readmission-narrative-core';
 import { readClinicalReviewDecisions } from '@/lib/readmission/ask-store';
+import { readFreshness } from '@/lib/readmission/freshness';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -195,13 +196,17 @@ export async function GET() {
   // the surface SELECT — before the migration runs those columns do not exist, and widening that read
   // would turn a missing column into an empty BOARD. An empty map = no overlays visible, which renders
   // as today's board exactly.
-  const [adt, summaries, denominator, extracts, bills, reviews] = await Promise.all([
+  // READMIT-RECENT-VIEW (17 Sep 2026, item C): the freshness line's own fail-safe read, alongside the
+  // other db13 / Neon reads above — a fault here costs the freshness line's numbers (they render `—`),
+  // never the board.
+  const [adt, summaries, denominator, extracts, bills, reviews, freshness] = await Promise.all([
     namesFromAdt(ids),
     identityFromSummaries(ids),
     ipDischargeDenominator(),
     fetchExtractedCases(indexDocIds),
     fetchStayBillTotals(readmitIds),
     readClinicalReviewDecisions(),
+    readFreshness(),
   ]);
 
   const rows = read.rows.map((r) => {
@@ -255,5 +260,7 @@ export async function GET() {
     /** R3 sibling: the batched bill fetch answered (ok). False → every cell reads unknown and
      *  the board shows the quiet bills-unavailable notice. */
     billsResolved: bills.ok,
+    /** READMIT-RECENT-VIEW (17 Sep 2026): the freshness line under the page subtitle. */
+    freshness,
   });
 }

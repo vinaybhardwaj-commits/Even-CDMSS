@@ -22,7 +22,7 @@
  */
 import { useEffect, useMemo, useState } from 'react';
 import {
-  DEFAULT_DENOMINATOR, DENOMINATORS, DENOMINATOR_LABEL, EHBR_GATE_COPY, INCIDENCE_FOOTNOTE, RATES_UNAVAILABLE_COPY, THIS_HOSPITAL_ONLY_FOOTNOTE,
+  DEFAULT_DENOMINATOR, DENOMINATORS, DENOMINATOR_LABEL, EHBR_GATE_COPY, INCIDENCE_FOOTNOTE, INCOMPLETE_MONTH_LEGEND, RATES_UNAVAILABLE_COPY, THIS_HOSPITAL_ONLY_FOOTNOTE,
   computedAtLabel, judgementStatsLine, moduleFacility, rateCards, trendBars, type DenominatorKey, type RatesResult,
 } from '@/lib/readmission-rates-core';
 
@@ -49,7 +49,7 @@ export default function ReadmissionRatesModule({ facility }: { facility: string 
   const fac = useMemo(() => (rates ? moduleFacility(rates, facility, tab) : null), [rates, facility, tab]);
   const cards = useMemo(() => (fac ? rateCards(fac, denom) : []), [fac, denom]);
   const bars = useMemo(() => (fac ? trendBars(fac) : []), [fac]);
-  const maxPct = useMemo(() => Math.max(2, ...bars.map((b) => (b.reviewablePct ?? 0) + (b.heldOutPct ?? 0))), [bars]);
+  const maxPct = useMemo(() => Math.max(2, ...bars.map((b) => Math.max((b.reviewablePct ?? 0) + (b.heldOutPct ?? 0), b.provisionalPct ?? 0))), [bars]);
   const warning = fac?.denominators[denom].warning ?? null;
 
   return (
@@ -89,7 +89,7 @@ export default function ReadmissionRatesModule({ facility }: { facility: string 
 
       {fac && (
         <>
-          <div className="mt-3 grid grid-cols-2 gap-2 md:grid-cols-5">
+          <div className="mt-3 grid grid-cols-2 gap-2 md:grid-cols-6">
             {cards.map((c) => (
               <div key={c.key} className={`rounded-lg border p-2.5 ${
                 c.tone === 'advisory' ? 'border-dashed border-amber-300 bg-amber-50/40'
@@ -110,14 +110,20 @@ export default function ReadmissionRatesModule({ facility }: { facility: string 
           <p className="mt-1.5 text-[10.5px] leading-relaxed text-slate-500">{INCIDENCE_FOOTNOTE}</p>
 
           {/* Monthly trend — complete months as split bars (reviewable / held-out, stacked to the month's
-              all-cause 30-day rate); incomplete months as dashed ghosts with counts only. */}
+              all-cause 30-day rate); an INCOMPLETE month (READMIT-RECENT-VIEW, 17 Sep 2026) renders at
+              its PROVISIONAL height when the gate is open — dashed outline, lighter fill, counts can
+              only rise — and a fixed dashed ghost box only when the gate is closed (no rate to show
+              at all). Every incomplete bar carries a visible `n / N so far` label; the hover title is
+              unchanged. */}
           {bars.length > 0 && (
             <div className="mt-3">
               <div className="flex items-end gap-1.5" style={{ height: 72 }}>
                 {bars.map((b) => {
                   const live = b.reviewablePct != null;
+                  const provisional = !live && b.provisionalPct != null;
                   const rH = live ? Math.max(1, Math.round(((b.reviewablePct ?? 0) / maxPct) * 60)) : 0;
                   const hH = live ? Math.round(((b.heldOutPct ?? 0) / maxPct) * 60) : 0;
+                  const pH = provisional ? Math.max(1, Math.round(((b.provisionalPct ?? 0) / maxPct) * 60)) : 0;
                   return (
                     <div key={b.month} className="flex flex-1 flex-col items-center justify-end" title={b.title}>
                       {live ? (
@@ -125,10 +131,13 @@ export default function ReadmissionRatesModule({ facility }: { facility: string 
                           <div className="w-full bg-slate-300" style={{ height: hH }} />
                           <div className="w-full bg-brand" style={{ height: rH }} />
                         </div>
+                      ) : provisional ? (
+                        <div className="w-full rounded-t border border-dashed border-brand/40 bg-brand-faint/50" style={{ height: pH }} />
                       ) : (
                         <div className="w-full rounded-t border border-dashed border-slate-300" style={{ height: 24 }} />
                       )}
                       <div className={`mt-1 text-[9.5px] ${live ? 'text-slate-500' : 'text-slate-400 italic'}`}>{b.label}</div>
+                      {b.soFarLabel && <div className="text-[9px] text-slate-400">{b.soFarLabel}</div>}
                     </div>
                   );
                 })}
@@ -136,7 +145,7 @@ export default function ReadmissionRatesModule({ facility }: { facility: string 
               <div className="mt-1 flex flex-wrap items-center gap-3 text-[10.5px] text-slate-500">
                 <span><i className="mr-1 inline-block h-2 w-2 rounded-sm bg-brand align-middle" />reviewable</span>
                 <span><i className="mr-1 inline-block h-2 w-2 rounded-sm bg-slate-300 align-middle" />held-out (oncology · dialysis · obstetric)</span>
-                <span><i className="mr-1 inline-block h-2 w-3 rounded-sm border border-dashed border-slate-300 align-middle" />30-day follow-up not complete — counts only</span>
+                <span><i className="mr-1 inline-block h-2 w-3 rounded-sm border border-dashed border-brand/40 bg-brand-faint/50 align-middle" />{INCOMPLETE_MONTH_LEGEND}</span>
               </div>
             </div>
           )}
