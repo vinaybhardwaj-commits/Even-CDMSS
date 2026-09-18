@@ -53,8 +53,18 @@ export const EXCLUDED_DEPARTMENTS: readonly string[] = [
 /** Obstetric care admission types (exact, case-insensitive, trimmed) — decision READMIT-EXCLUSION-NARROW. */
 export const OBSTETRIC_ADMISSION_TYPES: readonly string[] = ['Maternity'];
 
-/** Obstetric ward name hints (lower-cased substring match against KxEncounter.ward). */
-export const OBSTETRIC_WARD_HINTS: readonly string[] = ['birthday suite', 'labour', 'labor', 'ldr'];
+/** Obstetric ward name hints (lower-cased substring match against KxEncounter.ward). Ruling 1
+ *  (18 Sep 2026) replaced the bare `labour`/`labor` substrings — which false-positive on
+ *  "Laboratory Annex" / "Collaboration Suite" — with the specific phrases actually used on a
+ *  ward board. */
+export const OBSTETRIC_WARD_HINTS: readonly string[] = [
+  'birthday suite', 'birthing', 'labour room', 'labor room', 'labour ward', 'labor ward',
+];
+
+/** Ruling 1: `ldr` is matched as a WHOLE WORD/TOKEN, never a bare substring — "LDR-2" and "LDR 2"
+ *  match (the ward string tokenises on non-alphanumeric separators), but "Laboratory Annex",
+ *  "Collaboration Suite" and "Elder Care" never do, however they are punctuated. */
+export const OBSTETRIC_WARD_WORD_HINTS: readonly string[] = ['ldr'];
 
 /** True when an encounter is an OBSTETRIC stay: department is Obstetrics and Gynecology AND
  *  (its admission type is Maternity OR its ward matches an obstetric hint). Gynaecological
@@ -69,7 +79,10 @@ export function isObstetricStay(encounter: {
   const type = norm(encounter.admissionType);
   if (OBSTETRIC_ADMISSION_TYPES.some((t) => norm(t) === type)) return true;
   const ward = norm(encounter.ward);
-  return ward !== '' && OBSTETRIC_WARD_HINTS.some((h) => ward.includes(h));
+  if (ward === '') return false;
+  if (OBSTETRIC_WARD_HINTS.some((h) => ward.includes(h))) return true;
+  const wardTokens = ward.split(/[^a-z0-9]+/).filter(Boolean);
+  return OBSTETRIC_WARD_WORD_HINTS.some((h) => wardTokens.includes(h));
 }
 
 export interface KxEncounter {
@@ -192,6 +205,10 @@ export interface MappedAdtCols {
   encounter_id: string | null;
   dob: string | null;
   name: string | null;
+  /** Ruling 1 (18 Sep 2026): the obstetric ward-hint input, reported like every other ADT field
+   *  so a silent mapping miss (e.g. neither `ward` nor `current_ward` present) is visible, never
+   *  a quiet false-negative on isObstetricStay. */
+  ward: string | null;
 }
 
 /** Which candidate actually resolved, in priority order, across the sampled rows —
@@ -211,6 +228,7 @@ export function resolveMappedCols(rows: Record<string, unknown>[]): MappedAdtCol
     encounter_id: find(ADT_COLUMN_CANDIDATES.encounterId),
     dob: find(ADT_COLUMN_CANDIDATES.dob),
     name: find(ADT_COLUMN_CANDIDATES.patientName),
+    ward: find(ADT_COLUMN_CANDIDATES.ward),
   };
 }
 
@@ -317,18 +335,22 @@ export function computeTags(
   };
 }
 
-/** READMIT-EXCLUSION-NARROW (18 Sep 2026, V's ruling): any muted return within this many days
- *  is audited anyway, whatever its department. Same window as tags.tight_7d — named here so the
- *  override below is traceable to the ruling rather than a bare re-use of the tag. */
+/** READMIT-EXCLUSION-NARROW (18 Sep 2026, V's ruling; tightened by Ruling 1, 18 Sep 2026): any
+ *  muted return within this many CALENDAR-DAY gaps is audited anyway, whatever its department.
+ *  Ruling 1: this compares against `gapDays` (the same floor-day gap the surface and the rates
+ *  use), NOT tags.tight_7d — tight_7d is a 168-HOUR clock comparison and disagrees with gapDays
+ *  right at the boundary (e.g. a discharge at 09:00 and a readmit at day+7 12:00 is gapDays 7 but
+ *  171 clock-hours, so tight_7d is false while the override must still fire). */
 export const TIGHT_BOUNCE_OVERRIDE_DAYS = 7;
 
 /** Lane precedence, first match wins (PRD §4): excluded → er_routed → tight_bounce →
- *  structural_30d → other. READMIT-EXCLUSION-NARROW: a muted (excluded_category) pair whose
- *  return is inside TIGHT_BOUNCE_OVERRIDE_DAYS (tags.tight_7d) is no longer muted — tight_bounce
- *  beats excluded, regardless of structural_bounce. tags.excluded_category is left true on that
- *  row so the surface can still show what category it came from. */
-export function laneFor(tags: PairTags): Lane {
-  if (tags.excluded_category) return tags.tight_7d ? 'tight_bounce' : 'excluded';
+ *  structural_30d → other. READMIT-EXCLUSION-NARROW (Ruling 1): a muted (excluded_category) pair
+ *  whose `gapDays <= TIGHT_BOUNCE_OVERRIDE_DAYS` is no longer muted — tight_bounce beats excluded,
+ *  regardless of structural_bounce. tags.excluded_category is left true on that row so the surface
+ *  can still show what category it came from. `gapDays` is the pair's own field (pairEncounters'
+ *  floor-day gap), passed in explicitly — laneFor never re-derives it from a clock tag. */
+export function laneFor(tags: PairTags, gapDays: number): Lane {
+  if (tags.excluded_category) return gapDays <= TIGHT_BOUNCE_OVERRIDE_DAYS ? 'tight_bounce' : 'excluded';
   if (tags.er_route) return 'er_routed';
   if (tags.tight_7d && tags.structural_bounce) return 'tight_bounce';
   if (tags.within_30d && tags.structural_bounce) return 'structural_30d';
@@ -372,7 +394,7 @@ export function detectReadmissions(encounters: KxEncounter[], forms: FormReadmis
   const rawPairs = pairEncounters(encounters);
   const pairs: ReadmitPair[] = rawPairs.map((p) => {
     const tags = computeTags(p, ersByPerson.get(personKey(p.index.uhid)) ?? []);
-    return { ...p, tags, lane: laneFor(tags) };
+    return { ...p, tags, lane: laneFor(tags, p.gapDays) };
   });
 
   const ipByUhid = new Map<string, KxEncounter[]>();

@@ -70,7 +70,7 @@ export interface DetectSweepResult {
   encounters: number;
   forms: number;
   /** The FULL resolved ADT column mapping (admission/discharge/department/doctor/
-   *  encounter_id/dob/name) — surfaced so the orchestrator validates every field
+   *  encounter_id/dob/name/ward) — surfaced so the orchestrator validates every field
    *  live; a single-field miss (the excluded:0 defect) can't hide behind counts. */
   mappedCols: MappedAdtCols;
   pairsStored: number;

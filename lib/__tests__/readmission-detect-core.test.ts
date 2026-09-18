@@ -94,17 +94,18 @@ test('excluded_category fires on EITHER side, exact live strings', () => {
 
 test('lane precedence: excluded → er_routed → tight_bounce → structural_30d → other', () => {
   const all = { tight_7d: true, within_30d: true, structural_bounce: true, er_route: true, excluded_category: true };
-  // READMIT-EXCLUSION-NARROW (18 Sep 2026): excluded_category + tight_7d is now the override (V's
-  // ruling — any muted return within 7 days is audited whatever its department), so a genuinely
-  // excluded lane needs tight_7d: false to observe; the override itself is asserted right after.
-  assert.equal(laneFor({ ...all, tight_7d: false }), 'excluded');
-  assert.equal(laneFor(all), 'tight_bounce');
-  assert.equal(laneFor({ ...all, excluded_category: false }), 'er_routed');
-  assert.equal(laneFor({ ...all, excluded_category: false, er_route: false }), 'tight_bounce');
-  assert.equal(laneFor({ tight_7d: false, within_30d: true, structural_bounce: true, er_route: false, excluded_category: false }), 'structural_30d');
-  assert.equal(laneFor({ tight_7d: false, within_30d: true, structural_bounce: false, er_route: false, excluded_category: false }), 'other');
+  // READMIT-EXCLUSION-NARROW (18 Sep 2026, tightened by Ruling 1): excluded_category with
+  // gapDays <= TIGHT_BOUNCE_OVERRIDE_DAYS is now the override (V's ruling — any muted return
+  // within 7 days is audited whatever its department), keyed on gapDays, NOT tags.tight_7d — so a
+  // genuinely excluded lane needs gapDays > 7 to observe; the override is asserted right after.
+  assert.equal(laneFor(all, 10), 'excluded');
+  assert.equal(laneFor(all, 3), 'tight_bounce');
+  assert.equal(laneFor({ ...all, excluded_category: false }, 10), 'er_routed');
+  assert.equal(laneFor({ ...all, excluded_category: false, er_route: false }, 10), 'tight_bounce');
+  assert.equal(laneFor({ tight_7d: false, within_30d: true, structural_bounce: true, er_route: false, excluded_category: false }, 20), 'structural_30d');
+  assert.equal(laneFor({ tight_7d: false, within_30d: true, structural_bounce: false, er_route: false, excluded_category: false }, 20), 'other');
   // tight without structural is NOT a tight_bounce (both conditions required)
-  assert.equal(laneFor({ tight_7d: true, within_30d: true, structural_bounce: false, er_route: false, excluded_category: false }), 'other');
+  assert.equal(laneFor({ tight_7d: true, within_30d: true, structural_bounce: false, er_route: false, excluded_category: false }, 3), 'other');
 });
 
 // ── dedup keys ──────────────────────────────────────────────────────────────────
@@ -187,6 +188,8 @@ test('ADT mapping priority: the live-validated column wins each candidate list',
   assert.equal(ADT_COLUMN_CANDIDATES.department[1], 'treating_department_name');
   assert.equal(ADT_COLUMN_CANDIDATES.doctor[0], 'current_treating_doctor');
   assert.equal(ADT_COLUMN_CANDIDATES.doctor[1], 'admitting_doctor');
+  assert.equal(ADT_COLUMN_CANDIDATES.ward[0], 'ward');
+  assert.equal(ADT_COLUMN_CANDIDATES.ward[1], 'current_ward');
   // Priority: a row carrying BOTH a live name and a wrong-table name maps to the live one.
   const both = [{
     admission_date_time: '2026-01-01T00:00:00Z',
@@ -198,14 +201,21 @@ test('ADT mapping priority: the live-validated column wins each candidate list',
   assert.deepEqual(resolveMappedCols(both), {
     admission: 'admission_date_time', discharge: 'discharge_date',
     department: 'treating_sub_department_name', doctor: 'current_treating_doctor',
-    encounter_id: 'encounter_id', dob: 'dob', name: 'patient_name',
+    encounter_id: 'encounter_id', dob: 'dob', name: 'patient_name', ward: null,
   });
+  // Ruling 1 (18 Sep 2026): ward is reported like every other ADT field — `ward` wins over the
+  // `current_ward` fallback when both are present.
+  const withWard = resolveMappedCols([{ ...both[0], ward: 'BirthDay Suite', current_ward: 'Y' }]);
+  assert.equal(withWard.ward, 'ward');
+  const wardFallback = resolveMappedCols([{ current_ward: 'BirthDay Suite' }]);
+  assert.equal(wardFallback.ward, 'current_ward');
   // An unmapped field reports null — visible, never guessed.
   const partial = resolveMappedCols([{ admission_date_time: 'x' }]);
   assert.equal(partial.admission, 'admission_date_time');
   assert.equal(partial.discharge, null);
   assert.equal(partial.department, null);
   assert.equal(partial.doctor, null);
+  assert.equal(partial.ward, null);
 });
 
 test('detectReadmissions lane counts + within-30 subset', () => {

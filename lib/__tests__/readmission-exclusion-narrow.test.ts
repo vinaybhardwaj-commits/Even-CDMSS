@@ -2,11 +2,16 @@
  *   node --experimental-strip-types --test lib/__tests__/readmission-exclusion-narrow.test.ts
  * READMIT-EXCLUSION-NARROW (18 Sep 2026, V's ruling): gynaecological surgery is audited like any
  * other surgery — only OBSTETRIC care stays excluded (isObstetricStay: Maternity admission type OR
- * an obstetric ward hint) — and any muted return within TIGHT_BOUNCE_OVERRIDE_DAYS (7) is audited
- * whatever its department (tight_bounce beats excluded). Rates must not move: EXCLUDED_DEPARTMENTS
- * (and therefore lib/readmission-rates-core.ts's isHeldOutDepartment / the held-out bar split) keeps
- * its six strings, ObGyn included — the narrowing lives in isExcludedDept's ObGyn special case, not
- * in the array rates-core reuses.
+ * an obstetric ward hint) — and any muted return with gapDays <= TIGHT_BOUNCE_OVERRIDE_DAYS (7) is
+ * audited whatever its department (tight_bounce beats excluded). Rates must not move:
+ * EXCLUDED_DEPARTMENTS (and therefore lib/readmission-rates-core.ts's isHeldOutDepartment / the
+ * held-out bar split) keeps its six strings, ObGyn included — the narrowing lives in
+ * isExcludedDept's ObGyn special case, not in the array rates-core reuses.
+ *
+ * Ruling 1 (18 Sep 2026, Refuter fixes): the override compares gapDays, not the 168-hour tight_7d
+ * clock (laneFor's contract changed to take gapDays explicitly); the obstetric ward hints are
+ * precise phrases plus a whole-word 'ldr' match, not bare 'labour'/'labor' substrings; `ward`
+ * joins the resolved-column mapping report.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -14,8 +19,8 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   computeTags, laneFor, pairEncounters, pairDedupKey, isObstetricStay,
-  OBSTETRIC_ADMISSION_TYPES, OBSTETRIC_WARD_HINTS, TIGHT_BOUNCE_OVERRIDE_DAYS, EXCLUDED_DEPARTMENTS,
-  type KxEncounter,
+  OBSTETRIC_ADMISSION_TYPES, OBSTETRIC_WARD_HINTS, OBSTETRIC_WARD_WORD_HINTS, TIGHT_BOUNCE_OVERRIDE_DAYS,
+  EXCLUDED_DEPARTMENTS, type KxEncounter,
 } from '../readmission-detect-core.ts';
 import {
   computeRates, rateCards, trendBars, recentStripLine, DENOMINATORS, DEFAULT_DENOMINATOR, FACILITY_EHRC,
@@ -32,7 +37,10 @@ const enc = (o: Partial<KxEncounter> & { encounterId: string; admitAt: string })
 test('isObstetricStay: Maternity admission type, an obstetric ward, plain gynae, wrong department, case/whitespace', () => {
   assert.equal(OBSTETRIC_ADMISSION_TYPES.length, 1);
   assert.equal(OBSTETRIC_ADMISSION_TYPES[0], 'Maternity');
-  assert.deepEqual([...OBSTETRIC_WARD_HINTS], ['birthday suite', 'labour', 'labor', 'ldr']);
+  // Ruling 1 (18 Sep 2026): bare 'labour'/'labor' replaced with the specific ward phrases; 'ldr' is
+  // matched as its own word by isObstetricStay, not a bare substring here.
+  assert.deepEqual([...OBSTETRIC_WARD_HINTS], ['birthday suite', 'birthing', 'labour room', 'labor room', 'labour ward', 'labor ward']);
+  assert.deepEqual([...OBSTETRIC_WARD_WORD_HINTS], ['ldr']);
   assert.equal(TIGHT_BOUNCE_OVERRIDE_DAYS, 7);
 
   // Maternity admission type → true
@@ -46,9 +54,34 @@ test('isObstetricStay: Maternity admission type, an obstetric ward, plain gynae,
   assert.equal(isObstetricStay({ department: 'General Surgery', admissionType: 'Maternity', ward: null }), false);
   // case and whitespace variants
   assert.equal(isObstetricStay({ department: '  obstetrics AND gynecology  ', admissionType: ' MATERNITY ', ward: null }), true);
-  assert.equal(isObstetricStay({ department: 'Obstetrics and Gynecology', admissionType: null, ward: '  LABOUR Ward  ' }), true);
-  assert.equal(isObstetricStay({ department: 'Obstetrics and Gynecology', admissionType: null, ward: 'LDR-2' }), true);
   assert.equal(isObstetricStay({ department: 'Obstetrics and Gynecology', admissionType: null, ward: null }), false);
+});
+
+test('Ruling 1: every obstetric ward hint is tested, positive and negative', () => {
+  const obGyn = (ward: string | null, admissionType: string | null = null) =>
+    isObstetricStay({ department: 'Obstetrics and Gynecology', admissionType, ward });
+
+  // positive — every phrase hint, with case/whitespace noise
+  assert.equal(obGyn('BirthDay Suite'), true);
+  assert.equal(obGyn('  Birthing  '), true);
+  assert.equal(obGyn('Birthing Suite 2'), true);
+  assert.equal(obGyn('Labour Room 2'), true);
+  assert.equal(obGyn('Labor Room A'), true);
+  assert.equal(obGyn('Labour Ward 3'), true);
+  assert.equal(obGyn('LABOR WARD B'), true);
+  // positive — 'ldr' as a whole word, however punctuated
+  assert.equal(obGyn('LDR-2'), true);
+  assert.equal(obGyn('LDR 2'), true);
+  assert.equal(obGyn('ldr'), true);
+
+  // negative — the exact false-positive risks Ruling 1 names, and bare 'labour'/'labor' alone
+  // (no longer a hint on their own — only the specific room/ward phrases are)
+  assert.equal(obGyn('Laboratory Annex'), false);
+  assert.equal(obGyn('Collaboration Suite'), false);
+  assert.equal(obGyn('Elder Care'), false);
+  assert.equal(obGyn('Labour'), false);
+  assert.equal(obGyn('Labor'), false);
+  assert.equal(obGyn('Private Ward 3'), false);
 });
 
 // ── gynae vs obstetric lane outcomes ────────────────────────────────────────────
@@ -56,17 +89,19 @@ test('isObstetricStay: Maternity admission type, an obstetric ward, plain gynae,
 test('a gynae index pair with a 20-day gap is auditable, not excluded', () => {
   const index = enc({ encounterId: 'IP-1', admitAt: '2026-01-01T00:00:00Z', dischargeAt: '2026-01-10T00:00:00Z', admissionType: 'Elective' });
   const readmit = enc({ encounterId: 'IP-2', admitAt: '2026-01-30T00:00:00Z', admissionType: 'Elective' });
-  const tags = computeTags({ index, readmit });
+  const [pair] = pairEncounters([index, readmit]);
+  const tags = computeTags(pair);
   assert.equal(tags.excluded_category, false);
-  assert.notEqual(laneFor(tags), 'excluded');
+  assert.notEqual(laneFor(tags, pair.gapDays), 'excluded');
 });
 
 test('an obstetric index pair with a 20-day gap is excluded', () => {
   const index = enc({ encounterId: 'IP-1', admitAt: '2026-01-01T00:00:00Z', dischargeAt: '2026-01-10T00:00:00Z', admissionType: 'Maternity' });
   const readmit = enc({ encounterId: 'IP-2', admitAt: '2026-01-30T00:00:00Z', admissionType: 'Elective' });
-  const tags = computeTags({ index, readmit });
+  const [pair] = pairEncounters([index, readmit]);
+  const tags = computeTags(pair);
   assert.equal(tags.excluded_category, true);
-  assert.equal(laneFor(tags), 'excluded');
+  assert.equal(laneFor(tags, pair.gapDays), 'excluded');
 });
 
 test('an oncology pair at 3 days is auditable (excluded_category still true, tight_bounce override); at 30 days it is excluded', () => {
@@ -74,13 +109,41 @@ test('an oncology pair at 3 days is auditable (excluded_category still true, tig
   const near = enc({ encounterId: 'IP-2', admitAt: '2026-01-13T00:00:00Z', department: 'Oncology', doctor: 'Dr B' });
   const far = enc({ encounterId: 'IP-3', admitAt: '2026-02-09T00:00:00Z', department: 'Oncology', doctor: 'Dr B' });
 
-  const tagsNear = computeTags({ index, readmit: near });
+  const [pairNear] = pairEncounters([index, near]);
+  const tagsNear = computeTags(pairNear);
   assert.equal(tagsNear.excluded_category, true);
-  assert.equal(laneFor(tagsNear), 'tight_bounce');
+  assert.equal(laneFor(tagsNear, pairNear.gapDays), 'tight_bounce');
 
-  const tagsFar = computeTags({ index, readmit: far });
+  const [pairFar] = pairEncounters([index, far]);
+  const tagsFar = computeTags(pairFar);
   assert.equal(tagsFar.excluded_category, true);
-  assert.equal(laneFor(tagsFar), 'excluded');
+  assert.equal(laneFor(tagsFar, pairFar.gapDays), 'excluded');
+});
+
+test('Ruling 1: the 7-day override keys on gapDays, not the 168-hour clock — a discharge at 09:00 and a readmit at day+7 12:00 is gapDays 7 (171 clock-hours) and must still override', () => {
+  const index = enc({ encounterId: 'IP-1', admitAt: '2026-01-01T00:00:00Z', dischargeAt: '2026-01-10T09:00:00Z', department: 'Oncology', doctor: 'Dr B' });
+
+  const at7 = enc({ encounterId: 'IP-2', admitAt: '2026-01-17T12:00:00Z', department: 'Oncology', doctor: 'Dr B' });
+  const [pair7] = pairEncounters([index, at7]);
+  assert.equal(pair7.gapDays, 7);
+  const tags7 = computeTags(pair7);
+  assert.equal(tags7.tight_7d, false, '171 clock-hours is outside the 168h tight_7d tag');
+  assert.equal(laneFor(tags7, pair7.gapDays), 'tight_bounce', 'gapDays 7 must still override — auditable');
+
+  const at8 = enc({ encounterId: 'IP-3', admitAt: '2026-01-18T12:00:00Z', department: 'Oncology', doctor: 'Dr B' });
+  const [pair8] = pairEncounters([index, at8]);
+  assert.equal(pair8.gapDays, 8);
+  assert.equal(laneFor(computeTags(pair8), pair8.gapDays), 'excluded', 'gapDays 8 stays excluded');
+
+  const at0 = enc({ encounterId: 'IP-4', admitAt: '2026-01-10T10:00:00Z', department: 'Oncology', doctor: 'Dr B' });
+  const [pair0] = pairEncounters([index, at0]);
+  assert.equal(pair0.gapDays, 0);
+  assert.equal(laneFor(computeTags(pair0), pair0.gapDays), 'tight_bounce', 'gapDays 0 is auditable');
+
+  const at1 = enc({ encounterId: 'IP-5', admitAt: '2026-01-11T10:00:00Z', department: 'Oncology', doctor: 'Dr B' });
+  const [pair1] = pairEncounters([index, at1]);
+  assert.equal(pair1.gapDays, 1);
+  assert.equal(laneFor(computeTags(pair1), pair1.gapDays), 'tight_bounce', 'gapDays 1 is auditable');
 });
 
 // ── the real case: UHID-10441, IP-1535 → IP-1555 ────────────────────────────────
@@ -103,7 +166,7 @@ test('the real case: IP-1535 → IP-1555, gap 1, ObGyn, Elective → auditable, 
   assert.equal(tags.tight_7d, true);
   assert.equal(tags.within_30d, true);
   assert.equal(tags.structural_bounce, true);    // same department AND same doctor
-  assert.equal(laneFor(tags), 'tight_bounce');
+  assert.equal(laneFor(tags, pair.gapDays), 'tight_bounce');
 
   assert.equal(pairDedupKey(pair.index.encounterId, pair.readmit.encounterId), 'IP-1535|IP-1555');
 });
