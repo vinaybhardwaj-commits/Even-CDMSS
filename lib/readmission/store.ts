@@ -139,7 +139,15 @@ export async function saveDetection(row: DetectionRow, engineVersion: string = R
          cm_note = COALESCE(EXCLUDED.cm_note, readmission_findings.cm_note),
          form_uid = COALESCE(EXCLUDED.form_uid, readmission_findings.form_uid),
          form_is_planned = COALESCE(EXCLUDED.form_is_planned, readmission_findings.form_is_planned),
-         form_same_condition = COALESCE(EXCLUDED.form_same_condition, readmission_findings.form_same_condition)
+         form_same_condition = COALESCE(EXCLUDED.form_same_condition, readmission_findings.form_same_condition),
+         -- READMIT-EXCLUSION-NARROW: re-queue a previously muted row when the recomputed lane is
+         -- auditable; never touch an audited/not_auditable row; a row re-excluded stays excluded.
+         audit_status = CASE
+           WHEN readmission_findings.audit_status IN ('audited', 'not_auditable') THEN readmission_findings.audit_status
+           WHEN EXCLUDED.lane = 'excluded' THEN 'excluded'
+           WHEN readmission_findings.audit_status = 'excluded' THEN 'detected'
+           ELSE readmission_findings.audit_status
+         END
        RETURNING (xmax = 0) AS inserted`,
       [
         row.dedupKey, engineVersion, row.findingClass, row.indexEncounterId, row.readmitEncounterId,

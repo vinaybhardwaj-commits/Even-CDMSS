@@ -80,7 +80,10 @@ test('er_route via admission_type Emergency and via an ER encounter within 48h',
 });
 
 test('excluded_category fires on EITHER side, exact live strings', () => {
-  for (const dept of EXCLUDED_DEPARTMENTS) {
+  // READMIT-EXCLUSION-NARROW (18 Sep 2026): 'Obstetrics and Gynecology' no longer excludes on
+  // bare department membership — only an OBSTETRIC stay does (isObstetricStay), so it is exercised
+  // separately in readmission-exclusion-narrow.test.ts, not in this blanket membership loop.
+  for (const dept of EXCLUDED_DEPARTMENTS.filter((d) => d !== 'Obstetrics and Gynecology')) {
     assert.equal(computeTags(mkPair(10, { idx: { department: dept } })).excluded_category, true, dept);
     assert.equal(computeTags(mkPair(10, { rd: { department: dept } })).excluded_category, true, dept);
   }
@@ -91,7 +94,11 @@ test('excluded_category fires on EITHER side, exact live strings', () => {
 
 test('lane precedence: excluded → er_routed → tight_bounce → structural_30d → other', () => {
   const all = { tight_7d: true, within_30d: true, structural_bounce: true, er_route: true, excluded_category: true };
-  assert.equal(laneFor(all), 'excluded');
+  // READMIT-EXCLUSION-NARROW (18 Sep 2026): excluded_category + tight_7d is now the override (V's
+  // ruling — any muted return within 7 days is audited whatever its department), so a genuinely
+  // excluded lane needs tight_7d: false to observe; the override itself is asserted right after.
+  assert.equal(laneFor({ ...all, tight_7d: false }), 'excluded');
+  assert.equal(laneFor(all), 'tight_bounce');
   assert.equal(laneFor({ ...all, excluded_category: false }), 'er_routed');
   assert.equal(laneFor({ ...all, excluded_category: false, er_route: false }), 'tight_bounce');
   assert.equal(laneFor({ tight_7d: false, within_30d: true, structural_bounce: true, er_route: false, excluded_category: false }), 'structural_30d');

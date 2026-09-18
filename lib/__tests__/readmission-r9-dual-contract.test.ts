@@ -543,9 +543,11 @@ test('T7 — the model pin: the ask path still targets NARRATIVE_MODEL_ID via Be
   };
   const bedrockThen = execFileSync('git', ['show', 'f4a67ee:lib/bedrock-core.ts'], { encoding: 'utf8' });
   assert.equal(allowlist(code('lib/bedrock-core.ts')), allowlist(bedrockThen), 'the Bedrock allowlist must not change');
-  const changed = execFileSync('git', ['diff', '--name-only', 'f4a67ee', '--'], { encoding: 'utf8' }).split('\n').filter(Boolean);
   // The no-dependency-change acceptance was proven at merge time and is not an open-ended invariant (lab-v2 decision 9).
-  assert.ok(!changed.some((f) => f.startsWith('lib/readmission-detect-core')), 'detect-core pairing untouched');
+  // READMIT-EXCLUSION-NARROW (18 Sep 2026) retires the "detect-core untouched since f4a67ee" leg of
+  // this proxy: that kickoff explicitly narrows EXCLUDED_DEPARTMENTS' ObGyn exclusion to obstetric
+  // stays only and adds the tight_bounce override in lib/readmission-detect-core.ts — a real,
+  // intended change to that file, not drift. The Bedrock-allowlist assertion above is unaffected.
 });
 
 test('the branch is grep-clean of the refused transports (gpt-5.6 / terra / mantle) in every file it touched', () => {
