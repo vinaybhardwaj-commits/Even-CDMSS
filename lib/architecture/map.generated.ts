@@ -5890,7 +5890,17 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "triage",
+    "to": "opd-audit-pdf",
+    "kind": "value"
+  },
+  {
+    "from": "triage",
     "to": "opd-audit-ui",
+    "kind": "value"
+  },
+  {
+    "from": "triage",
+    "to": "opd-gov-signal-core",
     "kind": "value"
   },
   {
