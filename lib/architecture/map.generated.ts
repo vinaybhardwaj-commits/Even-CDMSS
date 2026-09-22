@@ -4704,6 +4704,11 @@ export const MAP_EDGES: MapEdge[] = [
     "kind": "value"
   },
   {
+    "from": "opd-gov-signal-store",
+    "to": "triage",
+    "kind": "value"
+  },
+  {
     "from": "opd-ingest-core",
     "to": "formulary-match-core",
     "kind": "type"
@@ -4929,6 +4934,11 @@ export const MAP_EDGES: MapEdge[] = [
     "kind": "type"
   },
   {
+    "from": "opd-triage-core",
+    "to": "triage",
+    "kind": "value"
+  },
+  {
     "from": "opd-triage-store",
     "to": "db",
     "kind": "value"
@@ -4941,6 +4951,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "opd-triage-store",
     "to": "opd-triage-core",
+    "kind": "value"
+  },
+  {
+    "from": "opd-triage-store",
+    "to": "triage",
     "kind": "value"
   },
   {
@@ -5861,6 +5876,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "triage",
     "to": "even-ground-core",
+    "kind": "value"
+  },
+  {
+    "from": "triage",
+    "to": "ipd-doctor-hop",
     "kind": "value"
   },
   {

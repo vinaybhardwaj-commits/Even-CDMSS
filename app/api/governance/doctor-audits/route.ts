@@ -14,6 +14,7 @@ import { govKeyValid } from '@/lib/gov-auth';
 import { fetchDoctorNames } from '@/lib/metabase';
 import { listSignalsForDoctor, toSignalRow } from '@/lib/opd-gov-signal-store';
 import { signalObject } from '@/lib/opd-gov-signal-core';
+import { isNoteClass } from '@/lib/triage/note-class';
 import { resolveInstances, doctorAuditMetrics } from '@/lib/opd-gov-read';
 import { getOperationalBlock } from '@/lib/doctor-metrics-store';
 
@@ -27,6 +28,10 @@ export async function GET(req: NextRequest) {
   if (!doctorUid) return NextResponse.json({ ok: false, error: 'doctor_uid required' }, { status: 400 });
   const days = Math.max(1, Math.min(120, Number(sp.get('window')) || 30));
   const status = sp.get('status') === 'all' ? 'all' : 'open';
+  const noteClassParam = (sp.get('note_class') || '').trim();
+  if (noteClassParam && !isNoteClass(noteClassParam)) {
+    return NextResponse.json({ ok: false, error: 'note_class must be opd|discharge_summary|ot' }, { status: 400 });
+  }
   const now = new Date().toISOString();
 
   const [signals, metrics, operational, names, dir] = await Promise.all([
@@ -37,8 +42,12 @@ export async function GET(req: NextRequest) {
     run(`SELECT speciality FROM doctor_directory WHERE doctor_uid=$1 LIMIT 1`, [doctorUid]).catch(() => []),
   ]);
 
+  const signalsForClass = noteClassParam
+    ? signals.filter((s) => s.note_class === noteClassParam)
+    : signals;
+
   const out = [];
-  const sourceRefs = signals.map((s) => s.source_triage_ref).filter((v): v is string => !!v);
+  const sourceRefs = signalsForClass.map((s) => s.source_triage_ref).filter((v): v is string => !!v);
   const triageRows = sourceRefs.length
     ? await run(
         `SELECT DISTINCT ON (decision_id)
@@ -56,8 +65,11 @@ export async function GET(req: NextRequest) {
       policy_version: row.policy_version == null ? null : String(row.policy_version),
     },
   ]));
-  for (const s of signals) {
-    const { count, representative } = await resolveInstances(s.doctor_uid, s.signal_type, s.window_from, s.window_to);
+  for (const s of signalsForClass) {
+    // OPD instance text must not be attached to a discharge or OT thread that shares a signal_type.
+    const { count, representative } = s.note_class === 'opd'
+      ? await resolveInstances(s.doctor_uid, s.signal_type, s.window_from, s.window_to)
+      : { count: 0, representative: null };
     const signal = signalObject(toSignalRow(s, count), representative, now);
     out.push({
       ...signal,

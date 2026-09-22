@@ -215,6 +215,8 @@ export function validateSignalAction(input: SignalActionInput): { ok: true; valu
 // ── Outbound signal object (contract §6) ──────────────────────────────────────
 export interface SignalRow {
   reference: string; signal_id: string; doctor_uid: string; signal_type: string;
+  /** Absent on threads minted before the column — readers treat that as `opd`. */
+  note_class?: 'opd' | 'discharge_summary' | 'ot' | null;
   importance: string; response_required: string; status: string;
   instances?: number | null;
   window_from: string | null; window_to: string | null;
@@ -248,6 +250,7 @@ export function signalObject(row: SignalRow, representative: SignalRepresentativ
     signal_id: row.signal_id,
     doctor_uid: row.doctor_uid,
     signal_type: row.signal_type,
+    note_class: row.note_class === 'discharge_summary' || row.note_class === 'ot' ? row.note_class : 'opd',
     label: signalLabel(row.signal_type),
     importance: row.importance,
     response_required: row.response_required,
