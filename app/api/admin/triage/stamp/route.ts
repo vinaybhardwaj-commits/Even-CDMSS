@@ -13,6 +13,14 @@
  * Safe default: every stamp is refused unless TRIAGE_BOT_WRITE=1.
  * Auth: cat_admin session OR ADMIN_TOKEN Bearer / ?token=, matching queue and shadow-propose.
  *
+ * Membership is the Action queue the caller is working from, not a second population.
+ * Optional day, days, doctor_uid, status, and quieted — the same fields as
+ * GET/POST /api/admin/triage/queue — may arrive on the JSON body and/or the query
+ * string. Body wins when both set a field. They are passed to parseActionQueueQuery
+ * and readActionQueue. Omitting day and days keeps today's window: the queue reader's
+ * default single latest audit day. Omitting status keeps all, this door's historical
+ * membership check (the queue door itself defaults to untriaged).
+ *
  * Production DDL for the idempotency columns and unique indexes is migrations/0058. The
  * CREATE / ALTER / INDEX statements below are belt-and-suspenders for a process that has
  * not applied that migration yet.
@@ -41,6 +49,25 @@ const run = sql as unknown as (text: string, params?: unknown[]) => Promise<Reco
 const APP = process.env.APP_SOURCE || 'standalone';
 
 const TERMINAL_OUTCOMES = new Set(['applied', 'held', 'dropped_informational', 'decision_recorded_signal_failed']);
+
+/** Fields parseActionQueueQuery already understands on the admin queue door. */
+const QUEUE_WINDOW_KEYS = ['day', 'days', 'doctor_uid', 'status', 'quieted'] as const;
+
+/**
+ * Stamp membership window. Status defaults to all so an omitted filter still sees every
+ * card in the day window; an explicit status (body or query) is honored.
+ */
+function stampQueueInput(req: NextRequest, body: Record<string, unknown>): Record<string, unknown> {
+  const merged: Record<string, unknown> = { status: 'all' };
+  for (const key of QUEUE_WINDOW_KEYS) {
+    const fromQuery = req.nextUrl.searchParams.get(key);
+    if (fromQuery != null && fromQuery !== '') merged[key] = fromQuery;
+    if (Object.prototype.hasOwnProperty.call(body, key) && body[key] != null && body[key] !== '') {
+      merged[key] = body[key];
+    }
+  }
+  return merged;
+}
 
 const STAMP_COLS = `id::text AS id, queue_item_ref, verb, reason, actor, policy_version, run_id,
   outcome, decision_id::text AS decision_id, signal_reference, client_request_id, result, error`;
@@ -290,7 +317,9 @@ export async function POST(req: NextRequest) {
   }
   const identity = parseQueueItemRef(stamp.queue_item_ref)!;
 
-  const queue = await readActionQueue(parseActionQueueQuery({ status: 'all' })).catch(() => null);
+  const queue = await readActionQueue(
+    parseActionQueueQuery(stampQueueInput(req, body as Record<string, unknown>)),
+  ).catch(() => null);
   const item = queue && flattenActionQueueItems(queue.doctors)
     .find((candidate) => candidate.queue_item_ref === stamp.queue_item_ref);
   if (!queue || !item) {

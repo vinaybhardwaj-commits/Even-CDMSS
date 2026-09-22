@@ -24,6 +24,45 @@ function signalInserts() {
   return issued.filter((query) => /INSERT INTO opd_gov_signal\b/.test(query.text));
 }
 
+const finding = (subject: string, findingRef: string) => JSON.stringify([{
+  subject,
+  rationale: 'Interaction requires review',
+  verdict: 'unsafe',
+  domain: 'prescribing',
+  signal_type: 'drug_interaction',
+  finding_ref: findingRef,
+  informational: false,
+  citation_ids: [],
+}]);
+
+/** note_date is what the queue SQL window filters. The mock applies that filter. */
+const QUEUE_AUDITS: Row[] = [
+  {
+    id: '99999999-8888-7777-6666-555555555555',
+    doctor_uid: 'DOC-1',
+    note_date: '2026-09-22',
+    findings: finding('Drug interaction: A + B', 'f-1'),
+    complexity_band: 'LOW',
+    complexity_inputs: '{}',
+  },
+  {
+    id: '99999999-8888-7777-6666-555555555556',
+    doctor_uid: 'DOC-POORNIMA',
+    note_date: '2026-09-16',
+    findings: finding('Drug interaction: C + D', 'f-week'),
+    complexity_band: 'LOW',
+    complexity_inputs: '{}',
+  },
+  {
+    id: '99999999-8888-7777-6666-555555555557',
+    doctor_uid: 'DOC-OUTSIDE',
+    note_date: '2026-09-15',
+    findings: finding('Drug interaction: E + F', 'f-old'),
+    complexity_band: 'LOW',
+    complexity_inputs: '{}',
+  },
+];
+
 function result(rows: Row[]): Response {
   const names = rows.length ? Object.keys(rows[0]) : [];
   return new Response(JSON.stringify({
@@ -123,31 +162,28 @@ globalThis.fetch = (async (_url: unknown, init: { body?: unknown } = {}) => {
   }
   if (/max\(\(note_date/.test(text)) return result([{ d: '2026-09-22' }]);
   if (/FROM \(\s*SELECT DISTINCT ON/.test(text)) {
-    return result([{
-      id: '99999999-8888-7777-6666-555555555555',
-      doctor_uid: 'DOC-1',
-      note_date: '2026-09-22',
-      findings: JSON.stringify([{
-        subject: 'Drug interaction: A + B',
-        rationale: 'Interaction requires review',
-        verdict: 'unsafe',
-        domain: 'prescribing',
-        signal_type: 'drug_interaction',
-        finding_ref: 'f-1',
-        informational: false,
-        citation_ids: [],
-      }]),
-      complexity_band: 'LOW',
-      complexity_inputs: '{}',
-    }]);
+    const from = String(params[2] || '');
+    const to = String(params[3] || '');
+    const doctor = params.length > 4 && params[4] != null ? String(params[4]) : '';
+    return result(QUEUE_AUDITS.filter((row) => {
+      const note = String(row.note_date);
+      if (from && note < from) return false;
+      if (to && note > to) return false;
+      if (doctor && String(row.doctor_uid) !== doctor) return false;
+      return true;
+    }));
   }
   return result([]);
 }) as typeof fetch;
 
-async function post(payload: Record<string, unknown>, extra: Record<string, string> = {}) {
+async function post(
+  payload: Record<string, unknown>,
+  extra: Record<string, string> = {},
+  url = 'https://cat.test/api/admin/triage/stamp',
+) {
   const { NextRequest } = await import('next/server');
   const { POST } = await import('../../app/api/admin/triage/stamp/route.ts');
-  const response = await POST(new NextRequest('https://cat.test/api/admin/triage/stamp', {
+  const response = await POST(new NextRequest(url, {
     method: 'POST',
     headers: {
       authorization: 'Bearer test-admin-token',
@@ -344,4 +380,109 @@ test('a clinical stamp without run_id or Idempotency-Key is refused before inser
   assert.equal(response.status, 400);
   assert.match(String(response.json.error), /run_id or Idempotency-Key/);
   assert.equal(decisionInserts().length, 0);
+});
+
+function queueAuditRead() {
+  return issued.filter((query) => /FROM \(\s*SELECT DISTINCT ON/.test(query.text));
+}
+
+test('an item present in the days=7 queue stamps', async () => {
+  process.env.TRIAGE_BOT_WRITE = '1';
+  resetStore();
+  const response = await post({
+    ...ROUTE_STAMP,
+    queue_item_ref: 'DOC-POORNIMA|drug_interaction',
+    run_id: 'run-days-7',
+    days: 7,
+  });
+  assert.equal(response.status, 200, JSON.stringify(response.json));
+  assert.equal(response.json.ok, true);
+  assert.equal(response.json.outcome, 'applied');
+  assert.equal(response.json.replayed, false);
+  const read = queueAuditRead();
+  assert.equal(read.length, 1);
+  assert.equal(read[0].params[2], '2026-09-16');
+  assert.equal(read[0].params[3], '2026-09-22');
+  assert.equal(decisionInserts()[0].params[6], '2026-09-16');
+  assert.equal(decisionInserts()[0].params[7], '2026-09-22');
+
+  resetStore();
+  const viaQuery = await post({
+    ...ROUTE_STAMP,
+    queue_item_ref: 'DOC-POORNIMA|drug_interaction',
+    run_id: 'run-days-7-query',
+  }, {}, 'https://cat.test/api/admin/triage/stamp?days=7&doctor_uid=DOC-POORNIMA');
+  assert.equal(viaQuery.status, 200, JSON.stringify(viaQuery.json));
+  assert.equal(viaQuery.json.outcome, 'applied');
+  const queryRead = queueAuditRead();
+  assert.equal(queryRead[0].params[2], '2026-09-16');
+  assert.equal(queryRead[0].params[4], 'DOC-POORNIMA');
+});
+
+test('an item outside the requested window is still a 404', async () => {
+  process.env.TRIAGE_BOT_WRITE = '1';
+  resetStore();
+  const outsideWeek = await post({
+    ...ROUTE_STAMP,
+    queue_item_ref: 'DOC-OUTSIDE|drug_interaction',
+    run_id: 'run-outside-week',
+    days: 7,
+  });
+  assert.equal(outsideWeek.status, 404);
+  assert.match(String(outsideWeek.json.error), /not present in the current Action queue/);
+  assert.equal(decisionInserts().length, 0);
+
+  const narrowed = await post({
+    ...ROUTE_STAMP,
+    queue_item_ref: 'DOC-POORNIMA|drug_interaction',
+    run_id: 'run-outside-day',
+    day: '2026-09-22',
+    days: 1,
+  });
+  assert.equal(narrowed.status, 404);
+  assert.match(String(narrowed.json.error), /not present in the current Action queue/);
+  assert.equal(decisionInserts().length, 0);
+
+  const otherDoctor = await post({
+    ...ROUTE_STAMP,
+    queue_item_ref: 'DOC-POORNIMA|drug_interaction',
+    run_id: 'run-other-doctor',
+    days: 7,
+    doctor_uid: 'DOC-1',
+  });
+  assert.equal(otherDoctor.status, 404);
+  assert.equal(decisionInserts().length, 0);
+
+  const bodyNarrowsQuery = await post({
+    ...ROUTE_STAMP,
+    queue_item_ref: 'DOC-POORNIMA|drug_interaction',
+    run_id: 'run-body-wins',
+    days: 1,
+  }, {}, 'https://cat.test/api/admin/triage/stamp?days=7');
+  assert.equal(bodyNarrowsQuery.status, 404);
+  assert.equal(decisionInserts().length, 0);
+});
+
+test('omitted day and days keep the single latest-audit-day window', async () => {
+  process.env.TRIAGE_BOT_WRITE = '1';
+  resetStore();
+  const today = await post({ ...ROUTE_STAMP, run_id: 'run-default-day' });
+  assert.equal(today.status, 200, JSON.stringify(today.json));
+  assert.equal(today.json.outcome, 'applied');
+  const read = queueAuditRead();
+  assert.equal(read.length, 1);
+  assert.equal(read[0].params[2], '2026-09-22');
+  assert.equal(read[0].params[3], '2026-09-22');
+  assert.equal(read[0].params.length, 4);
+  assert.equal(decisionInserts()[0].params[6], '2026-09-22');
+  assert.equal(decisionInserts()[0].params[7], '2026-09-22');
+
+  const earlier = await post({
+    ...ROUTE_STAMP,
+    queue_item_ref: 'DOC-POORNIMA|drug_interaction',
+    run_id: 'run-default-miss',
+  });
+  assert.equal(earlier.status, 404);
+  assert.match(String(earlier.json.error), /not present in the current Action queue/);
+  assert.equal(decisionInserts().length, 1);
 });
