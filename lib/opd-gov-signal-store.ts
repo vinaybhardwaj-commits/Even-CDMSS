@@ -10,7 +10,7 @@
 import { randomUUID } from 'crypto';
 import { sql } from './db';
 import {
-  formatAuditRef, computeSlaDueAt, mintStatus, statusAfterResponse, statusAfterAction,
+  formatAuditRef, computeSlaDueAt, mintStatus, statusAfterDoctorVerb, statusAfterAction,
   type SignalStatus, type NormalizedDoctorResponse, type NormalizedSignalAction, type SignalRow,
 } from './opd-gov-signal-core';
 
@@ -310,9 +310,7 @@ export async function releaseDoctorResponseRequest(signal: StoredSignal, resp: N
 
 /** Record a doctor response (portal). Sets latest_response + status + an event. */
 export async function applyDoctorResponse(signal: StoredSignal, resp: NormalizedDoctorResponse): Promise<StoredSignal> {
-  const newStatus = resp.verb === 'needs_clarification'
-    ? 'escalated'
-    : statusAfterResponse(resp.type, resp.verdict);
+  const newStatus = statusAfterDoctorVerb(resp.verb, resp.type, resp.verdict);
   const payload = {
     verb: resp.verb,
     type: resp.type,

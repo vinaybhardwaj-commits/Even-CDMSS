@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   formatAuditRef, parseAuditRef, isAuditRef, computeSlaDueAt, mintStatus, isOverdue,
-  statusAfterResponse, statusAfterAction, validateDoctorResponse, validateSignalAction,
+  statusAfterResponse, statusAfterDoctorVerb, statusAfterAction, validateDoctorResponse, validateSignalAction,
   signalObject, signalLabel, type SignalRow,
 } from '../opd-gov-signal-core.ts';
 
@@ -39,6 +39,9 @@ test('status machine: response + action transitions', () => {
   assert.equal(statusAfterResponse('acknowledgment', null), 'responded');
   assert.equal(statusAfterResponse('explanation', 'agree'), 'responded');
   assert.equal(statusAfterResponse('explanation', 'disagree'), 'escalated');
+  assert.equal(statusAfterDoctorVerb('agree', 'acknowledgment', null), 'responded');
+  assert.equal(statusAfterDoctorVerb('disagree', 'acknowledgment', 'disagree'), 'escalated');
+  assert.equal(statusAfterDoctorVerb('needs_clarification', 'explanation', null), 'escalated');
   assert.equal(statusAfterAction('acknowledged_by_governance'), 'ruled');
   assert.equal(statusAfterAction('privilege_action'), 'ruled');
   assert.equal(statusAfterAction('dismissed'), 'closed');

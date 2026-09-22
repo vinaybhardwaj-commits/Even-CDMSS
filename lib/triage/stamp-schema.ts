@@ -23,7 +23,7 @@ export interface NormalizedTriageStamp {
 const dstr = (value: unknown, cap: number): string | null =>
   value == null || value === '' ? null : String(value).trim().slice(0, cap);
 
-export function triageWriteEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+export function triageWriteEnabled(env: Record<string, string | undefined> = process.env): boolean {
   return env.TRIAGE_BOT_WRITE === '1';
 }
 

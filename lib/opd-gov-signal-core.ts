@@ -56,6 +56,18 @@ export function isOverdue(s: { status: string; response_required: string; sla_du
 export function statusAfterResponse(type: ResponseType, verdict: ResponseVerdict | null): SignalStatus {
   return type === 'explanation' && verdict === 'disagree' ? 'escalated' : 'responded';
 }
+/** Portal verbs are deliberately smaller than the transport's legacy type/verdict pair. Both
+ * disagree and needs_clarification return the thread to CM/governance, regardless of whether the
+ * original signal asked for an acknowledgment or an explanation. */
+export function statusAfterDoctorVerb(
+  verb: DoctorResponseVerb,
+  type: ResponseType,
+  verdict: ResponseVerdict | null,
+): SignalStatus {
+  return verb === 'disagree' || verb === 'needs_clarification'
+    ? 'escalated'
+    : statusAfterResponse(type, verdict);
+}
 /** After a governance ruling: dismissed/closed shut the thread; otherwise it is ruled. */
 export function statusAfterAction(action: SignalAction): SignalStatus {
   return action === 'dismissed' || action === 'closed' ? 'closed' : 'ruled';
