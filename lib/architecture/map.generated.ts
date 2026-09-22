@@ -691,6 +691,10 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "unregistered"
   },
   {
+    "id": "opd-audit-worker-core",
+    "plane": "unregistered"
+  },
+  {
     "id": "opd-case-anchor-core",
     "plane": "unregistered"
   },
@@ -2022,6 +2026,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "app/api",
     "to": "opd-audit-ui",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
+    "to": "opd-audit-worker-core",
     "kind": "value"
   },
   {
