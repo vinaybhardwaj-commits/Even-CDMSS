@@ -1,0 +1,30 @@
+{
+  "source": "ot-surgeon-pulse-seed-n3plus-2026-09-22.csv",
+  "rule": "Exact CI match on doctors.name_with_prefix; unique Pulse uid only. Amresh S Bhaganagare Y rows omitted — two Pulse uids, fail-closed.",
+  "mapped": [
+    { "surgeon": "DR ABRAR MOHAMMED", "doctor_uid": "csYMPj6nS3GeAOxM5TDa" },
+    { "surgeon": "DR AVINASH PARTHASARATHY", "doctor_uid": "QJPPFgQomMv8DScTODC0" },
+    { "surgeon": "DR HARISH MADREKAR", "doctor_uid": "SlMO88cbzSn6ylVBYjzN" },
+    { "surgeon": "DR MAHENDRA M", "doctor_uid": "7rVmpeIBY6wyTm3HU2TJ" },
+    { "surgeon": "DR MANOJ KUMAR S", "doctor_uid": "Tbvyk1V5ijpcD194ZOWi" },
+    { "surgeon": "Dr Mohit Nahata", "doctor_uid": "QZNaYTFUxdBDpQxX3IG8" },
+    { "surgeon": "Dr Nivedita Jha", "doctor_uid": "gkBqP686ewlXLGvjvD4E" },
+    { "surgeon": "Dr Poornima Parasuraman", "doctor_uid": "0q9pSZHR24ysquO6V4Xg" },
+    { "surgeon": "DR POORNIMA PARASURAMAN", "doctor_uid": "0q9pSZHR24ysquO6V4Xg" },
+    { "surgeon": "DR PRASHANTH NAGARAJ", "doctor_uid": "z04sk8cEsTuXxVWY4iHL" },
+    { "surgeon": "DR RAKSHA MADHU", "doctor_uid": "R3IEiNFjBgwTiXheMX2n" },
+    { "surgeon": "DR RAMESH", "doctor_uid": "Y2acuffYHRVpZfNhmhlh" },
+    { "surgeon": "Dr Sanjay Sharma", "doctor_uid": "jHp9QMjFZUgJbUFiKY2G" },
+    { "surgeon": "DR SANJEEV MN", "doctor_uid": "WcSk02H5nYxsvxBkqrbd" },
+    { "surgeon": "dr sarat chandra dash", "doctor_uid": "r9p0T2yD0Ee7hO9v4taV" },
+    { "surgeon": "DR SARAT CHANDRA DASH", "doctor_uid": "r9p0T2yD0Ee7hO9v4taV" },
+    { "surgeon": "DR SHANKAR KURPAD", "doctor_uid": "FP1cesrCLD0AK4L5edEQ" },
+    { "surgeon": "Dr spoorthi prakash", "doctor_uid": "aQS6ztqEHV1D29s5LJwK" },
+    { "surgeon": "Dr Spoorthi prakash", "doctor_uid": "aQS6ztqEHV1D29s5LJwK" },
+    { "surgeon": "Dr Spoorthi Prakash", "doctor_uid": "aQS6ztqEHV1D29s5LJwK" },
+    { "surgeon": "DR SPOORTHI PRAKASH", "doctor_uid": "aQS6ztqEHV1D29s5LJwK" },
+    { "surgeon": "DR SUJAY B R", "doctor_uid": "257VvgoQgbsVcPX6grSP" },
+    { "surgeon": "Dr Uday Ravi", "doctor_uid": "EPa6aOwPOAinxikttBmW" },
+    { "surgeon": "Dr Vishal Naik", "doctor_uid": "JLqKUj55xViXeqHGyRRl" }
+  ]
+}
