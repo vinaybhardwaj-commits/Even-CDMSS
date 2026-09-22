@@ -11,6 +11,7 @@ import { stampFindingIdentity, type OpdFinding } from '../opd-note-audit-core.ts
 import { signalObject, type SignalRow } from '../opd-gov-signal-core.ts';
 import { landOtAudits, visibleUnmappedOtCards, type OtAuditSource } from '../triage/ot-lander.ts';
 import { auditOtNote } from '../triage/ot-audit-core.ts';
+import { buildOtAuditsForQueueSql } from '../triage/ot-audit-store.ts';
 import {
   buildSurgeonLookup, isMultiSurgeonDump, resolveOtSurgeon,
 } from '../triage/ot-surgeon-map.ts';
@@ -83,6 +84,23 @@ test('v0 OT audit emits stamped findings with queue-compatible shape', () => {
   });
   assert.equal(full.length, 1);
   assert.match(full[0].subject, /OT documentation review/);
+  assert.ok(!/screen/i.test(full[0].subject));
+  assert.ok(!/screen/i.test(full[0].rationale));
+});
+
+test('OT queue SQL selects uid once in DISTINCT ON subquery (Neon ambiguous-uid guard)', () => {
+  const sqlText = buildOtAuditsForQueueSql(
+    `app_source = $1 AND engine_version = $2 AND note_day BETWEEN $3::date AND $4::date`,
+  );
+  assert.match(sqlText, /^SELECT id, uid,/);
+  const inner = sqlText.match(/SELECT DISTINCT ON \(uid\) (.+?)\s+FROM ot_note_audits/s)?.[1];
+  assert.ok(inner, `expected DISTINCT ON subquery; got: ${sqlText}`);
+  const uidHits = inner.match(/\buid\b/g) || [];
+  assert.equal(
+    uidHits.length,
+    1,
+    `canonicalDistinctOnSql already projects uid — cols must not re-list it (ambiguous for Neon). select list: ${inner}`,
+  );
 });
 
 test('OT lander keeps mapped Pulse uid and fail-closes unmapped + multi without inventing one', () => {
@@ -217,6 +235,10 @@ test('lander / queue / migration doors: no surgery_cases grain, no second queue,
   assert.ok(!db13.includes('patient_name'));
   assert.ok(!db13.includes('patient_mobile'));
   assert.match(queue, /ot_note_audits|loadOtAuditsForQueue|landOtAudits/);
+  assert.match(queue, /ot_load/);
+  assert.match(queue, /OT Action-queue load failed/);
+  assert.match(store, /buildOtAuditsForQueueSql|loadOtAuditsForQueue failed/);
+  assert.ok(!store.includes('id::text AS id, uid, hospital_uid'), 'cols must not re-list uid');
   assert.ok(!/queue-ot/.test(queue));
   assert.match(migration, /ot_note_audits/);
   assert.match(migration, /ot_surgeon_map/);
@@ -443,6 +465,7 @@ async function post(payload: Record<string, unknown>) {
 test('Action queue unions mapped OT + unmapped OT + OPD with class-safe refs', async () => {
   resetStore();
   const queue = await readActionQueue({ day: '2026-09-22', days: 1, doctor_uid: '', status: 'untriaged', includeQuieted: false });
+  assert.deepEqual(queue.ot_load, { ok: true });
   const items = flattenActionQueueItems(queue.doctors, queue.unmapped);
   const opd = items.find((i) => i.note_class === 'opd');
   const mapped = items.find((i) => i.note_class === 'ot' && i.attribution === 'mapped');
@@ -455,6 +478,40 @@ test('Action queue unions mapped OT + unmapped OT + OPD with class-safe refs', a
   assert.ok(unmapped);
   assert.equal(unmapped?.doctor_uid, null);
   assert.match(String(unmapped?.queue_item_ref), new RegExp(`^ot\\|unmapped:${UNMAPPED_AUDIT}\\|`));
+
+  const otSql = issued.find((q) => /ot_note_audits/.test(q.text) && /DISTINCT ON/.test(q.text));
+  assert.ok(otSql, 'OT queue load must issue DISTINCT ON SQL');
+  const inner = otSql.text.match(/SELECT DISTINCT ON \(uid\) (.+?)\s+FROM ot_note_audits/s)?.[1];
+  assert.ok(inner);
+  assert.equal((inner.match(/\buid\b/g) || []).length, 1);
+});
+
+test('OT Neon load failure surfaces ot_load diagnostic (not silent empty)', async () => {
+  resetStore();
+  const prev = globalThis.fetch;
+  globalThis.fetch = (async (url: unknown, init?: RequestInit) => {
+    const sent = JSON.parse(String((init as { body?: unknown } | undefined)?.body || '{}')) as {
+      query?: string; native?: { query?: string };
+    };
+    if (sent.native?.query) return prev(url as RequestInfo, init);
+    const text = String(sent.query || '');
+    if (/ot_note_audits/.test(text) && /DISTINCT ON/.test(text)) {
+      throw new Error('column reference "uid" is ambiguous');
+    }
+    return prev(url as RequestInfo, init);
+  }) as typeof fetch;
+  try {
+    const queue = await readActionQueue({
+      day: '2026-09-22', days: 1, doctor_uid: '', status: 'untriaged', includeQuieted: false,
+    });
+    assert.equal(queue.ot_load.ok, false);
+    if (queue.ot_load.ok === false) assert.match(queue.ot_load.error, /ambiguous/);
+    const items = flattenActionQueueItems(queue.doctors, queue.unmapped);
+    assert.equal(items.filter((i) => i.note_class === 'ot').length, 0);
+    assert.ok(items.some((i) => i.note_class === 'opd'), 'OPD must still land when OT load fails');
+  } finally {
+    globalThis.fetch = prev;
+  }
 });
 
 test('default write classes block OT route mint and still mint OPD', async () => {

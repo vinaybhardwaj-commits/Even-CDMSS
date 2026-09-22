@@ -43,6 +43,8 @@ export interface ActionQueueQuery {
   includeQuieted: boolean;
 }
 
+export type OtLoadDiagnostic = { ok: true } | { ok: false; error: string };
+
 export interface ActionQueueResult {
   ok: true;
   window: { from: string; to: string; days: number };
@@ -53,6 +55,8 @@ export interface ActionQueueResult {
   /** Unresolved DS treating-doctor or OT surgeon-map cards. Not grouped under a physician. */
   unmapped: Array<UnmappedDischargeCard | UnmappedOtCard>;
   advisory: string;
+  /** Non-PHI: OT Neon load status so Triage Bot can see failures without Vercel log diving. */
+  ot_load: OtLoadDiagnostic;
 }
 
 export interface ActionQueueItem {
@@ -275,15 +279,19 @@ export async function readActionQueue(query: ActionQueueQuery): Promise<ActionQu
 
   let otFindings: TriageFinding[] = [];
   let otUnmapped: UnmappedOtCard[] = [];
+  let ot_load: OtLoadDiagnostic = { ok: true };
   try {
     const landed = await loadOtQueue(from, to);
     otFindings = doctorFilter
       ? landed.findings.filter((f) => f.doctor_uid === doctorFilter)
       : landed.findings;
     otUnmapped = doctorFilter ? [] : landed.unmapped;
-  } catch {
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error('[queue-read] OT Action-queue load failed:', message);
     otFindings = [];
     otUnmapped = [];
+    ot_load = { ok: false, error: message };
   }
   findings.push(...otFindings);
 
@@ -315,5 +323,6 @@ export async function readActionQueue(query: ActionQueueQuery): Promise<ActionQu
     doctors,
     unmapped,
     advisory: 'Advisory documentation & prescribing signals from an automated screen — validate before routing. Not a clinician performance score.',
+    ot_load,
   };
 }
