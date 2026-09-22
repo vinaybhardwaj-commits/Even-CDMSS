@@ -39,10 +39,12 @@ const issued: { text: string; params: unknown[] }[] = [];
 const writes = () => issued.filter((q) => /^\s*(INSERT|UPDATE|DELETE)\b/i.test(q.text));
 let signalRow: Row;
 let auditRows: Row[];
+let responseRequest: Row | null;
 
 /** Reset the in-memory row set. `latest` is the thread's stored latest_response (null = unanswered). */
 function reset(latest: unknown = null, status = 'routed'): void {
   issued.length = 0;
+  responseRequest = null;
   signalRow = {
     signal_id: SIGNAL_ID, reference: REF, doctor_uid: 'DOC-1', signal_type: 'drug_interaction',
     importance: 'high', response_required: 'explanation', status, source_triage_ref: null,
@@ -80,6 +82,22 @@ globalThis.fetch = (async (_url: unknown, init: { body?: unknown } = {}) => {
   const text = String(sent.query ?? '');
   const params = sent.params ?? [];
   issued.push({ text, params });
+  if (/CREATE (TABLE|UNIQUE INDEX) IF NOT EXISTS/i.test(text)) return ok([]);
+  if (/^\s*SELECT/i.test(text) && /FROM opd_doctor_response_request\b/i.test(text)) {
+    if (!responseRequest) return ok([]);
+    if (/client_request_id=\$3/.test(text) && responseRequest.client_request_id !== params[2]) return ok([]);
+    return ok([responseRequest]);
+  }
+  if (/^\s*INSERT INTO opd_doctor_response_request\b/i.test(text)) {
+    if (responseRequest) return ok([]);
+    responseRequest = { client_request_id: params[2], verb: params[3], comment: params[4] };
+    return ok([responseRequest]);
+  }
+  if (/^\s*UPDATE opd_doctor_response_request\b/i.test(text)) return ok([]);
+  if (/^\s*DELETE FROM opd_doctor_response_request\b/i.test(text)) {
+    responseRequest = null;
+    return ok([]);
+  }
   if (/^\s*UPDATE opd_gov_signal\b/i.test(text)) {
     signalRow = { ...signalRow, latest_response: params[1], status: params[2] };
     return ok([]);
@@ -101,8 +119,8 @@ async function post(payload: Record<string, unknown>): Promise<{ status: number;
   return { status: res.status, json: (await res.json()) as Record<string, unknown> };
 }
 
-const AGREE = { reference: REF, type: 'explanation', verdict: 'agree', comment: 'Dose was reduced the same day.' };
-const DISAGREE = { reference: REF, type: 'explanation', verdict: 'disagree', comment: 'The pair is separated by 6 hours.' };
+const AGREE = { reference: REF, verb: 'agree', client_request_id: 'req-agree-1', comment: 'Dose was reduced the same day.' };
+const DISAGREE = { reference: REF, verb: 'disagree', client_request_id: 'req-disagree-1', comment: 'The pair is separated by 6 hours.' };
 
 // ── IG-D1..D4 — the classifier ────────────────────────────────────────────────
 test('classifyDoctorResponse: no stored response is a first response', () => {
@@ -154,12 +172,15 @@ test('route: a first response follows today\'s path — update, responded event,
   const res = await post(AGREE);
   assert.equal(res.status, 200);
   assert.equal(res.json.ok, true);
+  assert.equal(res.json.replayed, false);
   assert.equal(res.json.status, 'responded');
   const w = writes();
-  assert.equal(w.length, 2, 'exactly the two writes of today\'s path');
-  assert.match(w[0].text, /^UPDATE opd_gov_signal SET latest_response=\$2::jsonb, status=\$3/);
-  assert.match(w[1].text, /^INSERT INTO opd_gov_signal_event/);
-  assert.equal(w[1].params[1], 'responded');
+  assert.equal(w.length, 4, 'request claim + signal + event + claim completion');
+  assert.match(w[0].text, /^INSERT INTO opd_doctor_response_request/);
+  assert.match(w[1].text, /^UPDATE opd_gov_signal SET latest_response=\$2::jsonb, status=\$3/);
+  assert.match(w[2].text, /^INSERT INTO opd_gov_signal_event/);
+  assert.equal(w[2].params[1], 'responded');
+  assert.match(w[3].text, /^UPDATE opd_doctor_response_request/);
   const signal = res.json.signal as Record<string, unknown>;
   const response = signal.response as Record<string, unknown>;
   assert.equal(response.type, 'explanation');
@@ -174,12 +195,14 @@ test('route: a first disagree escalates and writes the calibration row — uncha
   assert.equal(res.status, 200);
   assert.equal(res.json.status, 'escalated');
   const w = writes();
-  assert.equal(w.length, 4);
-  assert.match(w[0].text, /^UPDATE opd_gov_signal SET latest_response/);
-  assert.equal(w[1].params[1], 'responded');
-  assert.equal(w[2].params[1], 'escalated');
-  assert.match(w[3].text, /^INSERT INTO opd_audit_feedback/);
-  assert.deepEqual(w[3].params, [AUDIT_ID, null, DISAGREE.comment, 'doctor:DOC-1']);
+  assert.equal(w.length, 6);
+  assert.match(w[0].text, /^INSERT INTO opd_doctor_response_request/);
+  assert.match(w[1].text, /^UPDATE opd_gov_signal SET latest_response/);
+  assert.equal(w[2].params[1], 'responded');
+  assert.equal(w[3].params[1], 'escalated');
+  assert.match(w[4].text, /^INSERT INTO opd_audit_feedback/);
+  assert.deepEqual(w[4].params, [AUDIT_ID, null, DISAGREE.comment, 'doctor:DOC-1']);
+  assert.match(w[5].text, /^UPDATE opd_doctor_response_request/);
 });
 
 // ── IG-D1 — the replay ────────────────────────────────────────────────────────
@@ -191,10 +214,11 @@ test('route: an identical replay returns 200 with the current state and writes n
 
   const replay = await post(AGREE);
   assert.equal(replay.status, 200);
+  assert.equal(replay.json.replayed, true);
   assert.deepEqual(writes(), [], 'no UPDATE, no event INSERT, no feedback INSERT');
   assert.ok(!issued.some((q) => /opd_audit_feedback/i.test(q.text)), 'the calibration corpus is untouched');
   assert.ok(!issued.some((q) => /opd_gov_signal_event/i.test(q.text)), 'no second event on the log');
-  assert.deepEqual(replay.json, first.json, 'the same signalObject the route returned the first time');
+  assert.deepEqual(replay.json.signal, first.json.signal, 'the same signal row is returned');
 });
 
 test('route: a replay whose comment differs only in whitespace is still a replay', async () => {
@@ -213,7 +237,7 @@ test('route: a different answer to an answered thread returns 409 and writes not
   await post(AGREE);
   issued.length = 0;
 
-  const conflict = await post({ ...AGREE, verdict: 'disagree' });
+  const conflict = await post({ ...AGREE, verb: 'disagree', comment: 'I disagree.' });
   assert.equal(conflict.status, 409);
   assert.deepEqual(conflict.json, { ok: false, error: 'already responded — revisions go through your care manager' });
   assert.deepEqual(writes(), [], 'a rejected revision writes nothing');
@@ -239,13 +263,13 @@ test('route source: the guard sits after validation and before every write', () 
   const src = readFileSync('app/api/governance/doctor-response/route.ts', 'utf8');
   const validate = src.indexOf('validateDoctorResponse(body, signal)');
   const classify = src.indexOf('classifyDoctorResponse(signal.latest_response, v.value)');
+  const claim = src.indexOf('claimDoctorResponseRequest(signal, v.value)');
   const apply = src.indexOf('applyDoctorResponse(signal, v.value)');
   const feedback = src.indexOf('INSERT INTO opd_audit_feedback');
   assert.ok(validate > 0 && classify > validate, 'classified only after validation passes');
-  assert.ok(apply > classify && feedback > classify, 'no write precedes the classification');
-  assert.ok(src.includes(`const updated = replay ? signal : await applyDoctorResponse(signal, v.value);`),
-    'the store write is skipped on a replay, not made conditional inside the store');
-  assert.ok(src.includes(`if (!replay && v.value.type === 'explanation' && v.value.verdict === 'disagree')`),
+  assert.ok(claim > classify && apply > claim && feedback > claim, 'request slot is claimed before response writes');
+  assert.ok(src.includes(`if (!replay) {`), 'the response write is skipped on a replay');
+  assert.ok(src.includes(`if (!replay && v.value.verb === 'disagree')`),
     'the calibration write is skipped on a replay too');
   assert.ok(!/\bstudy\b/.test(src), 'this route still never sets study (D16)');
 });

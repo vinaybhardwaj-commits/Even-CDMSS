@@ -51,6 +51,25 @@ export async function ensureGovSignalTables(): Promise<void> {
   await run(`CREATE INDEX IF NOT EXISTS opd_gov_signal_event_idx ON opd_gov_signal_event (signal_id, at)`, []);
 }
 
+export async function ensureDoctorResponseRequestsTable(): Promise<void> {
+  await run(`CREATE TABLE IF NOT EXISTS opd_doctor_response_request (
+    id                uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    signal_id         uuid NOT NULL,
+    doctor_uid        text NOT NULL,
+    client_request_id text NOT NULL,
+    verb              text NOT NULL,
+    comment           text,
+    response          jsonb,
+    created_at        timestamptz NOT NULL DEFAULT now(),
+    completed_at      timestamptz
+  )`, []);
+  await run(`CREATE UNIQUE INDEX IF NOT EXISTS opd_doctor_response_request_key_uq
+    ON opd_doctor_response_request (signal_id, doctor_uid, client_request_id)`, []);
+  // A governance thread accepts one answer. This closes the race between two distinct request keys.
+  await run(`CREATE UNIQUE INDEX IF NOT EXISTS opd_doctor_response_request_thread_uq
+    ON opd_doctor_response_request (signal_id, doctor_uid)`, []);
+}
+
 const SIGNAL_COLS = `signal_id::text AS signal_id, reference, doctor_uid, signal_type, importance,
   response_required, status, source_triage_ref::text AS source_triage_ref,
   to_char(window_from,'YYYY-MM-DD') AS window_from, to_char(window_to,'YYYY-MM-DD') AS window_to,
@@ -212,14 +231,103 @@ export async function listEvents(signalId: string): Promise<EventRow[]> {
   }));
 }
 
+export interface DoctorResponseRequestClaim {
+  claimed: boolean;
+  client_request_id: string;
+  verb: string;
+  comment: string | null;
+}
+
+/** Atomically claim the one response slot for a thread. */
+export async function claimDoctorResponseRequest(
+  signal: StoredSignal,
+  resp: NormalizedDoctorResponse,
+): Promise<DoctorResponseRequestClaim> {
+  const replay = await run(
+    `SELECT client_request_id, verb, comment
+     FROM opd_doctor_response_request
+     WHERE signal_id=$1::uuid AND doctor_uid=$2 AND client_request_id=$3 LIMIT 1`,
+    [signal.signal_id, signal.doctor_uid, resp.client_request_id],
+  );
+  if (replay[0]) {
+    return {
+      claimed: false,
+      client_request_id: String(replay[0].client_request_id),
+      verb: String(replay[0].verb),
+      comment: replay[0].comment == null ? null : String(replay[0].comment),
+    };
+  }
+  const inserted = await run(
+    `INSERT INTO opd_doctor_response_request
+      (signal_id, doctor_uid, client_request_id, verb, comment)
+     VALUES ($1::uuid,$2,$3,$4,$5)
+     ON CONFLICT DO NOTHING
+     RETURNING client_request_id, verb, comment`,
+    [signal.signal_id, signal.doctor_uid, resp.client_request_id, resp.verb, resp.comment],
+  );
+  if (inserted[0]) {
+    return {
+      claimed: true,
+      client_request_id: String(inserted[0].client_request_id),
+      verb: String(inserted[0].verb),
+      comment: inserted[0].comment == null ? null : String(inserted[0].comment),
+    };
+  }
+  const existing = await run(
+    `SELECT client_request_id, verb, comment
+     FROM opd_doctor_response_request WHERE signal_id=$1::uuid AND doctor_uid=$2 LIMIT 1`,
+    [signal.signal_id, signal.doctor_uid],
+  );
+  if (!existing[0]) throw new Error('doctor response request claim could not be resolved');
+  return {
+    claimed: false,
+    client_request_id: String(existing[0].client_request_id),
+    verb: String(existing[0].verb),
+    comment: existing[0].comment == null ? null : String(existing[0].comment),
+  };
+}
+
+export async function completeDoctorResponseRequest(
+  signal: StoredSignal,
+  resp: NormalizedDoctorResponse,
+  stored: StoredSignal,
+): Promise<void> {
+  await run(
+    `UPDATE opd_doctor_response_request
+     SET response=$4::jsonb, completed_at=now()
+     WHERE signal_id=$1::uuid AND doctor_uid=$2 AND client_request_id=$3`,
+    [signal.signal_id, signal.doctor_uid, resp.client_request_id, JSON.stringify(stored.latest_response ?? {})],
+  );
+}
+
+export async function releaseDoctorResponseRequest(signal: StoredSignal, resp: NormalizedDoctorResponse): Promise<void> {
+  await run(
+    `DELETE FROM opd_doctor_response_request
+     WHERE signal_id=$1::uuid AND doctor_uid=$2 AND client_request_id=$3 AND completed_at IS NULL`,
+    [signal.signal_id, signal.doctor_uid, resp.client_request_id],
+  );
+}
+
 /** Record a doctor response (portal). Sets latest_response + status + an event. */
 export async function applyDoctorResponse(signal: StoredSignal, resp: NormalizedDoctorResponse): Promise<StoredSignal> {
-  const newStatus = statusAfterResponse(resp.type, resp.verdict);
-  const payload = { type: resp.type, verdict: resp.verdict, comment: resp.comment, responded_at: new Date().toISOString() };
+  const newStatus = resp.verb === 'needs_clarification'
+    ? 'escalated'
+    : statusAfterResponse(resp.type, resp.verdict);
+  const payload = {
+    verb: resp.verb,
+    type: resp.type,
+    verdict: resp.verdict,
+    comment: resp.comment,
+    client_request_id: resp.client_request_id,
+    responded_at: new Date().toISOString(),
+  };
   await run(`UPDATE opd_gov_signal SET latest_response=$2::jsonb, status=$3, updated_at=now() WHERE signal_id=$1`,
     [signal.signal_id, JSON.stringify(payload), newStatus]);
   await appendEvent(signal.signal_id, 'responded', `doctor:${signal.doctor_uid}`, payload);
-  if (newStatus === 'escalated') await appendEvent(signal.signal_id, 'escalated', `doctor:${signal.doctor_uid}`, { reason: 'doctor disagreed' });
+  if (newStatus === 'escalated') {
+    const reason = resp.verb === 'needs_clarification' ? 'doctor needs clarification' : 'doctor disagreed';
+    await appendEvent(signal.signal_id, 'escalated', `doctor:${signal.doctor_uid}`, { reason });
+  }
   return (await getBySignalId(signal.signal_id))!;
 }
 
