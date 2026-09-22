@@ -58,7 +58,7 @@ export interface ActionQueueResult {
 export interface ActionQueueItem {
   queue_item_ref: string;
   note_class: NoteClass;
-  /** Null on an unmapped discharge card. Never a synthesized physician id. */
+  /** Null on an unmapped DS/OT card. Never a synthesized physician id. */
   doctor_uid: string | null;
   attribution: 'mapped' | 'unmapped';
   doctor_name: string | null;
