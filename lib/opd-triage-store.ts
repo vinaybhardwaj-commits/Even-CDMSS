@@ -148,6 +148,7 @@ export async function insertDecision(input: DecisionInput): Promise<{
         const s: StoredSignal = await mintOrUpdateSignal({
           doctor_uid: d.doctor_uid, signal_type: d.signal_type, importance: d.importance || 'med',
           response_required: d.response_required || 'none', window_from: d.window_from, window_to: d.window_to,
+          // This decision row's UUID. doctor-audits joins it to triage_stamp_events.decision_id.
           source_triage_ref: id, cm_user: d.cm_user,
         });
         signal = { reference: s.reference, signal_id: s.signal_id, status: s.status };

@@ -165,9 +165,22 @@ export async function mintOrUpdateSignal(input: MintInput): Promise<StoredSignal
         { importance: input.importance, response_required: input.response_required, reference });
       return (await getBySignalId(signalId))!;
     } catch (e) {
-      // unique-violation on reference OR on the (doctor,signal_type,window) key → re-resolve and retry
+      // unique-violation on reference OR on the (doctor,signal_type,window) key → re-resolve and retry.
+      // The winning thread must carry THIS decision's UUID, or doctor-audits cannot join
+      // source_triage_ref to triage_stamp_events.decision_id.
       const existingNow = await getByKey(input.doctor_uid, input.signal_type, input.window_from, input.window_to);
-      if (existingNow) return existingNow;
+      if (existingNow) {
+        if (input.source_triage_ref) {
+          await run(
+            `UPDATE opd_gov_signal SET source_triage_ref=$2, updated_at=now() WHERE signal_id=$1`,
+            [existingNow.signal_id, input.source_triage_ref],
+          );
+          const refreshed = await getBySignalId(existingNow.signal_id);
+          if (refreshed) return refreshed;
+          return { ...existingNow, source_triage_ref: input.source_triage_ref };
+        }
+        return existingNow;
+      }
       if (attempt === 1) throw e;
     }
   }

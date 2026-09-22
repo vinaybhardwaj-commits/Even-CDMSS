@@ -23,8 +23,28 @@ export interface NormalizedTriageStamp {
 const dstr = (value: unknown, cap: number): string | null =>
   value == null || value === '' ? null : String(value).trim().slice(0, cap);
 
+/** Verbs that call insertDecision. A retry of one of these must not mint a second row. */
+const CLINICAL_STAMP_VERBS = ['valid', 'bug', 'route'] as const;
+
 export function triageWriteEnabled(env: Record<string, string | undefined> = process.env): boolean {
   return env.TRIAGE_BOT_WRITE === '1';
+}
+
+export function clinicalStampRequiresIdentity(verb: string): boolean {
+  return (CLINICAL_STAMP_VERBS as readonly string[]).includes(verb);
+}
+
+/**
+ * Same identity doctor-response uses: body client_request_id, else the Idempotency-Key header.
+ * Empty after trim is treated as absent so a blank header does not become a shared key.
+ */
+export function resolveStampRequestId(
+  clientRequestId: unknown,
+  idempotencyKeyHeader: string | null | undefined,
+): string | null {
+  const fromBody = dstr(clientRequestId, 200);
+  const fromHeader = dstr(idempotencyKeyHeader, 200);
+  return fromBody || fromHeader || null;
 }
 
 export function parseQueueItemRef(ref: string): { doctor_uid: string; signal_type: string } | null {
