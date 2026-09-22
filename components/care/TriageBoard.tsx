@@ -47,7 +47,8 @@ const LVC_CAT_LABEL: Record<string, string> = {
 };
 interface TypeDecisionState {
   validity: string; bug_type: string | null; importance: string | null;
-  routed: boolean; response_required: string | null; reason: string | null; cm_user: string | null; decided_at: string;
+  routed: boolean; response_required: string | null; reason: string | null; cm_user: string | null;
+  disposition?: string | null; decided_at: string;
 }
 interface TypeGroup {
   signal_type: string; label: string; count: number; notes: number;
@@ -227,7 +228,9 @@ export default function TriageBoard() {
     const kind = transitionKind(draft);
     if (kind) {
       const fromStatus = t.triage
-        ? (t.triage.validity === 'audit_bug' ? 'dismissed' : t.triage.routed ? 'routed' : 'dismissed')
+        ? (t.triage.disposition === 'hold' || t.triage.disposition === 'drop_informational'
+          ? t.triage.disposition
+          : t.triage.validity === 'audit_bug' ? 'dismissed' : t.triage.routed ? 'routed' : 'dismissed')
         : 'open';
       body.event = { chip: draft.eventChip, note: (draft.eventNote || '').trim() || undefined, from_status: fromStatus };
     }
@@ -395,7 +398,7 @@ export default function TriageBoard() {
                     <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${impPill[t.importance_hint]}`}>hint: {t.importance_hint}</span>
                     {existing && (
                       <span className="ml-auto rounded-full bg-slate-800 px-2 py-0.5 text-[10px] font-medium text-white">
-                        {existing.validity === 'audit_bug' ? 'bug' : existing.routed ? `routed · ${existing.response_required}` : existing.importance || 'logged'}
+                        {existing.disposition === 'hold' ? 'held' : existing.disposition === 'drop_informational' ? 'dropped' : existing.validity === 'audit_bug' ? 'bug' : existing.routed ? `routed · ${existing.response_required}` : existing.importance || 'logged'}
                       </span>
                     )}
                   </div>

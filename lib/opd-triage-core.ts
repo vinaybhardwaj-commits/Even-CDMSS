@@ -22,6 +22,15 @@ export type BugType = (typeof BUG_TYPES)[number];
 export type Importance = (typeof IMPORTANCE)[number];
 export type ResponseRequired = (typeof RESPONSE_REQUIRED)[number];
 
+/** Action-queue outcomes that are not clinical labels. buildQueue treats the row as triaged. */
+export const QUEUE_DISPOSITIONS = ['hold', 'drop_informational'] as const;
+export type QueueDisposition = (typeof QUEUE_DISPOSITIONS)[number];
+/**
+ * validity stored on a hold/drop row. Outside VALIDITY, so signal-health and the
+ * valid_signal mint path cannot read the row as a clinical label.
+ */
+export const NONCLINICAL_VALIDITY = 'non_clinical';
+
 // ── Per-signal_type severity weight (advisory pre-ranking only) ───────────────
 // 3 = most serious to review first, 1 = low. Distinct from the CM's L/M/H importance (the CM
 // sets that) and from the clinical A–E harm scale (governance-owned). Unknown/slug types → 2.
@@ -110,6 +119,8 @@ export interface TriageDecisionRow {
   response_required?: string | null;
   reason?: string | null;
   cm_user?: string | null;
+  /** hold | drop_informational on a non-clinical queue outcome; absent/null on a clinical label. */
+  disposition?: string | null;
   created_at: string;              // ISO; newest wins
 }
 
@@ -122,6 +133,8 @@ export interface TypeDecisionState {
   response_required: string | null;
   reason: string | null;
   cm_user: string | null;
+  /** hold | drop_informational, or null when the overlay is a clinical validity/bug/route label. */
+  disposition: string | null;
   decided_at: string;
 }
 export interface TriageRepresentative {
@@ -200,7 +213,8 @@ function toState(d: TriageDecisionRow): TypeDecisionState {
   return {
     validity: d.validity, bug_type: d.bug_type ?? null, importance: d.importance ?? null,
     routed: !!d.routed, response_required: d.response_required ?? null,
-    reason: d.reason ?? null, cm_user: d.cm_user ?? null, decided_at: d.created_at,
+    reason: d.reason ?? null, cm_user: d.cm_user ?? null,
+    disposition: d.disposition ?? null, decided_at: d.created_at,
   };
 }
 

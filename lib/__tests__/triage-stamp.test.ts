@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { flattenActionQueueItems, parseActionQueueQuery, readActionQueue } from '../triage/queue-read.ts';
 import { resolveStampRequestId, triageWriteEnabled, validateTriageStamp } from '../triage/stamp-schema.ts';
 
 process.env.ADMIN_TOKEN = 'test-admin-token';
@@ -9,12 +10,24 @@ process.env.DATABASE_URL = 'postgresql://test:test@db.invalid.test/neondb';
 type Row = Record<string, unknown>;
 const issued: { text: string; params: unknown[] }[] = [];
 const stamps: Row[] = [];
+const triageRows: Row[] = [];
 let gov: Row | null = null;
 
 function resetStore(): void {
   issued.length = 0;
   stamps.length = 0;
+  triageRows.length = 0;
   gov = null;
+}
+
+function pgTextArray(value: unknown): string[] {
+  if (Array.isArray(value)) return value.map(String);
+  const text = String(value ?? '').trim();
+  if (!text || text === '{}') return [];
+  if (text.startsWith('{') && text.endsWith('}')) {
+    return text.slice(1, -1).split(',').map((part) => part.trim().replace(/^"(.*)"$/, '$1')).filter(Boolean);
+  }
+  return [text];
 }
 
 function decisionInserts() {
@@ -133,6 +146,29 @@ globalThis.fetch = (async (_url: unknown, init: { body?: unknown } = {}) => {
       row.error = params[1];
     }
     return result([]);
+  }
+  if (/INSERT INTO opd_audit_triage/.test(text)) {
+    triageRows.push({
+      scope: params[1] == null ? null : String(params[1]),
+      doctor_uid: params[2] == null ? null : String(params[2]),
+      signal_type: params[3] == null ? null : String(params[3]),
+      audit_id: params[4] == null ? null : String(params[4]),
+      finding_ref: params[5] == null ? null : String(params[5]),
+      validity: params[8] == null ? null : String(params[8]),
+      bug_type: params[9] == null ? null : String(params[9]),
+      importance: params[10] == null ? null : String(params[10]),
+      routed: params[11] === true || params[11] === 'true',
+      response_required: params[12] == null ? null : String(params[12]),
+      reason: params[13] == null ? null : String(params[13]),
+      cm_user: params[14] == null ? null : String(params[14]),
+      disposition: params.length > 15 && params[15] != null ? String(params[15]) : null,
+      created_at: '2026-09-22T06:00:00.000Z',
+    });
+    return result([]);
+  }
+  if (/FROM opd_audit_triage/.test(text) && /doctor_uid = ANY\(\$1\)/.test(text)) {
+    const uids = pgTextArray(params[0]);
+    return result(triageRows.filter((row) => uids.includes(String(row.doctor_uid))));
   }
   if (/INSERT INTO opd_gov_signal\b/.test(text)) {
     gov = {
@@ -253,21 +289,39 @@ test('POST accepts an allowed hold shape when the flag is on and records audit m
   assert.equal(response.json.ok, true);
   assert.equal(response.json.outcome, 'held');
   assert.equal(response.json.signal, null);
+  const decision = response.json.decision as { validity: string; disposition: string; bug_type: string | null; routed: boolean };
+  assert.equal(decision.disposition, 'hold');
+  assert.equal(decision.validity, 'non_clinical');
+  assert.equal(decision.bug_type, null);
+  assert.equal(decision.routed, false);
   const auditInsert = issued.find((query) => /INSERT INTO triage_stamp_events/.test(query.text));
   assert.ok(auditInsert);
   assert.equal(auditInsert.params[3], 'hold');
   assert.equal(auditInsert.params[5], 'triage-bot');
   assert.equal(auditInsert.params[6], 'triage/1');
-  assert.equal(decisionInserts().length, 0);
+  assert.equal(decisionInserts().length, 1);
+  assert.equal(decisionInserts()[0].params[8], 'non_clinical');
+  assert.equal(decisionInserts()[0].params[15], 'hold');
   assert.equal(signalInserts().length, 0);
 });
 
 test('stamp route delegates clinical mutations to the existing decision/mint store', () => {
   const source = readFileSync('app/api/admin/triage/stamp/route.ts', 'utf8');
   assert.match(source, /insertDecision\(decision\)/);
+  assert.match(source, /insertQueueDisposition\(/);
   assert.ok(!/mintOrUpdateSignal/.test(source), 'the route must not invent a second signal mint path');
   assert.match(source, /hold/);
   assert.match(source, /drop_informational/);
+  const store = readFileSync('lib/opd-triage-store.ts', 'utf8');
+  const sibling = store.slice(store.indexOf('export async function insertQueueDisposition'));
+  assert.ok(sibling.length > 0);
+  assert.match(sibling, /NONCLINICAL_VALIDITY/);
+  assert.ok(!/mintOrUpdateSignal|opd_gov_signal/.test(sibling));
+  assert.match(store, /validity IN \('valid_signal', 'audit_bug'\)/);
+  const migration = readFileSync('migrations/0059_triage_queue_disposition.sql', 'utf8');
+  assert.match(migration, /ADD COLUMN IF NOT EXISTS disposition text/);
+  assert.match(store, /ADD COLUMN IF NOT EXISTS disposition text/);
+  assert.ok(!/TRIAGE_BOT_WRITE\s*=\s*1/.test(migration));
 });
 
 test('request id resolves from client_request_id then Idempotency-Key', () => {
@@ -348,7 +402,7 @@ test('identical (queue_item_ref, run_id) replays without a second decision', asy
   assert.equal(signalInserts().length, 1);
 });
 
-test('a repeated hold stays audit-only and does not insert a second stamp', async () => {
+test('a repeated hold replays one non-clinical disposition and does not mint', async () => {
   process.env.TRIAGE_BOT_WRITE = '1';
   resetStore();
   const payload = {
@@ -364,11 +418,13 @@ test('a repeated hold stays audit-only and does not insert a second stamp', asyn
   assert.equal(first.status, 200);
   assert.equal(first.json.outcome, 'held');
   assert.equal(first.json.signal, null);
+  assert.equal((first.json.decision as { disposition: string }).disposition, 'hold');
   assert.equal(second.status, 200);
   assert.equal(second.json.replayed, true);
   assert.equal(second.json.stamp_id, first.json.stamp_id);
   assert.equal(second.json.signal, null);
-  assert.equal(decisionInserts().length, 0);
+  assert.equal((second.json.decision as { id: string }).id, (first.json.decision as { id: string }).id);
+  assert.equal(decisionInserts().length, 1);
   assert.equal(signalInserts().length, 0);
   assert.equal(issued.filter((query) => /INSERT INTO triage_stamp_events/.test(query.text)).length, 1);
 });
@@ -485,4 +541,76 @@ test('omitted day and days keep the single latest-audit-day window', async () =>
   assert.equal(earlier.status, 404);
   assert.match(String(earlier.json.error), /not present in the current Action queue/);
   assert.equal(decisionInserts().length, 1);
+});
+
+async function cardsFor(status: 'untriaged' | 'all') {
+  const queue = await readActionQueue(parseActionQueueQuery({ status, day: '2026-09-22' }));
+  return flattenActionQueueItems(queue.doctors);
+}
+
+test('hold and drop_informational leave untriaged and stay on status=all; route still mints', async () => {
+  process.env.TRIAGE_BOT_WRITE = '1';
+  const ref = 'DOC-1|drug_interaction';
+
+  resetStore();
+  const hold = await post({
+    queue_item_ref: ref,
+    verb: 'hold',
+    reason: 'Awaiting policy review',
+    actor: 'triage-bot',
+    policy_version: 'triage/1',
+    run_id: 'run-queue-hold',
+  });
+  assert.equal(hold.status, 200, JSON.stringify(hold.json));
+  assert.equal(hold.json.outcome, 'held');
+  assert.equal(hold.json.signal, null);
+  assert.equal(signalInserts().length, 0);
+  const heldOpen = await cardsFor('untriaged');
+  assert.ok(!heldOpen.some((item) => item.queue_item_ref === ref));
+  const heldCard = (await cardsFor('all')).find((item) => item.queue_item_ref === ref);
+  assert.ok(heldCard);
+  assert.equal(heldCard.triage?.disposition, 'hold');
+  assert.equal(heldCard.triage?.validity, 'non_clinical');
+  assert.notEqual(heldCard.triage?.validity, 'valid_signal');
+  assert.notEqual(heldCard.triage?.validity, 'audit_bug');
+  assert.equal(heldCard.triage?.bug_type, null);
+  assert.equal(heldCard.triage?.routed, false);
+
+  resetStore();
+  const drop = await post({
+    queue_item_ref: ref,
+    verb: 'drop_informational',
+    reason: 'Informational only',
+    actor: 'human',
+    policy_version: 'triage/1',
+    run_id: 'run-queue-drop',
+  });
+  assert.equal(drop.status, 200, JSON.stringify(drop.json));
+  assert.equal(drop.json.outcome, 'dropped_informational');
+  assert.equal(drop.json.signal, null);
+  assert.equal(signalInserts().length, 0);
+  assert.ok(!(await cardsFor('untriaged')).some((item) => item.queue_item_ref === ref));
+  const droppedCard = (await cardsFor('all')).find((item) => item.queue_item_ref === ref);
+  assert.ok(droppedCard);
+  assert.equal(droppedCard.triage?.disposition, 'drop_informational');
+  assert.equal(droppedCard.triage?.validity, 'non_clinical');
+  assert.equal(droppedCard.triage?.bug_type, null);
+  assert.equal(droppedCard.triage?.routed, false);
+
+  resetStore();
+  const routed = await post({ ...ROUTE_STAMP, run_id: 'run-queue-route' });
+  assert.equal(routed.status, 200, JSON.stringify(routed.json));
+  assert.equal(routed.json.outcome, 'applied');
+  const signal = routed.json.signal as { reference: string; signal_id: string };
+  assert.ok(signal.reference);
+  assert.ok(signal.signal_id);
+  assert.equal(signalInserts().length, 1);
+  assert.equal(signalInserts()[0].params[7], (routed.json.decision as { id: string }).id);
+  assert.equal((routed.json.decision as { validity: string }).validity, 'valid_signal');
+  assert.equal((routed.json.decision as { routed: boolean }).routed, true);
+  assert.ok(!(await cardsFor('untriaged')).some((item) => item.queue_item_ref === ref));
+  const routedCard = (await cardsFor('all')).find((item) => item.queue_item_ref === ref);
+  assert.equal(routedCard?.triage?.validity, 'valid_signal');
+  assert.equal(routedCard?.triage?.routed, true);
+  assert.equal(routedCard?.triage?.disposition, null);
 });
