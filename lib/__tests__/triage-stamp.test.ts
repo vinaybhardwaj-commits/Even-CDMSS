@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { flattenActionQueueItems, parseActionQueueQuery, readActionQueue } from '../triage/queue-read.ts';
-import { resolveStampRequestId, triageWriteEnabled, validateTriageStamp } from '../triage/stamp-schema.ts';
+import { resolveStampRequestId, sameQueueItem, triageWriteEnabled, validateTriageStamp } from '../triage/stamp-schema.ts';
 
 process.env.ADMIN_TOKEN = 'test-admin-token';
 process.env.DATABASE_URL = 'postgresql://test:test@db.invalid.test/neondb';
@@ -161,7 +161,8 @@ globalThis.fetch = (async (_url: unknown, init: { body?: unknown } = {}) => {
       response_required: params[12] == null ? null : String(params[12]),
       reason: params[13] == null ? null : String(params[13]),
       cm_user: params[14] == null ? null : String(params[14]),
-      disposition: params.length > 15 && params[15] != null ? String(params[15]) : null,
+      disposition: /\bdisposition\b/.test(text) && params[15] != null ? String(params[15]) : null,
+      note_class: params.length > 15 && params[params.length - 1] != null ? String(params[params.length - 1]) : 'opd',
       created_at: '2026-09-22T06:00:00.000Z',
     });
     return result([]);
@@ -197,7 +198,7 @@ globalThis.fetch = (async (_url: unknown, init: { body?: unknown } = {}) => {
     return result([gov]);
   }
   if (/max\(\(note_date/.test(text)) return result([{ d: '2026-09-22' }]);
-  if (/FROM \(\s*SELECT DISTINCT ON/.test(text)) {
+  if (/opd_note_audits/.test(text) && /DISTINCT ON/.test(text)) {
     const from = String(params[2] || '');
     const to = String(params[3] || '');
     const doctor = params.length > 4 && params[4] != null ? String(params[4]) : '';
@@ -439,7 +440,7 @@ test('a clinical stamp without run_id or Idempotency-Key is refused before inser
 });
 
 function queueAuditRead() {
-  return issued.filter((query) => /FROM \(\s*SELECT DISTINCT ON/.test(query.text));
+  return issued.filter((query) => /opd_note_audits/.test(query.text) && /DISTINCT ON/.test(query.text));
 }
 
 test('an item present in the days=7 queue stamps', async () => {
@@ -566,8 +567,8 @@ test('hold and drop_informational leave untriaged and stay on status=all; route 
   assert.equal(hold.json.signal, null);
   assert.equal(signalInserts().length, 0);
   const heldOpen = await cardsFor('untriaged');
-  assert.ok(!heldOpen.some((item) => item.queue_item_ref === ref));
-  const heldCard = (await cardsFor('all')).find((item) => item.queue_item_ref === ref);
+  assert.ok(!heldOpen.some((item) => sameQueueItem(item.queue_item_ref, ref)));
+  const heldCard = (await cardsFor('all')).find((item) => sameQueueItem(item.queue_item_ref, ref));
   assert.ok(heldCard);
   assert.equal(heldCard.triage?.disposition, 'hold');
   assert.equal(heldCard.triage?.validity, 'non_clinical');
@@ -589,8 +590,8 @@ test('hold and drop_informational leave untriaged and stay on status=all; route 
   assert.equal(drop.json.outcome, 'dropped_informational');
   assert.equal(drop.json.signal, null);
   assert.equal(signalInserts().length, 0);
-  assert.ok(!(await cardsFor('untriaged')).some((item) => item.queue_item_ref === ref));
-  const droppedCard = (await cardsFor('all')).find((item) => item.queue_item_ref === ref);
+  assert.ok(!(await cardsFor('untriaged')).some((item) => sameQueueItem(item.queue_item_ref, ref)));
+  const droppedCard = (await cardsFor('all')).find((item) => sameQueueItem(item.queue_item_ref, ref));
   assert.ok(droppedCard);
   assert.equal(droppedCard.triage?.disposition, 'drop_informational');
   assert.equal(droppedCard.triage?.validity, 'non_clinical');
@@ -608,8 +609,8 @@ test('hold and drop_informational leave untriaged and stay on status=all; route 
   assert.equal(signalInserts()[0].params[7], (routed.json.decision as { id: string }).id);
   assert.equal((routed.json.decision as { validity: string }).validity, 'valid_signal');
   assert.equal((routed.json.decision as { routed: boolean }).routed, true);
-  assert.ok(!(await cardsFor('untriaged')).some((item) => item.queue_item_ref === ref));
-  const routedCard = (await cardsFor('all')).find((item) => item.queue_item_ref === ref);
+  assert.ok(!(await cardsFor('untriaged')).some((item) => sameQueueItem(item.queue_item_ref, ref)));
+  const routedCard = (await cardsFor('all')).find((item) => sameQueueItem(item.queue_item_ref, ref));
   assert.equal(routedCard?.triage?.validity, 'valid_signal');
   assert.equal(routedCard?.triage?.routed, true);
   assert.equal(routedCard?.triage?.disposition, null);
