@@ -5896,6 +5896,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "triage",
     "to": "opd-note-audit-core",
+    "kind": "type"
+  },
+  {
+    "from": "triage",
+    "to": "opd-note-audit-core",
     "kind": "value"
   },
   {
@@ -6246,6 +6251,18 @@ export const VERSION_REGISTRY: VersionRow[] = [
     "value": "opd-note-audit/0.81.18",
     "file": "lib/opd-note-audit-core.ts",
     "derived": false
+  },
+  {
+    "constName": "OT_ENGINE_VERSION",
+    "value": "ot-note-audit/0.1",
+    "file": "lib/triage/ot-audit-core.ts",
+    "derived": false
+  },
+  {
+    "constName": "OT_ENGINE_VERSIONS_CURRENT",
+    "value": "[OT_ENGINE_VERSION]",
+    "file": "lib/triage/ot-audit-core.ts",
+    "derived": true
   },
   {
     "constName": "PATIENT_SUMMARY_API_VERSION",
