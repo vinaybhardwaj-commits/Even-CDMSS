@@ -10,7 +10,7 @@
 
 import { randomUUID } from 'crypto';
 import { sql } from './db';
-import { validateDecision, type DecisionInput, type NormalizedDecision, type TriageDecisionRow } from './opd-triage-core';
+import { validateDecision, NONCLINICAL_VALIDITY, QUEUE_DISPOSITIONS, type DecisionInput, type NormalizedDecision, type QueueDisposition, type TriageDecisionRow } from './opd-triage-core';
 import { mintOrUpdateSignal, withdrawSignal, type StoredSignal } from './opd-gov-signal-store';
 
 const run = sql as unknown as (text: string, params?: unknown[]) => Promise<Record<string, unknown>[]>;
@@ -33,8 +33,10 @@ export async function ensureOpdTriageTable(): Promise<void> {
     response_required  text,
     reason             text,
     cm_user            text,
+    disposition        text,
     created_at         timestamptz NOT NULL DEFAULT now()
   )`, []);
+  await ensureDispositionColumn();
   await run(`CREATE INDEX IF NOT EXISTS opd_audit_triage_type_idx     ON opd_audit_triage (doctor_uid, signal_type, created_at DESC)`, []);
   await run(`CREATE INDEX IF NOT EXISTS opd_audit_triage_instance_idx ON opd_audit_triage (audit_id, finding_ref) WHERE scope = 'instance'`, []);
   await run(`CREATE INDEX IF NOT EXISTS opd_audit_triage_routed_idx   ON opd_audit_triage (routed, response_required, created_at DESC)`, []);
@@ -54,17 +56,27 @@ function rowToDecision(r: Record<string, unknown>): TriageDecisionRow {
     response_required: r.response_required == null ? null : String(r.response_required),
     reason: r.reason == null ? null : String(r.reason),
     cm_user: r.cm_user == null ? null : String(r.cm_user),
+    disposition: r.disposition == null || r.disposition === '' ? null : String(r.disposition),
     created_at: r.created_at == null ? '' : new Date(String(r.created_at)).toISOString(),
   };
 }
 
 const SELECT_COLS = `scope, doctor_uid, signal_type, audit_id::text AS audit_id, finding_ref,
-  validity, bug_type, importance, routed, response_required, reason, cm_user, created_at`;
+  validity, bug_type, importance, routed, response_required, reason, cm_user, disposition, created_at`;
+
+let dispositionColumnReady = false;
+/** Additive column. CREATE TABLE IF NOT EXISTS does not alter a table that already exists. */
+async function ensureDispositionColumn(): Promise<void> {
+  if (dispositionColumnReady) return;
+  await run(`ALTER TABLE opd_audit_triage ADD COLUMN IF NOT EXISTS disposition text`, []);
+  dispositionColumnReady = true;
+}
 
 /** All triage decisions for a set of doctors (newest first) — for the queue overlay. */
 export async function loadTriageDecisions(doctorUids: string[]): Promise<TriageDecisionRow[]> {
   const uids = [...new Set(doctorUids.filter(Boolean))];
   if (uids.length === 0) return [];
+  await ensureDispositionColumn();
   const rows = await run(
     `SELECT ${SELECT_COLS} FROM opd_audit_triage WHERE doctor_uid = ANY($1) ORDER BY created_at DESC LIMIT 5000`,
     [uids],
@@ -74,6 +86,7 @@ export async function loadTriageDecisions(doctorUids: string[]): Promise<TriageD
 
 /** Instance-level overrides for one (doctor, signal_type) — for the drill view. */
 export async function loadInstanceOverrides(doctorUid: string, signalType: string): Promise<TriageDecisionRow[]> {
+  await ensureDispositionColumn();
   const rows = await run(
     `SELECT ${SELECT_COLS} FROM opd_audit_triage
      WHERE scope = 'instance' AND doctor_uid = $1 AND signal_type = $2 ORDER BY created_at DESC LIMIT 2000`,
@@ -86,7 +99,9 @@ export async function loadInstanceOverrides(doctorUid: string, signalType: strin
 export async function loadTypeDecisions(sinceDays = 90): Promise<{ signal_type: string; doctor_uid: string; validity: string; bug_type: string | null; routed: boolean; reason: string | null; created_at: string }[]> {
   const rows = await run(
     `SELECT signal_type, doctor_uid, validity, bug_type, routed, reason, created_at
-     FROM opd_audit_triage WHERE scope='type' AND created_at > now() - ($1 || ' days')::interval
+     FROM opd_audit_triage
+     WHERE scope='type' AND validity IN ('valid_signal', 'audit_bug')
+       AND created_at > now() - ($1 || ' days')::interval
      ORDER BY created_at DESC LIMIT 10000`, [String(Math.max(1, sinceDays))]);
   return (rows as Record<string, unknown>[]).map((r) => ({
     signal_type: String(r.signal_type), doctor_uid: String(r.doctor_uid), validity: String(r.validity),
@@ -102,7 +117,8 @@ export async function loadValidLabelDoctors(signalType: string): Promise<string[
   const rows = await run(
     `SELECT doctor_uid, validity FROM (
        SELECT DISTINCT ON (doctor_uid) doctor_uid, validity
-       FROM opd_audit_triage WHERE scope='type' AND signal_type=$1
+       FROM opd_audit_triage
+       WHERE scope='type' AND signal_type=$1 AND validity IN ('valid_signal', 'audit_bug')
        ORDER BY doctor_uid, created_at DESC
      ) latest WHERE validity='valid_signal'`, [signalType]).catch(() => []);
   return (rows as Record<string, unknown>[]).map((r) => String(r.doctor_uid));
@@ -110,6 +126,7 @@ export async function loadValidLabelDoctors(signalType: string): Promise<string[
 
 /** The engineering bug feed: audit_bug decisions (spec §3.4). */
 export async function loadBugFeed(limit = 200): Promise<TriageDecisionRow[]> {
+  await ensureDispositionColumn();
   const rows = await run(
     `SELECT ${SELECT_COLS} FROM opd_audit_triage WHERE validity = 'audit_bug' ORDER BY created_at DESC LIMIT $1`,
     [Math.max(1, Math.min(1000, limit))],
@@ -160,4 +177,84 @@ export async function insertDecision(input: DecisionInput): Promise<{
   }
 
   return { id, decision: d, signal, signal_error };
+}
+
+const QUEUE_DISPOSITION_SET = new Set<string>(QUEUE_DISPOSITIONS);
+
+export interface QueueDispositionInput {
+  doctor_uid: string;
+  signal_type: string;
+  window_from?: string | null;
+  window_to?: string | null;
+  disposition: QueueDisposition;
+  reason?: string | null;
+  cm_user?: string | null;
+}
+
+/** The row buildQueue overlays. validity is non_clinical so it cannot train or mint. */
+export interface QueueDispositionDecision {
+  scope: 'type';
+  doctor_uid: string;
+  signal_type: string;
+  audit_id: null;
+  finding_ref: null;
+  window_from: string | null;
+  window_to: string | null;
+  validity: typeof NONCLINICAL_VALIDITY;
+  bug_type: null;
+  importance: null;
+  routed: false;
+  response_required: null;
+  reason: string | null;
+  cm_user: string | null;
+  disposition: QueueDisposition;
+}
+
+/**
+ * Append a hold or drop_informational type row. The Action queue reader (loadTriageDecisions →
+ * buildQueue) treats any type decision as triaged. This does not call mintOrUpdateSignal and does
+ * not write valid_signal or audit_bug.
+ */
+export async function insertQueueDisposition(input: QueueDispositionInput): Promise<{
+  id: string;
+  decision: QueueDispositionDecision;
+}> {
+  const doctor_uid = (input.doctor_uid || '').trim().slice(0, 64);
+  if (!doctor_uid) throw new Error('doctor_uid required');
+  const signal_type = (input.signal_type || '').trim().slice(0, 80);
+  if (!signal_type) throw new Error('signal_type required');
+  if (!QUEUE_DISPOSITION_SET.has(input.disposition)) {
+    throw new Error('disposition must be hold|drop_informational');
+  }
+  const decision: QueueDispositionDecision = {
+    scope: 'type',
+    doctor_uid,
+    signal_type,
+    audit_id: null,
+    finding_ref: null,
+    window_from: input.window_from ? String(input.window_from).slice(0, 10) : null,
+    window_to: input.window_to ? String(input.window_to).slice(0, 10) : null,
+    validity: NONCLINICAL_VALIDITY,
+    bug_type: null,
+    importance: null,
+    routed: false,
+    response_required: null,
+    reason: input.reason ? String(input.reason).slice(0, 1000) : null,
+    cm_user: input.cm_user ? String(input.cm_user).slice(0, 64) : null,
+    disposition: input.disposition,
+  };
+  await ensureDispositionColumn();
+  const id = randomUUID();
+  await run(
+    `INSERT INTO opd_audit_triage
+      (id, app_source, scope, doctor_uid, signal_type, audit_id, finding_ref, window_from, window_to,
+       validity, bug_type, importance, routed, response_required, reason, cm_user, disposition)
+     VALUES ($1,'standalone',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+    [
+      id, decision.scope, decision.doctor_uid, decision.signal_type, decision.audit_id, decision.finding_ref,
+      decision.window_from, decision.window_to, decision.validity, decision.bug_type, decision.importance,
+      decision.routed, decision.response_required, decision.reason, decision.cm_user, decision.disposition,
+    ],
+  );
+  return { id, decision };
 }
