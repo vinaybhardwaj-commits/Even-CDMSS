@@ -38,9 +38,31 @@ export async function GET(req: NextRequest) {
   ]);
 
   const out = [];
+  const sourceRefs = signals.map((s) => s.source_triage_ref).filter((v): v is string => !!v);
+  const triageRows = sourceRefs.length
+    ? await run(
+        `SELECT DISTINCT ON (decision_id)
+           decision_id::text AS decision_id, reason, policy_version
+         FROM triage_stamp_events
+         WHERE decision_id = ANY($1::uuid[]) AND outcome IN ('applied','decision_recorded_signal_failed')
+         ORDER BY decision_id, created_at DESC`,
+        [sourceRefs],
+      ).catch(() => [])
+    : [];
+  const triageMeta = new Map(triageRows.map((row) => [
+    String(row.decision_id),
+    {
+      rationale: row.reason == null ? null : String(row.reason),
+      policy_version: row.policy_version == null ? null : String(row.policy_version),
+    },
+  ]));
   for (const s of signals) {
     const { count, representative } = await resolveInstances(s.doctor_uid, s.signal_type, s.window_from, s.window_to);
-    out.push(signalObject(toSignalRow(s, count), representative, now));
+    const signal = signalObject(toSignalRow(s, count), representative, now);
+    out.push({
+      ...signal,
+      triage: s.source_triage_ref ? triageMeta.get(s.source_triage_ref) ?? null : null,
+    });
   }
 
   return NextResponse.json({

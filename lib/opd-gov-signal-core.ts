@@ -13,6 +13,8 @@
 export type SignalStatus = 'routed' | 'responded' | 'escalated' | 'ruled' | 'closed';
 export type ResponseType = 'acknowledgment' | 'explanation';
 export type ResponseVerdict = 'agree' | 'disagree';
+export const DOCTOR_RESPONSE_VERBS = ['agree', 'disagree', 'needs_clarification'] as const;
+export type DoctorResponseVerb = (typeof DOCTOR_RESPONSE_VERBS)[number];
 export const SIGNAL_ACTIONS = ['acknowledged_by_governance', 'privilege_action', 'dismissed', 'closed'] as const;
 export type SignalAction = (typeof SIGNAL_ACTIONS)[number];
 
@@ -54,6 +56,18 @@ export function isOverdue(s: { status: string; response_required: string; sla_du
 export function statusAfterResponse(type: ResponseType, verdict: ResponseVerdict | null): SignalStatus {
   return type === 'explanation' && verdict === 'disagree' ? 'escalated' : 'responded';
 }
+/** Portal verbs are deliberately smaller than the transport's legacy type/verdict pair. Both
+ * disagree and needs_clarification return the thread to CM/governance, regardless of whether the
+ * original signal asked for an acknowledgment or an explanation. */
+export function statusAfterDoctorVerb(
+  verb: DoctorResponseVerb,
+  type: ResponseType,
+  verdict: ResponseVerdict | null,
+): SignalStatus {
+  return verb === 'disagree' || verb === 'needs_clarification'
+    ? 'escalated'
+    : statusAfterResponse(type, verdict);
+}
 /** After a governance ruling: dismissed/closed shut the thread; otherwise it is ruled. */
 export function statusAfterAction(action: SignalAction): SignalStatus {
   return action === 'dismissed' || action === 'closed' ? 'closed' : 'ruled';
@@ -62,10 +76,16 @@ export function statusAfterAction(action: SignalAction): SignalStatus {
 // ── Validation: POST /doctor-response (contract §5.1) ─────────────────────────
 export interface DoctorResponseInput {
   reference?: string; signal_id?: string; doctor_uid?: string;
-  type?: string; verdict?: string; comment?: string;
+  verb?: string; comment?: string; client_request_id?: string;
+  /** Legacy portal fields; accepted temporarily and normalized to the doctor verb contract. */
+  type?: string; verdict?: string;
 }
 export interface NormalizedDoctorResponse {
-  type: ResponseType; verdict: ResponseVerdict | null; comment: string | null;
+  verb: DoctorResponseVerb;
+  type: ResponseType;
+  verdict: ResponseVerdict | null;
+  comment: string | null;
+  client_request_id: string;
 }
 const dstr = (v: unknown, cap = 4000): string | null => (v == null || v === '' ? null : String(v).slice(0, cap));
 
@@ -84,6 +104,30 @@ export function validateDoctorResponse(
   if (req === 'none' || req === 'recommend_privilege_review') {
     return { ok: false, error: `this signal requires no doctor response (${req})`, code: 409 };
   }
+  const client_request_id = dstr(input.client_request_id, 200);
+  if (!client_request_id) {
+    return { ok: false, error: 'client_request_id or Idempotency-Key header required', code: 400 };
+  }
+  if (input.verb != null) {
+    if (!(DOCTOR_RESPONSE_VERBS as readonly string[]).includes(input.verb)) {
+      return { ok: false, error: 'verb must be agree|disagree|needs_clarification', code: 400 };
+    }
+    const verb = input.verb as DoctorResponseVerb;
+    const comment = dstr(input.comment);
+    if ((verb === 'disagree' || verb === 'needs_clarification') && !comment) {
+      return { ok: false, error: `${verb} requires a comment`, code: 400 };
+    }
+    return {
+      ok: true,
+      value: {
+        verb,
+        type: req === 'acknowledgment' ? 'acknowledgment' : 'explanation',
+        verdict: verb === 'needs_clarification' ? null : verb,
+        comment,
+        client_request_id,
+      },
+    };
+  }
   if (input.type !== req) {
     return { ok: false, error: `type must equal the signal's response_required (${req})`, code: 400 };
   }
@@ -92,10 +136,16 @@ export function validateDoctorResponse(
     if (!comment) return { ok: false, error: 'explanation requires a comment', code: 400 };
     const verdict = input.verdict === 'agree' ? 'agree' : input.verdict === 'disagree' ? 'disagree' : null;
     if (!verdict) return { ok: false, error: 'explanation requires verdict agree|disagree', code: 400 };
-    return { ok: true, value: { type: 'explanation', verdict, comment } };
+    return { ok: true, value: { verb: verdict, type: 'explanation', verdict, comment, client_request_id } };
   }
   // acknowledgment
-  return { ok: true, value: { type: 'acknowledgment', verdict: null, comment: dstr(input.comment) } };
+  return {
+    ok: true,
+    value: {
+      verb: 'agree', type: 'acknowledgment', verdict: null,
+      comment: dstr(input.comment), client_request_id,
+    },
+  };
 }
 
 /** The comment as the idempotency comparison sees it: trimmed, internal whitespace runs collapsed
@@ -116,14 +166,26 @@ function normalizeComment(v: unknown): string {
  */
 export function classifyDoctorResponse(
   stored: unknown | null,
-  incoming: { type: string; verdict: string | null; comment: string | null },
+  incoming: { verb?: string; type: string; verdict: string | null; comment: string | null },
 ): 'first' | 'replay' | 'conflict' {
   if (stored == null) return 'first';
   if (typeof stored !== 'object') return 'conflict';
-  const s = stored as { type?: string | null; verdict?: string | null; comment?: unknown };
+  const s = stored as { verb?: string | null; type?: string | null; verdict?: string | null; comment?: unknown };
+  if (s.verb == null && incoming.verb == null) {
+    const sameLegacy =
+      s.type === incoming.type &&
+      (s.verdict ?? null) === (incoming.verdict ?? null) &&
+      normalizeComment(s.comment) === normalizeComment(incoming.comment);
+    return sameLegacy ? 'replay' : 'conflict';
+  }
+  const storedVerb = s.verb ?? (s.verdict === 'agree' || s.verdict === 'disagree'
+    ? s.verdict
+    : s.type === 'acknowledgment' ? 'agree' : null);
+  const incomingVerb = incoming.verb ?? (incoming.verdict === 'agree' || incoming.verdict === 'disagree'
+    ? incoming.verdict
+    : incoming.type === 'acknowledgment' ? 'agree' : null);
   const same =
-    s.type === incoming.type &&
-    (s.verdict ?? null) === (incoming.verdict ?? null) &&
+    storedVerb === incomingVerb &&
     normalizeComment(s.comment) === normalizeComment(incoming.comment);
   return same ? 'replay' : 'conflict';
 }
