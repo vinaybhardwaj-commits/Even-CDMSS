@@ -1,9 +1,13 @@
 /**
  * lib/opd-gov-read.ts — audit-side reads for the governance signal feed (Neon).
  *
- * A governance thread stores the (doctor, signal_type, window) key; the actual finding INSTANCES
- * and the doctor's audit METRICS live in opd_note_audits and are resolved at read time here (so the
- * thread never duplicates finding text). Re-stamps finding identity on read → legacy rows covered.
+ * A governance thread stores the (doctor, signal_type, window, note_class) key; the finding
+ * INSTANCES are resolved at read time from the store for THAT class (so the thread never
+ * duplicates finding text, and an OPD note is never attached to a discharge or OT thread):
+ *   opd                → opd_note_audits
+ *   discharge_summary  → ipd_discharge_audits, attributed by the treating-doctor hop
+ *   ot                 → ot_note_audits, attributed only when map_status is mapped
+ * Audit METRICS stay on the OPD canonical read. Re-stamps finding identity on read → legacy rows covered.
  */
 
 import { sql } from './db';
@@ -12,6 +16,10 @@ import { canonicalDistinctOnSql } from './audit-canonical';
 import { parseJson } from './opd-audit-ui';
 import type { Source } from './citations-core';
 import type { SignalRepresentative } from './opd-gov-signal-core';
+import { fetchIpdDoctorHop } from './ipd-doctor-hop';
+import { landDischargeAudits, type DischargeAuditSource } from './triage/ds-lander';
+import { landOtAudits } from './triage/ot-lander';
+import { OT_ENGINE_VERSION } from './triage/ot-audit-core';
 
 const run = sql as unknown as (text: string, params?: unknown[]) => Promise<Record<string, unknown>[]>;
 const APP = process.env.APP_SOURCE || 'standalone';
@@ -61,6 +69,175 @@ export async function resolveInstances(
     }
   }
   return { count: instances.length, representative: instances[0] ?? null, instances };
+}
+
+function emptyInstances(): { count: number; representative: SignalRepresentative | null; instances: Instance[] } {
+  return { count: 0, representative: null, instances: [] };
+}
+
+interface LandedInstance {
+  audit_id: string;
+  doctor_uid: string;
+  note_date: string;
+  subject: string;
+  verdict: string;
+  rationale: string;
+  signal_type: string;
+  finding_ref: string;
+  citation_ids?: number[];
+  informational?: boolean;
+}
+
+/**
+ * Keep findings that belong to this doctor, signal, and window. Newest note first; within a note,
+ * lander order. A missing window bound is open on that side. Both bounds absent matches every
+ * dated finding — callers that must not scan an unbounded corpus return before this.
+ */
+export function selectSignalInstances(
+  findings: readonly LandedInstance[],
+  doctorUid: string,
+  signalType: string,
+  windowFrom: string | null,
+  windowTo: string | null,
+): { count: number; representative: SignalRepresentative | null; instances: Instance[] } {
+  const uid = doctorUid.trim();
+  const from = windowFrom ? windowFrom.slice(0, 10) : '';
+  const to = windowTo ? windowTo.slice(0, 10) : '';
+  const ranked = (findings ?? []).filter((f) => {
+    if (!f || f.informational) return false;
+    if (f.doctor_uid !== uid || f.signal_type !== signalType) return false;
+    const day = String(f.note_date || '').slice(0, 10);
+    if (!day) return false;
+    if (from && day < from) return false;
+    if (to && day > to) return false;
+    return true;
+  }).slice().sort((a, b) => String(b.note_date).slice(0, 10).localeCompare(String(a.note_date).slice(0, 10)));
+  const instances: Instance[] = ranked.map((f) => {
+    const ids = Array.isArray(f.citation_ids) ? f.citation_ids : [];
+    return {
+      audit_id: f.audit_id,
+      finding_ref: f.finding_ref,
+      subject: f.subject,
+      verdict: f.verdict,
+      rationale: f.rationale,
+      note_date: String(f.note_date).slice(0, 10),
+      citations: ids.map((n) => ({ n, title: `Source ${n}`, url: '' })),
+    };
+  });
+  return { count: instances.length, representative: instances[0] ?? null, instances };
+}
+
+function classWindowOpen(windowFrom: string | null, windowTo: string | null): boolean {
+  return !!(windowFrom || windowTo);
+}
+
+/**
+ * Discharge instances for one doctor × signal_type × window.
+ * `ipd_discharge_audits` has no doctor_uid. Attribution is the read-time treating-doctor hop
+ * (fail closed): an unresolved, ambiguous, or unavailable stay is not counted.
+ * Does not read opd_note_audits.
+ */
+export async function resolveDischargeInstances(
+  doctorUid: string, signalType: string, windowFrom: string | null, windowTo: string | null,
+): Promise<{ count: number; representative: SignalRepresentative | null; instances: Instance[] }> {
+  if (!doctorUid.trim() || !signalType.trim() || !classWindowOpen(windowFrom, windowTo)) return emptyInstances();
+  const params: unknown[] = [APP];
+  let where = `app_source = $1 AND engine_version LIKE 'ipd-discharge-audit/%' AND engine_version NOT LIKE '%-mini'
+    AND discharged_at IS NOT NULL`;
+  if (windowFrom) {
+    params.push(windowFrom.slice(0, 10));
+    where += ` AND (discharged_at AT TIME ZONE 'Asia/Kolkata')::date >= $${params.length}::date`;
+  }
+  if (windowTo) {
+    params.push(windowTo.slice(0, 10));
+    where += ` AND (discharged_at AT TIME ZONE 'Asia/Kolkata')::date <= $${params.length}::date`;
+  }
+  const rows = await run(
+    `SELECT id, ip_uid, speciality, note_date, findings
+     FROM (${canonicalDistinctOnSql({
+       table: 'ipd_discharge_audits',
+       identity: 'document_id',
+       cols: `id::text AS id, ip_uid, speciality,
+              to_char((discharged_at AT TIME ZONE 'Asia/Kolkata')::date,'YYYY-MM-DD') AS note_date,
+              findings`,
+       where,
+     })}) canonical
+     LIMIT 8000`,
+    params,
+  ).catch(() => []);
+  const sources: DischargeAuditSource[] = (rows as Record<string, unknown>[]).map((r) => ({
+    id: String(r.id),
+    ip_uid: r.ip_uid == null ? null : String(r.ip_uid),
+    speciality: r.speciality == null ? null : String(r.speciality),
+    note_date: String(r.note_date || ''),
+    findings: r.findings,
+  }));
+  if (!sources.length) return emptyInstances();
+  let hop: Awaited<ReturnType<typeof fetchIpdDoctorHop>>;
+  try {
+    hop = await fetchIpdDoctorHop(sources.map((s) => s.ip_uid || ''));
+  } catch {
+    hop = {
+      byIpUid: {},
+      coverage: { asked: sources.length, known: 0, resolved: 0, ambiguousPractitioner: 0, ambiguousStay: 0, unmatched: 0, noTreatingId: 0, unavailable: true },
+      ambiguousIds: [],
+    };
+  }
+  const landed = landDischargeAudits(sources, hop);
+  return selectSignalInstances(landed.findings, doctorUid, signalType, windowFrom, windowTo);
+}
+
+/**
+ * OT instances for one doctor × signal_type × window.
+ * Only mapped surgeon-map rows (`ot_note_audits.map_status = 'mapped'` with a doctor_uid).
+ * Does not read opd_note_audits and does not use the treating-doctor hop.
+ */
+export async function resolveOtInstances(
+  doctorUid: string, signalType: string, windowFrom: string | null, windowTo: string | null,
+): Promise<{ count: number; representative: SignalRepresentative | null; instances: Instance[] }> {
+  if (!doctorUid.trim() || !signalType.trim() || !classWindowOpen(windowFrom, windowTo)) return emptyInstances();
+  const params: unknown[] = [APP, OT_ENGINE_VERSION, doctorUid];
+  let where = `app_source = $1 AND engine_version = $2 AND doctor_uid = $3 AND map_status = 'mapped'`;
+  if (windowFrom) {
+    params.push(windowFrom.slice(0, 10));
+    where += ` AND note_day >= $${params.length}::date`;
+  }
+  if (windowTo) {
+    params.push(windowTo.slice(0, 10));
+    where += ` AND note_day <= $${params.length}::date`;
+  }
+  const rows = await run(
+    `SELECT id, doctor_uid, map_status, note_day, findings
+     FROM (${canonicalDistinctOnSql({
+       table: 'ot_note_audits',
+       identity: 'uid',
+       cols: `id::text AS id, doctor_uid, map_status, to_char(note_day,'YYYY-MM-DD') AS note_day, findings`,
+       where,
+     })}) canonical
+     LIMIT 8000`,
+    params,
+  ).catch(() => []);
+  const landed = landOtAudits((rows as Record<string, unknown>[]).map((r) => ({
+    id: String(r.id),
+    doctor_uid: r.doctor_uid == null ? null : String(r.doctor_uid),
+    map_status: r.map_status == null ? 'unmapped' : String(r.map_status),
+    note_day: String(r.note_day || ''),
+    findings: r.findings,
+  })));
+  return selectSignalInstances(landed.findings, doctorUid, signalType, windowFrom, windowTo);
+}
+
+/**
+ * Non-OPD fan-in. OPD stays on `resolveInstances` so a discharge or OT thread cannot receive
+ * OPD finding text. An unknown class stays at zero rather than falling through to OPD.
+ */
+export async function resolveInstancesForNoteClass(
+  noteClass: string | null | undefined,
+  doctorUid: string, signalType: string, windowFrom: string | null, windowTo: string | null,
+): Promise<{ count: number; representative: SignalRepresentative | null; instances: Instance[] }> {
+  if (noteClass === 'discharge_summary') return resolveDischargeInstances(doctorUid, signalType, windowFrom, windowTo);
+  if (noteClass === 'ot') return resolveOtInstances(doctorUid, signalType, windowFrom, windowTo);
+  return emptyInstances();
 }
 
 export interface AuditMetrics {
