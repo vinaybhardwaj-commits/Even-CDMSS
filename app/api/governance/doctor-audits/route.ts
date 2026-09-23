@@ -15,7 +15,7 @@ import { fetchDoctorNames } from '@/lib/metabase';
 import { listSignalsForDoctor, toSignalRow } from '@/lib/opd-gov-signal-store';
 import { signalObject } from '@/lib/opd-gov-signal-core';
 import { isNoteClass } from '@/lib/triage/note-class';
-import { resolveInstances, doctorAuditMetrics } from '@/lib/opd-gov-read';
+import { resolveInstances, resolveInstancesForNoteClass, doctorAuditMetrics } from '@/lib/opd-gov-read';
 import { getOperationalBlock } from '@/lib/doctor-metrics-store';
 
 const run = sql as unknown as (text: string, params?: unknown[]) => Promise<Record<string, unknown>[]>;
@@ -66,10 +66,11 @@ export async function GET(req: NextRequest) {
     },
   ]));
   for (const s of signalsForClass) {
-    // OPD instance text must not be attached to a discharge or OT thread that shares a signal_type.
+    // Class-scoped stores. OPD text must not attach to a discharge or OT thread that shares a
+    // signal_type, and those classes must not stay hardcoded at zero when their own audits match.
     const { count, representative } = s.note_class === 'opd'
       ? await resolveInstances(s.doctor_uid, s.signal_type, s.window_from, s.window_to)
-      : { count: 0, representative: null };
+      : await resolveInstancesForNoteClass(s.note_class, s.doctor_uid, s.signal_type, s.window_from, s.window_to);
     const signal = signalObject(toSignalRow(s, count), representative, now);
     out.push({
       ...signal,

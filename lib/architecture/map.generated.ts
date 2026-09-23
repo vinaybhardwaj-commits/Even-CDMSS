@@ -4680,6 +4680,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "opd-gov-read",
+    "to": "ipd-doctor-hop",
+    "kind": "value"
+  },
+  {
+    "from": "opd-gov-read",
     "to": "opd-audit-ui",
     "kind": "value"
   },
@@ -4691,6 +4696,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "opd-gov-read",
     "to": "opd-note-audit-core",
+    "kind": "value"
+  },
+  {
+    "from": "opd-gov-read",
+    "to": "triage",
     "kind": "value"
   },
   {
