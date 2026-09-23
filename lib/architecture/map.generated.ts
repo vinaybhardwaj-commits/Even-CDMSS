@@ -1470,6 +1470,16 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "app/admin",
+    "to": "triage",
+    "kind": "type"
+  },
+  {
+    "from": "app/admin",
+    "to": "triage",
+    "kind": "value"
+  },
+  {
+    "from": "app/admin",
     "to": "value-score-core",
     "kind": "value"
   },
@@ -6283,6 +6293,12 @@ export const VERSION_REGISTRY: VersionRow[] = [
     "value": "[OT_ENGINE_VERSION]",
     "file": "lib/triage/ot-audit-core.ts",
     "derived": true
+  },
+  {
+    "constName": "OT_NABH_ENGINE_VERSION",
+    "value": "ot-nabh/0.1",
+    "file": "lib/triage/ot-nabh.ts",
+    "derived": false
   },
   {
     "constName": "PATIENT_SUMMARY_API_VERSION",
