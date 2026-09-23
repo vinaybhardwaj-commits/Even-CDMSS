@@ -186,7 +186,8 @@ export async function insertDecision(input: DecisionInput): Promise<{
           doctor_uid: d.doctor_uid, signal_type: d.signal_type, note_class: d.note_class,
           importance: d.importance || 'med',
           response_required: d.response_required || 'none', window_from: d.window_from, window_to: d.window_to,
-          // This decision row's UUID. doctor-audits joins it to triage_stamp_events.decision_id.
+          // This decision row's UUID, kept for stamp correlation. doctor-audits does not
+          // read triage_stamp_events.reason or policy_version onto the Findings payload.
           source_triage_ref: id, cm_user: d.cm_user,
         });
         signal = { reference: s.reference, signal_id: s.signal_id, status: s.status };

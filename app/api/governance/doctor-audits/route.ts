@@ -3,6 +3,7 @@
  * The doctor-portal feed (contract §4.1): one physician's own routed audit-signal threads + their
  * audit metrics. EPI proxies this server-side with GOV_API_KEY, resolving its session physician →
  * doctor_uid. Only CM-routed threads appear — never a raw/audit_bug/un-routed finding.
+ * Stamp audit text stays on triage_stamp_events for CM/admin and is not copied here.
  */
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -14,6 +15,7 @@ import { govKeyValid } from '@/lib/gov-auth';
 import { fetchDoctorNames } from '@/lib/metabase';
 import { listSignalsForDoctor, toSignalRow } from '@/lib/opd-gov-signal-store';
 import { signalObject } from '@/lib/opd-gov-signal-core';
+import { projectClinicianTriage } from '@/lib/triage/clinician-stamp';
 import { isNoteClass } from '@/lib/triage/note-class';
 import { resolveInstances, resolveInstancesForNoteClass, doctorAuditMetrics } from '@/lib/opd-gov-read';
 import { getOperationalBlock } from '@/lib/doctor-metrics-store';
@@ -47,24 +49,6 @@ export async function GET(req: NextRequest) {
     : signals;
 
   const out = [];
-  const sourceRefs = signalsForClass.map((s) => s.source_triage_ref).filter((v): v is string => !!v);
-  const triageRows = sourceRefs.length
-    ? await run(
-        `SELECT DISTINCT ON (decision_id)
-           decision_id::text AS decision_id, reason, policy_version
-         FROM triage_stamp_events
-         WHERE decision_id = ANY($1::uuid[]) AND outcome IN ('applied','decision_recorded_signal_failed')
-         ORDER BY decision_id, created_at DESC`,
-        [sourceRefs],
-      ).catch(() => [])
-    : [];
-  const triageMeta = new Map(triageRows.map((row) => [
-    String(row.decision_id),
-    {
-      rationale: row.reason == null ? null : String(row.reason),
-      policy_version: row.policy_version == null ? null : String(row.policy_version),
-    },
-  ]));
   for (const s of signalsForClass) {
     // Class-scoped stores. OPD text must not attach to a discharge or OT thread that shares a
     // signal_type, and those classes must not stay hardcoded at zero when their own audits match.
@@ -72,10 +56,9 @@ export async function GET(req: NextRequest) {
       ? await resolveInstances(s.doctor_uid, s.signal_type, s.window_from, s.window_to)
       : await resolveInstancesForNoteClass(s.note_class, s.doctor_uid, s.signal_type, s.window_from, s.window_to);
     const signal = signalObject(toSignalRow(s, count), representative, now);
-    out.push({
-      ...signal,
-      triage: s.source_triage_ref ? triageMeta.get(s.source_triage_ref) ?? null : null,
-    });
+    // projectClinicianTriage never forwards stamp reason / policy_version.
+    const triage = projectClinicianTriage(null);
+    out.push(triage ? { ...signal, triage } : signal);
   }
 
   return NextResponse.json({

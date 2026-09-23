@@ -181,8 +181,8 @@ export async function mintOrUpdateSignal(input: MintInput): Promise<StoredSignal
       return (await getBySignalId(signalId))!;
     } catch (e) {
       // unique-violation on reference OR on the (doctor,signal_type,window) key → re-resolve and retry.
-      // The winning thread must carry THIS decision's UUID, or doctor-audits cannot join
-      // source_triage_ref to triage_stamp_events.decision_id.
+      // The winning thread must carry THIS decision's UUID so stamp correlation
+      // stays on the signal. doctor-audits does not project stamp reason or policy_version.
       const existingNow = await getByKey(input.doctor_uid, input.signal_type, input.window_from, input.window_to, note_class);
       if (existingNow) {
         if (input.source_triage_ref) {
