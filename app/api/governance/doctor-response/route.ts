@@ -26,7 +26,7 @@ import {
 import {
   validateDoctorResponse, classifyDoctorResponse, signalObject, calibrationTarget, type DoctorResponseInput,
 } from '@/lib/opd-gov-signal-core';
-import { resolveInstancesForSignal } from '@/lib/opd-gov-read';
+import { resolveInstancesLocal } from '@/lib/opd-gov-read';
 
 const run = sql as unknown as (text: string, params?: unknown[]) => Promise<Record<string, unknown>[]>;
 
@@ -88,7 +88,7 @@ export async function POST(req: NextRequest) {
       }));
     } else {
       try {
-        const { representative } = await resolveInstancesForSignal(signal);
+        const { representative } = await resolveInstancesLocal(signal);
         if (representative?.audit_id) {
           await run(
             `INSERT INTO opd_audit_feedback (app_source, audit_id, uid, verdict, comment, author)
@@ -104,7 +104,8 @@ export async function POST(req: NextRequest) {
   }
 
   const now = new Date().toISOString();
-  const { count, representative } = await resolveInstancesForSignal(updated);
+  // Never leaves Neon: this runs inside the doctor's request, after the response is committed.
+  const { count, representative } = await resolveInstancesLocal(updated);
   return NextResponse.json({
     ok: true,
     replayed: replay,

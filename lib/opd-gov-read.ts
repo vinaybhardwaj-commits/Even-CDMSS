@@ -324,6 +324,34 @@ export async function resolveInstancesForSignal(
     : resolveInstancesForNoteClass(cls, signal.doctor_uid, signal.signal_type, signal.window_from, signal.window_to, opts);
 }
 
+/**
+ * The same resolver without any call out of Neon, for doctor-interactive POSTs (doctor-response,
+ * signal-reaction). A discharge thread resolves through the Metabase treating-doctor hop, which can
+ * outlast the portal's timeout after the write is already committed; those POSTs only need the
+ * thread row, so a discharge thread resolves to nothing here. OPD and OT read Neon only.
+ */
+export async function resolveInstancesLocal(
+  signal: { note_class?: string | null; doctor_uid: string; signal_type: string; window_from: string | null; window_to: string | null },
+): Promise<Resolved> {
+  if (signal.note_class === 'discharge_summary') return emptyInstances();
+  return resolveInstancesForSignal(signal);
+}
+
+/** Run `fn` over `items` with at most `limit` in flight; results keep input order. */
+export async function mapWithConcurrency<T, R>(items: readonly T[], limit: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  const worker = async () => {
+    for (;;) {
+      const i = next++;
+      if (i >= items.length) return;
+      out[i] = await fn(items[i], i);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, worker));
+  return out;
+}
+
 export interface AuditMetrics {
   notes_audited: number; nqi_mean: number | null; band_a_pct: number | null;
   documentation_completeness: number | null; prescribing_safety: number | null;
