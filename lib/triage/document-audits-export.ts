@@ -19,6 +19,11 @@ import { actionQueueItemRef } from '@/lib/triage/shadow-schema';
 import { landOtAudits, type OtAuditSource } from '@/lib/triage/ot-lander';
 import { landDischargeAudits, type DischargeAuditSource, type DischargeHopView } from '@/lib/triage/ds-lander';
 import type { NoteClass } from '@/lib/triage/note-class';
+import type { FindingsPdfInput } from '@/lib/triage/document-audits-pdf';
+import {
+  doctorNoteClass, evidenceExcerpt, patientContext, resolveCitations,
+  type CitationSource, type DoctorCitation, type DoctorNoteClass, type PatientContext,
+} from '@/lib/doctor-facing';
 
 export const OT_WRITE_MINT_NOTE =
   'OT route mint stays off until TRIAGE_BOT_WRITE_CLASSES includes ot. This export does not set that flag and does not mint opd_gov_signal.';
@@ -120,6 +125,21 @@ export interface ExportFinding {
   queue_item_ref: string | null;
   /** EHRC-AUD-YYYY-NNNN when a routed thread's window covers this note. */
   signal_reference: string | null;
+  /**
+   * True only when this finding belongs to a routed thread for ITS OWN signal_type (same class,
+   * doctor and window). A sibling finding of another signal_type in the same audit is false. This
+   * is exactly the set of findings a doctor may see.
+   */
+  routed: boolean;
+  /** Doctor-facing class. Null for progress notes (not a routed class). */
+  note_class: DoctorNoteClass | null;
+  note_date: string;
+  /** The audit's evidence points for this finding, joined and trimmed to <= 600 chars. */
+  evidence_excerpt: string | null;
+  /** Resolved from the audit's stored sources where they exist (discharge); [] otherwise. */
+  citations: DoctorCitation[];
+  /** Only what CDMSS stores: ip_number (discharge), uhid (OT). name, age, sex are always null. */
+  patient: PatientContext;
 }
 
 export interface ExportAudit {
@@ -207,6 +227,19 @@ export function signalReferenceFor(
   return hits[0].reference;
 }
 
+/**
+ * The doctor view of a findings PDF: keep only findings that belong to a routed thread for their
+ * own signal_type (same class, doctor and window as the note). An unresolved doctor keeps nothing.
+ */
+export function routedFindingsOnly(input: FindingsPdfInput, signals: readonly RoutedSignalRef[]): FindingsPdfInput {
+  const doctor = input.doctor_uid || '';
+  const queueClass = input.note_class === 'progress' ? null : input.note_class;
+  const findings = doctor && queueClass
+    ? input.findings.filter((f) => signalReferenceFor(signals, queueClass, doctor, f.signal_type, input.note_date) !== null)
+    : [];
+  return { ...input, findings, routed_only: true };
+}
+
 function windowCovers(from: string | null, to: string | null, day: string): boolean {
   if (!day) return false;
   const start = from ? from.slice(0, 10) : '';
@@ -245,7 +278,9 @@ function toOpdFinding(raw: Record<string, unknown>): OpdFinding | null {
     confidence: Number(raw.confidence) || 0,
     domain,
     rationale: String(raw.rationale ?? ''),
-    evidence: [],
+    evidence: Array.isArray(raw.evidence)
+      ? raw.evidence.map((e) => String(e ?? '').trim()).filter(Boolean).slice(0, 8)
+      : [],
     estimates: [],
     citation_ids,
     source: 'llm',
@@ -263,6 +298,13 @@ interface LandedLike {
   signal_type: string;
   finding_ref: string;
   citation_ids?: number[];
+  evidence?: string[];
+}
+
+/** Per-audit context for the doctor-facing fields. */
+interface CardExtra {
+  patient?: PatientContext;
+  sources?: readonly CitationSource[];
 }
 
 function docTypeOf(noteClass: DocumentAuditClass): DocType {
@@ -276,6 +318,7 @@ function cardsFromLanded(
   noteClass: 'ot' | 'discharge_summary',
   signals: readonly RoutedSignalRef[],
   doctorUid: string | null,
+  extras: ReadonlyMap<string, CardExtra> = new Map(),
 ): ExportAudit[] {
   const byAudit = new Map<string, LandedLike[]>();
   for (const f of findings) {
@@ -287,7 +330,7 @@ function cardsFromLanded(
   }
   const cards: ExportAudit[] = [];
   for (const [auditId, list] of byAudit) {
-    cards.push(cardFor(auditId, noteClass, list[0].doctor_uid, list[0].note_date, hospitalByAudit.get(auditId) ?? null, list, signals, true));
+    cards.push(cardFor(auditId, noteClass, list[0].doctor_uid, list[0].note_date, hospitalByAudit.get(auditId) ?? null, list, signals, true, extras.get(auditId)));
   }
   return cards;
 }
@@ -301,6 +344,7 @@ function cardFor(
   findings: readonly LandedLike[],
   signals: readonly RoutedSignalRef[],
   join: boolean,
+  extra?: CardExtra,
 ): ExportAudit {
   const queueClass = noteClass === 'progress' ? null : noteClass;
   const exported: ExportFinding[] = findings
@@ -311,6 +355,7 @@ function cardFor(
       const signal_reference = join && queueClass
         ? signalReferenceFor(signals, queueClass, doctorUid, f.signal_type, noteDate)
         : null;
+      const citation_ids = (f.citation_ids ?? []).map((n) => Number(n)).filter((n) => Number.isFinite(n));
       return {
         finding_ref: f.finding_ref,
         signal_type: f.signal_type,
@@ -318,9 +363,15 @@ function cardFor(
         verdict: f.verdict,
         rationale: f.rationale,
         domain: f.domain,
-        citation_ids: (f.citation_ids ?? []).map((n) => Number(n)).filter((n) => Number.isFinite(n)),
+        citation_ids,
         queue_item_ref,
         signal_reference,
+        routed: signal_reference !== null,
+        note_class: doctorNoteClass(queueClass),
+        note_date: noteDate.slice(0, 10),
+        evidence_excerpt: evidenceExcerpt(f.evidence),
+        citations: resolveCitations(citation_ids, extra?.sources),
+        patient: patientContext(extra?.patient),
       };
     })
     .sort((a, b) => a.finding_ref.localeCompare(b.finding_ref) || a.signal_type.localeCompare(b.signal_type));
@@ -393,6 +444,7 @@ function progressCards(
       signal_type: String(f.signal_type),
       finding_ref: String(f.finding_ref),
       citation_ids: f.citation_ids,
+      evidence: f.evidence,
     }));
     cards.push(cardFor(
       id,
@@ -470,6 +522,8 @@ export function buildDocumentAuditExport(input: {
   progress: ProgressProbe;
   signals: readonly RoutedSignalRef[];
   otWriteMint: 'off' | 'on';
+  /** audit_id → stored report.sources, for the discharge audits that need citation titles. */
+  dischargeSources?: Readonly<Record<string, readonly CitationSource[]>>;
 }): DocumentAuditExport {
   const want = input.noteClass ?? null;
   const doctorUid = input.doctorUid ?? null;
@@ -491,7 +545,12 @@ export function buildDocumentAuditExport(input: {
       const uid = row.hospital_uid == null || String(row.hospital_uid).trim() === '' ? null : String(row.hospital_uid);
       hospital.set(id, uid);
     }
-    const cards = cardsFromLanded(landed.findings, hospital, 'ot', input.signals, doctorUid);
+    const extras = new Map<string, CardExtra>();
+    for (const row of input.otRows) {
+      const id = String(row.id || '').trim();
+      if (id) extras.set(id, { patient: patientContext({ uhid: row.uhid }) });
+    }
+    const cards = cardsFromLanded(landed.findings, hospital, 'ot', input.signals, doctorUid, extras);
     const unmapped = new Set(landed.unmapped.map((c) => c.audit_id));
     otCounts = countClass(input.otRows, cards, unmapped, otherDoctorIds(landed.findings, doctorUid));
     audits.push(...cards);
@@ -499,7 +558,12 @@ export function buildDocumentAuditExport(input: {
 
   if (readDs) {
     const landed = landDischargeAudits(input.dischargeRows, input.dischargeHop);
-    const cards = cardsFromLanded(landed.findings, new Map(), 'discharge_summary', input.signals, doctorUid);
+    const extras = new Map<string, CardExtra>();
+    for (const row of input.dischargeRows) {
+      const id = String(row.id || '').trim();
+      if (id) extras.set(id, { patient: patientContext({ ip_number: row.ip_uid }), sources: input.dischargeSources?.[id] });
+    }
+    const cards = cardsFromLanded(landed.findings, new Map(), 'discharge_summary', input.signals, doctorUid, extras);
     const unmapped = new Set(landed.unmapped.map((c) => c.audit_id));
     dsCounts = countClass(input.dischargeRows, cards, unmapped, otherDoctorIds(landed.findings, doctorUid));
     audits.push(...cards);
