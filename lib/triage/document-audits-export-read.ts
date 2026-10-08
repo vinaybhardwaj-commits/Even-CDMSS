@@ -27,6 +27,7 @@ import {
 } from '@/lib/triage/document-audits-export';
 import type { FindingsPdfInput } from '@/lib/triage/document-audits-pdf';
 import { evidenceExcerpt, type CitationSource } from '@/lib/doctor-facing';
+import { DOCTOR_VISIBLE_SQL } from '@/lib/opd-gov-signal-core';
 
 const run = sql as unknown as (text: string, params?: unknown[]) => Promise<Record<string, unknown>[]>;
 const APP = process.env.APP_SOURCE || 'standalone';
@@ -140,7 +141,7 @@ export async function loadRoutedSignals(): Promise<RoutedSignalRef[]> {
             created_at
      FROM opd_gov_signal
      WHERE note_class IN ('ot', 'discharge_summary')
-       AND NOT (status = 'closed' AND ruling IS NULL)`,
+       AND ${DOCTOR_VISIBLE_SQL}`,
     [],
   );
   return rows.map((r) => ({

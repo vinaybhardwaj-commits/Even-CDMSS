@@ -116,8 +116,13 @@ const VERDICT_WORDS: Record<string, string> = {
   'low-value': 'Low value',
   uncertain: 'Uncertain',
 };
+/** Plain words for a verdict code, or null when the code is not one we have words for. */
+export function verdictLabel(verdict: unknown): string | null {
+  return VERDICT_WORDS[String(verdict ?? '').toLowerCase()] ?? null;
+}
+/** Text surfaces (the PDF) always need some word: an unknown code reads as a neutral observation. */
 export function verdictPlain(verdict: unknown): string {
-  return VERDICT_WORDS[String(verdict ?? '').toLowerCase()] ?? 'Observation';
+  return verdictLabel(verdict) ?? 'Observation';
 }
 
 // ── doctor-facing instance ────────────────────────────────────────────────────
@@ -139,7 +144,8 @@ export interface DoctorInstance {
   note_class: DoctorNoteClass | null;
   note_date: string | null;
   subject: string;
-  verdict: string;
+  /** Plain words ("Low value"), never the raw code. Null when the code has no label. */
+  verdict: string | null;
   rationale: string;
   evidence_excerpt: string | null;
   citations: DoctorCitation[];
@@ -153,7 +159,7 @@ export function doctorInstance(src: InstanceSource, noteClass: unknown, routed: 
     note_class: doctorNoteClass(noteClass),
     note_date: txt(src.note_date),
     subject: String(src.subject ?? ''),
-    verdict: String(src.verdict ?? ''),
+    verdict: verdictLabel(src.verdict),
     rationale: String(src.rationale ?? ''),
     evidence_excerpt: txt(src.evidence_excerpt),
     citations: doctorCitations(src.citations),

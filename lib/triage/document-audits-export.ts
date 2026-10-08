@@ -21,7 +21,7 @@ import { landDischargeAudits, type DischargeAuditSource, type DischargeHopView }
 import type { NoteClass } from '@/lib/triage/note-class';
 import type { FindingsPdfInput } from '@/lib/triage/document-audits-pdf';
 import {
-  doctorNoteClass, evidenceExcerpt, patientContext, resolveCitations,
+  doctorNoteClass, evidenceExcerpt, patientContext, resolveCitations, verdictLabel,
   type CitationSource, type DoctorCitation, type DoctorNoteClass, type PatientContext,
 } from '@/lib/doctor-facing';
 
@@ -119,6 +119,11 @@ export interface ExportFinding {
   subject: string;
   verdict: string;
   rationale: string;
+  /**
+   * Plain words for `verdict` ("Low value"), null for a code with no label. `verdict` stays the raw
+   * code because the governance ingest maps severity from it; a doctor-facing surface shows this.
+   */
+  verdict_plain: string | null;
   domain: string;
   citation_ids: number[];
   /** `note_class|doctor_uid|signal_type`. Null for progress — it is not an Action-queue class. */
@@ -362,6 +367,7 @@ function cardFor(
         subject: f.subject,
         verdict: f.verdict,
         rationale: f.rationale,
+        verdict_plain: verdictLabel(f.verdict),
         domain: f.domain,
         citation_ids,
         queue_item_ref,

@@ -19,7 +19,7 @@ import { isAdminUnlocked } from '@/lib/admin-cookie';
 import { govKeyValid } from '@/lib/gov-auth';
 import { fetchDoctorNames } from '@/lib/metabase';
 import { listSignalsForDoctor, toSignalRow } from '@/lib/opd-gov-signal-store';
-import { signalObject } from '@/lib/opd-gov-signal-core';
+import { signalObject, isDoctorVisibleThread } from '@/lib/opd-gov-signal-core';
 import { isNoteClass, type NoteClass } from '@/lib/triage/note-class';
 import { resolveInstancesForSignal, doctorAuditMetrics } from '@/lib/opd-gov-read';
 import { getOperationalBlock } from '@/lib/doctor-metrics-store';
@@ -58,9 +58,12 @@ export async function GET(req: NextRequest) {
     run(`SELECT speciality FROM doctor_directory WHERE doctor_uid=$1 LIMIT 1`, [doctorUid]).catch(() => []),
   ]);
 
-  const signalsForClass = noteClassParam
-    ? signals.filter((s) => s.note_class === noteClassParam)
-    : signals;
+  // Doctor-visible = routed to this doctor and neither withdrawn by the care manager nor dismissed by
+  // governance. Those threads are omitted, not returned with routed=false (the same predicate gates
+  // the export and the routed-only PDF). A thread the doctor already answered stays, response and all.
+  const signalsForClass = signals
+    .filter((s) => isDoctorVisibleThread(s))
+    .filter((s) => !noteClassParam || s.note_class === noteClassParam);
 
   const out = [];
   for (const s of signalsForClass) {

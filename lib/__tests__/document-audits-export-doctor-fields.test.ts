@@ -312,10 +312,10 @@ test('export route: OT UHID reaches the finding', async () => {
   assert.equal(abx.routed, false, 'a sibling of another signal_type in a routed audit is not routed');
 });
 
-test('routed signals exclude a thread the care manager withdrew (closed with no ruling)', () => {
+test('routed signals exclude a thread the care manager withdrew or governance dismissed (shared doctor-visibility rule)', () => {
   const src = readFileSync('lib/triage/document-audits-export-read.ts', 'utf8');
-  assert.match(src, /AND NOT \(status = 'closed' AND ruling IS NULL\)/);
-  assert.ok(issued.some((q) => /opd_gov_signal/.test(q.text) && /status = 'closed' AND ruling IS NULL/.test(q.text)));
+  assert.match(src, /AND \${DOCTOR_VISIBLE_SQL}/);
+  assert.ok(issued.some((q) => /opd_gov_signal/.test(q.text) && /NOT \(status = 'closed' AND \(ruling IS NULL OR ruling->>'action' = 'dismissed'\)\)/.test(q.text)));
 });
 
 test('pdf route routed_only=1: prints only the routed finding and names the file from the date, not the audit id', async () => {

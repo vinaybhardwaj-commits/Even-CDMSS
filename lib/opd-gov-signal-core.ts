@@ -215,9 +215,11 @@ export function validateSignalAction(input: SignalActionInput): { ok: true; valu
 /**
  * Which governance actions a thread in `status` may take.
  *   routed | responded | escalated → any of the four actions
- *   ruled                          → only closing it (closed | dismissed)
+ *   ruled                          → closing it (closed | dismissed) or a privilege_action: a
+ *                                    privilege review after an acknowledgement is a legal escalation
  *   closed                         → nothing; closed is terminal
- * A repeat of the SAME action + gov_intervention_ref is handled before this (see isSignalActionReplay).
+ * A repeat of any earlier action + gov_intervention_ref pair is handled before this (see
+ * isSignalActionReplay and the event-log check in the route).
  */
 export function signalActionTransition(
   status: string,
@@ -226,16 +228,18 @@ export function signalActionTransition(
   if (status === 'closed') {
     return { ok: false, error: `signal is closed; ${action} is not allowed` };
   }
-  if (status === 'ruled' && action !== 'closed' && action !== 'dismissed') {
-    return { ok: false, error: `signal is already ruled; only closed or dismissed may follow (got ${action})` };
+  if (status === 'ruled' && action !== 'closed' && action !== 'dismissed' && action !== 'privilege_action') {
+    return { ok: false, error: `signal is already ruled; only privilege_action, closed or dismissed may follow (got ${action})` };
   }
   return { ok: true };
 }
 
 /**
- * Idempotency for POST /signal-action: the same action carrying the same gov_intervention_ref as the
- * ruling already on the thread is a replay (200, nothing written). Without a reference there is
- * nothing to key on, so the transition guard decides instead.
+ * Idempotency for POST /signal-action, first half: the same action carrying the same
+ * gov_intervention_ref as the ruling currently on the thread is a replay (200, nothing written).
+ * `ruling` holds only the LATEST action, so the route also asks the event log for an earlier pair
+ * (hasSignalActionEvent). Without a reference there is nothing to key on, so the transition guard
+ * decides instead.
  */
 export function isSignalActionReplay(ruling: unknown, incoming: { action: string; gov_intervention_ref: string | null }): boolean {
   if (!incoming.gov_intervention_ref) return false;
@@ -243,6 +247,27 @@ export function isSignalActionReplay(ruling: unknown, incoming: { action: string
   const r = ruling as { action?: unknown; gov_intervention_ref?: unknown };
   return r.action === incoming.action && r.gov_intervention_ref === incoming.gov_intervention_ref;
 }
+
+// ── Doctor visibility ────────────────────────────────────────────────────────
+/**
+ * Is this thread one a doctor may see? Routed to the doctor, and neither withdrawn nor dismissed:
+ *   withdrawn — the care manager un-routed it (withdrawSignal): status closed, no ruling.
+ *   dismissed — governance ruled it not applicable: status closed, ruling.action = dismissed.
+ * Everything else stays visible, including a thread governance acknowledged (ruled), escalated or
+ * closed after the doctor answered it (the doctor's own response stays on the card). A thread the CM
+ * re-routes leaves `closed`, so a stale ruling does not hide it.
+ *
+ * ONE predicate for every doctor-facing read: doctor-audits, the document-audits export and the
+ * routed-only findings PDF. DOCTOR_VISIBLE_SQL is the same rule as a WHERE fragment (columns
+ * `status`, `ruling`); a test holds the two in step.
+ */
+export function isDoctorVisibleThread(t: { status: string; ruling?: unknown }): boolean {
+  if (t.status !== 'closed') return true;
+  if (t.ruling == null || typeof t.ruling !== 'object') return false;
+  return (t.ruling as { action?: unknown }).action !== 'dismissed';
+}
+export const DOCTOR_VISIBLE_SQL =
+  `NOT (status = 'closed' AND (ruling IS NULL OR ruling->>'action' = 'dismissed'))`;
 
 /**
  * Where a doctor's `disagree` may be recorded as calibration feedback. Only OPD threads have a
