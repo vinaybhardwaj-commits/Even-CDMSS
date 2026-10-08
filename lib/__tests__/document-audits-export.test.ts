@@ -144,7 +144,8 @@ test('mapped OT exports with join keys; unmapped and empty notes do not', () => 
   assert.equal(body.counts.ot?.skipped_no_findings, 1);
   assert.equal(body.counts.discharge, null);
   const blob = JSON.stringify(body);
-  for (const banned of ['uhid', 'surgeon_raw', 'member_id', 'pdfUrl', 'patient_name']) {
+  // The doctor contract carries patient.uhid for OT; the free-text surgeon and the member id stay out.
+  for (const banned of ['surgeon_raw', 'member_id', 'pdfUrl', 'patient_name']) {
     assert.ok(!blob.includes(banned), banned);
   }
 });

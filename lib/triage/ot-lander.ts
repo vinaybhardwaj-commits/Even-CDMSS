@@ -19,6 +19,7 @@ import type { OtMapStatus } from '@/lib/triage/ot-surgeon-map';
 export interface OtAuditSource {
   id: string;
   doctor_uid?: string | null;
+  uhid?: string | null;
   map_status?: OtMapStatus | string | null;
   surgeon_raw?: string | null;
   note_day: string;
@@ -42,8 +43,11 @@ export interface UnmappedOtCard {
   representative: TriageRepresentative;
 }
 
+/** A landed finding plus the audit's own evidence points (kept so doctor-facing reads can show them). */
+export type LandedOtFinding = TriageFinding & { evidence?: string[] };
+
 export interface LandedOt {
-  findings: TriageFinding[];
+  findings: LandedOtFinding[];
   unmapped: UnmappedOtCard[];
 }
 
@@ -63,6 +67,11 @@ function asFindingArray(value: unknown): Record<string, unknown>[] {
   return parsed.filter((row) => row && typeof row === 'object') as Record<string, unknown>[];
 }
 
+function evidencePoints(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((e) => String(e ?? '').trim()).filter(Boolean).slice(0, 8);
+}
+
 function toOpdFinding(raw: Record<string, unknown>): OpdFinding | null {
   const subject = String(raw.subject ?? '').trim();
   if (!subject) return null;
@@ -76,7 +85,7 @@ function toOpdFinding(raw: Record<string, unknown>): OpdFinding | null {
     confidence: Number(raw.confidence) || 0,
     domain,
     rationale: String(raw.rationale ?? ''),
-    evidence: [],
+    evidence: evidencePoints(raw.evidence),
     estimates: [],
     citation_ids,
     source: 'llm',
@@ -109,7 +118,7 @@ function hopReason(mapStatus: OtMapStatus, doctorUid: string | null): string {
  * Treating-doctor / KX doctor ids on the source row are ignored if present.
  */
 export function landOtAudits(rows: readonly OtAuditSource[]): LandedOt {
-  const findings: TriageFinding[] = [];
+  const findings: LandedOtFinding[] = [];
   const unmappedBuckets = new Map<string, { card: UnmappedOtCard; count: number }>();
 
   for (const row of rows ?? []) {
@@ -127,7 +136,7 @@ export function landOtAudits(rows: readonly OtAuditSource[]): LandedOt {
     for (const f of stamped) {
       if (!f.signal_type || !f.finding_ref) continue;
       if (f.informational) continue;
-      const base: TriageFinding = {
+      const base: LandedOtFinding = {
         audit_id,
         doctor_uid: doctor_uid ?? '',
         note_date,
@@ -140,6 +149,7 @@ export function landOtAudits(rows: readonly OtAuditSource[]): LandedOt {
         citation_ids: f.citation_ids,
         note_class: 'ot',
       };
+      if (f.evidence?.length) base.evidence = f.evidence;
       if (mapped && doctor_uid) {
         base.doctor_uid = doctor_uid;
         findings.push(base);

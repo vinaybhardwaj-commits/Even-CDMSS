@@ -352,14 +352,14 @@ test('migration 0058 is the production idempotency path; the route repeats it as
   assert.ok(!/TRIAGE_BOT_WRITE\s*=\s*1/.test(migration));
 });
 
-test('mint writes the decision uuid into source_triage_ref, which doctor-audits joins', () => {
+test('mint writes the decision uuid into source_triage_ref, doctor-audits no longer reads it (no triage in the doctor payload)', () => {
   const decision = readFileSync('lib/opd-triage-store.ts', 'utf8');
   const mint = readFileSync('lib/opd-gov-signal-store.ts', 'utf8');
   const audits = readFileSync('app/api/governance/doctor-audits/route.ts', 'utf8');
   assert.match(decision, /source_triage_ref:\s*id/);
   assert.match(mint, /source_triage_ref=\$2/);
-  assert.match(audits, /decision_id = ANY\(\$1::uuid\[\]\)/);
-  assert.match(audits, /triageMeta\.get\(s\.source_triage_ref\)/);
+  assert.doesNotMatch(audits, /decision_id = ANY/);
+  assert.doesNotMatch(audits, /triageMeta|opd_audit_triage|triage_stamp_events/);
 });
 
 test('identical Idempotency-Key replays the same decision and signal', async () => {

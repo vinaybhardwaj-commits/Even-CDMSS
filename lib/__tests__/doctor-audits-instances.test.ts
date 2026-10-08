@@ -311,8 +311,8 @@ test('OPD resolveInstances still reads only opd_note_audits', async () => {
 
 test('doctor-audits returns instances and a representative audit for discharge and OT', async () => {
   const routeSrc = readFileSync('app/api/governance/doctor-audits/route.ts', 'utf8');
-  assert.match(routeSrc, /s\.note_class === 'opd'/);
-  assert.match(routeSrc, /resolveInstancesForNoteClass/);
+  assert.match(routeSrc, /resolveInstancesForSignal\(s, \{ enrich: true \}\)/);
+  assert.doesNotMatch(routeSrc, /\bresolveInstances\(/);
   assert.doesNotMatch(routeSrc, /TRIAGE_BOT_WRITE_CLASSES/);
   assert.doesNotMatch(routeSrc, /count: 0, representative: null/);
 
@@ -338,7 +338,7 @@ test('doctor-audits returns instances and a representative audit for discharge a
 
   const ds = byRef.get('EHRC-AUD-2026-0111');
   assert.ok(ds);
-  assert.equal(ds.note_class, 'discharge_summary');
+  assert.equal(ds.note_class, 'discharge');
   assert.equal(ds.signal_type, 'antibiotic_stewardship');
   assert.ok(ds.instances >= 1);
   assert.equal(ds.instances, 2);

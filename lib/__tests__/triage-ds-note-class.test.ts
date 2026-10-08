@@ -203,7 +203,7 @@ test('lander and queue reader do not name-match or open a second queue door', ()
   assert.match(admin, /flattenActionQueueItems\(result\.doctors, result\.unmapped\)/);
   assert.ok(!/queue-ds/.test(admin));
   assert.match(audits, /note_class/);
-  assert.match(audits, /s\.note_class === 'opd'/);
+  assert.match(audits, /resolveInstancesForSignal/);
   assert.match(migration, /ADD COLUMN IF NOT EXISTS note_class/);
   assert.ok(!/TRIAGE_BOT_WRITE\s*=/.test(migration));
   assert.match(readFileSync('lib/opd-gov-signal-store.ts', 'utf8'), /note_class/);

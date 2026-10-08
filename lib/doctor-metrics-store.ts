@@ -40,6 +40,9 @@ export async function ensureDoctorMetricsTables(): Promise<void> {
     updated_at         timestamptz NOT NULL DEFAULT now()
   )`, []);
   await run(`CREATE INDEX IF NOT EXISTS doctor_roster_name_idx ON doctor_roster (name_normalized)`, []);
+  // Round 1: aliases for mobile-collapsed twins, and disabled doctors kept in the directory.
+  await run(`ALTER TABLE doctor_roster ADD COLUMN IF NOT EXISTS alias_uids jsonb NOT NULL DEFAULT '[]'::jsonb`, []);
+  await run(`ALTER TABLE doctor_roster ADD COLUMN IF NOT EXISTS disabled boolean NOT NULL DEFAULT false`, []);
 }
 
 export interface OperationalMetric {
@@ -119,30 +122,53 @@ export async function operationalActiveUids(): Promise<string[]> {
 
 /** Replace the canonical roster with a freshly-built set. */
 export async function upsertRoster(rows: RosterRow[]): Promise<number> {
+  // The refresh may run before the schema step has added alias_uids / disabled; add them first.
+  await ensureDoctorMetricsTables();
   let n = 0;
   for (const r of rows) {
     await run(
       `INSERT INTO doctor_roster
-        (doctor_uid, name, name_normalized, specialty, channel, mobile_last4, has_email, audit_active, operational_active, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9, now())
+        (doctor_uid, name, name_normalized, specialty, channel, mobile_last4, has_email, audit_active, operational_active,
+         alias_uids, disabled, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11, now())
        ON CONFLICT (doctor_uid) DO UPDATE SET
          name=EXCLUDED.name, name_normalized=EXCLUDED.name_normalized, specialty=EXCLUDED.specialty,
          channel=EXCLUDED.channel, mobile_last4=EXCLUDED.mobile_last4, has_email=EXCLUDED.has_email,
-         audit_active=EXCLUDED.audit_active, operational_active=EXCLUDED.operational_active, updated_at=now()`,
-      [r.doctor_uid, r.name, r.name_normalized, r.specialty, r.channel, r.mobile_last4, r.has_email, r.audit_active, r.operational_active]);
+         audit_active=EXCLUDED.audit_active, operational_active=EXCLUDED.operational_active,
+         alias_uids=EXCLUDED.alias_uids, disabled=EXCLUDED.disabled, updated_at=now()`,
+      [r.doctor_uid, r.name, r.name_normalized, r.specialty, r.channel, r.mobile_last4, r.has_email, r.audit_active, r.operational_active,
+        JSON.stringify(r.alias_uids ?? []), r.disabled === true]);
     n++;
   }
   return n;
 }
 
+function aliasList(v: unknown): string[] {
+  let parsed = v;
+  if (typeof parsed === 'string') { try { parsed = JSON.parse(parsed); } catch { return []; } }
+  return Array.isArray(parsed) ? parsed.map((x) => String(x)).filter(Boolean) : [];
+}
+
 export async function readRoster(): Promise<RosterRow[]> {
-  const rows = await run(
-    `SELECT doctor_uid, name, name_normalized, specialty, channel, mobile_last4, has_email, audit_active, operational_active
-     FROM doctor_roster ORDER BY (audit_active OR operational_active) DESC, name_normalized ASC LIMIT 2000`, []).catch(() => []);
+  // New columns first. Before the schema step has run they do not exist; fall back to the old
+  // projection with empty aliases and disabled=false rather than serving an empty directory.
+  let rows: Record<string, unknown>[];
+  try {
+    rows = await run(
+      `SELECT doctor_uid, name, name_normalized, specialty, channel, mobile_last4, has_email, audit_active, operational_active,
+              alias_uids, disabled
+       FROM doctor_roster
+       ORDER BY disabled ASC, (audit_active OR operational_active) DESC, name_normalized ASC LIMIT 5000`, []);
+  } catch {
+    rows = await run(
+      `SELECT doctor_uid, name, name_normalized, specialty, channel, mobile_last4, has_email, audit_active, operational_active
+       FROM doctor_roster ORDER BY (audit_active OR operational_active) DESC, name_normalized ASC LIMIT 2000`, []).catch(() => []);
+  }
   return (rows as Record<string, unknown>[]).map((r) => ({
     doctor_uid: String(r.doctor_uid), name: String(r.name || ''), name_normalized: String(r.name_normalized || ''),
     specialty: r.specialty == null ? null : String(r.specialty), channel: r.channel == null ? null : String(r.channel),
     mobile_last4: r.mobile_last4 == null ? null : String(r.mobile_last4),
     has_email: r.has_email === true, audit_active: r.audit_active === true, operational_active: r.operational_active === true,
+    alias_uids: aliasList(r.alias_uids), disabled: r.disabled === true,
   }));
 }

@@ -22,9 +22,12 @@ import {
   type ProgressColumnRow,
   type ProgressProbe,
   type RoutedSignalRef,
+  routedFindingsOnly,
   type DocumentAuditClass,
 } from '@/lib/triage/document-audits-export';
 import type { FindingsPdfInput } from '@/lib/triage/document-audits-pdf';
+import { evidenceExcerpt, type CitationSource } from '@/lib/doctor-facing';
+import { DOCTOR_VISIBLE_SQL } from '@/lib/opd-gov-signal-core';
 
 const run = sql as unknown as (text: string, params?: unknown[]) => Promise<Record<string, unknown>[]>;
 const APP = process.env.APP_SOURCE || 'standalone';
@@ -74,11 +77,11 @@ async function loadOtRows(from: string, to: string, doctorUid: string | null): P
     where += ` AND doctor_uid = $${params.length}`;
   }
   const rows = await run(
-    `SELECT id, hospital_uid, note_day, doctor_uid, map_status, findings
+    `SELECT id, hospital_uid, note_day, doctor_uid, map_status, uhid, findings
      FROM (${canonicalDistinctOnSql({
        table: 'ot_note_audits',
        identity: 'uid',
-       cols: `id::text AS id, hospital_uid, to_char(note_day,'YYYY-MM-DD') AS note_day, doctor_uid, map_status, findings`,
+       cols: `id::text AS id, hospital_uid, to_char(note_day,'YYYY-MM-DD') AS note_day, doctor_uid, map_status, uhid, findings`,
        where,
      })}) canonical
      LIMIT 8000`,
@@ -90,6 +93,7 @@ async function loadOtRows(from: string, to: string, doctorUid: string | null): P
     note_day: String(r.note_day || ''),
     doctor_uid: r.doctor_uid == null ? null : String(r.doctor_uid),
     map_status: r.map_status == null ? 'unmapped' : String(r.map_status),
+    uhid: r.uhid == null || String(r.uhid).trim() === '' ? null : String(r.uhid).trim(),
     findings: parseJson(r.findings),
   }));
 }
@@ -124,14 +128,20 @@ async function loadDischarge(from: string, to: string): Promise<{ rows: Discharg
   return { rows: sources, hop: { byIpUid: hop.byIpUid, coverage: { unavailable: hop.coverage.unavailable } } };
 }
 
-async function loadRoutedSignals(): Promise<RoutedSignalRef[]> {
+/**
+ * Threads that currently route a finding to a doctor. A thread the care manager withdrew is closed
+ * with no ruling on it; it no longer routes anything and is left out. A thread closed by a
+ * governance ruling carries that ruling and stays in (the doctor's history).
+ */
+export async function loadRoutedSignals(): Promise<RoutedSignalRef[]> {
   const rows = await run(
     `SELECT reference, doctor_uid, signal_type, note_class,
             to_char(window_from,'YYYY-MM-DD') AS window_from,
             to_char(window_to,'YYYY-MM-DD') AS window_to,
             created_at
      FROM opd_gov_signal
-     WHERE note_class IN ('ot', 'discharge_summary')`,
+     WHERE note_class IN ('ot', 'discharge_summary')
+       AND ${DOCTOR_VISIBLE_SQL}`,
     [],
   );
   return rows.map((r) => ({
@@ -143,6 +153,26 @@ async function loadRoutedSignals(): Promise<RoutedSignalRef[]> {
     window_to: r.window_to == null ? null : String(r.window_to),
     created_at: r.created_at == null ? '' : String(r.created_at),
   }));
+}
+
+/**
+ * Citation sources (report.sources) for the named discharge audits. The export asks only for audits
+ * that have at least one routed finding, so the large report column is read for a handful of rows,
+ * not for the whole window. A read failure returns {} and the citations stay empty.
+ */
+export async function loadDischargeSources(auditIds: readonly string[]): Promise<Record<string, CitationSource[]>> {
+  const ids = [...new Set(auditIds.filter((i) => UUID_RE.test(i)))].slice(0, 500);
+  if (!ids.length) return {};
+  const rows = await run(
+    `SELECT id::text AS id, report->'sources' AS sources FROM ipd_discharge_audits WHERE id = ANY($1::uuid[])`,
+    [ids],
+  ).catch(() => []);
+  const out: Record<string, CitationSource[]> = {};
+  for (const r of rows) {
+    const list = parseJson(r.sources);
+    if (Array.isArray(list) && list.length) out[String(r.id)] = list as CitationSource[];
+  }
+  return out;
 }
 
 async function loadProgress(from: string, to: string, doctorUid: string | null): Promise<ProgressProbe> {
@@ -194,18 +224,34 @@ function parseJson(value: unknown): unknown {
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-export async function loadFindingsPdf(id: string): Promise<FindingsPdfInput | 'bad-id' | null> {
+/**
+ * `routedOnly` is the doctor view: only findings that belong to a routed thread for their own
+ * signal_type are kept, and the result is marked so the PDF prints no internal ids. If nothing is
+ * routed the result is null (404), never an empty or full document.
+ */
+export async function loadFindingsPdf(
+  id: string,
+  opts: { routedOnly?: boolean } = {},
+): Promise<FindingsPdfInput | 'bad-id' | null> {
   const key = decodeURIComponent(id || '').trim();
   if (!key) return 'bad-id';
-  if (UUID_RE.test(key)) return loadPdfByAuditId(key);
-  const { isAuditRef } = await import('@/lib/opd-gov-signal-core');
-  if (!isAuditRef(key)) return 'bad-id';
-  return loadPdfBySignalRef(key);
+  let loaded: FindingsPdfInput | null;
+  if (UUID_RE.test(key)) {
+    loaded = await loadPdfByAuditId(key);
+  } else {
+    const { isAuditRef } = await import('@/lib/opd-gov-signal-core');
+    if (!isAuditRef(key)) return 'bad-id';
+    loaded = await loadPdfBySignalRef(key, !!opts.routedOnly);
+  }
+  if (!opts.routedOnly || !loaded) return loaded;
+  const signals = await loadRoutedSignals().catch(() => [] as RoutedSignalRef[]);
+  const narrowed = routedFindingsOnly(loaded, signals);
+  return narrowed.findings.length ? narrowed : null;
 }
 
 async function loadPdfByAuditId(id: string): Promise<FindingsPdfInput | null> {
   const ot = await run(
-    `SELECT id::text AS id, to_char(note_day,'YYYY-MM-DD') AS note_date, doctor_uid, findings
+    `SELECT id::text AS id, to_char(note_day,'YYYY-MM-DD') AS note_date, doctor_uid, uhid, findings
      FROM ot_note_audits WHERE id = $1::uuid LIMIT 1`,
     [id],
   ).catch(() => []);
@@ -262,7 +308,7 @@ async function loadProgressPdf(id: string): Promise<FindingsPdfInput | null> {
   return pdfInput('progress', rows[0], uid || null);
 }
 
-async function loadPdfBySignalRef(reference: string): Promise<FindingsPdfInput | null> {
+async function loadPdfBySignalRef(reference: string, onlyThreadType = false): Promise<FindingsPdfInput | null> {
   const signals = await run(
     `SELECT reference, doctor_uid, signal_type, note_class,
             to_char(window_from,'YYYY-MM-DD') AS window_from,
@@ -280,7 +326,7 @@ async function loadPdfBySignalRef(reference: string): Promise<FindingsPdfInput |
   if (!doctorUid || !signalType || !from || !to) return null;
   if (noteClass === 'ot') {
     const rows = await run(
-      `SELECT id::text AS id, to_char(note_day,'YYYY-MM-DD') AS note_date, doctor_uid, findings
+      `SELECT id::text AS id, to_char(note_day,'YYYY-MM-DD') AS note_date, doctor_uid, uhid, findings
        FROM ot_note_audits
        WHERE map_status = 'mapped' AND doctor_uid = $1
          AND note_day BETWEEN $2::date AND $3::date
@@ -288,7 +334,7 @@ async function loadPdfBySignalRef(reference: string): Promise<FindingsPdfInput |
        LIMIT 50`,
       [doctorUid, from, to],
     ).catch(() => []);
-    return firstWithSignal(rows, 'ot', doctorUid, signalType);
+    return firstWithSignal(rows, 'ot', doctorUid, signalType, onlyThreadType);
   }
   if (noteClass === 'discharge_summary') {
     const rows = await run(
@@ -308,7 +354,7 @@ async function loadPdfBySignalRef(reference: string): Promise<FindingsPdfInput |
       const resolved = hop?.byIpUid[ip];
       return resolved?.reason === 'resolved' && resolved.doctorUid === doctorUid;
     });
-    return firstWithSignal(matched, 'discharge_summary', doctorUid, signalType);
+    return firstWithSignal(matched, 'discharge_summary', doctorUid, signalType, onlyThreadType);
   }
   return null;
 }
@@ -318,11 +364,13 @@ function firstWithSignal(
   noteClass: DocumentAuditClass,
   doctorUid: string,
   signalType: string,
+  onlyThreadType = false,
 ): FindingsPdfInput | null {
   for (const row of rows) {
     const stamped = toStampedFindings(parseJson(row.findings));
     if (!stamped.some((f) => f.signal_type === signalType)) continue;
-    return pdfInput(noteClass, row, doctorUid);
+    const input = pdfInput(noteClass, row, doctorUid);
+    return onlyThreadType ? { ...input, findings: input.findings.filter((f) => f.signal_type === signalType) } : input;
   }
   return null;
 }
@@ -334,12 +382,16 @@ function pdfInput(noteClass: DocumentAuditClass, row: Record<string, unknown>, d
     subject: f.subject,
     verdict: String(f.verdict),
     rationale: f.rationale,
+    evidence_excerpt: evidenceExcerpt(f.evidence),
   }));
+  const ip = row.ip_uid == null ? '' : String(row.ip_uid).trim();
+  const uhid = row.uhid == null ? '' : String(row.uhid).trim();
   return {
     audit_id: String(row.id),
     note_class: noteClass,
     doctor_uid: doctorUid,
     note_date: String(row.note_date || ''),
     findings,
+    patient: { ip_number: ip || null, uhid: uhid || null },
   };
 }
