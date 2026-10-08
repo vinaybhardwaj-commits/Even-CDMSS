@@ -52,8 +52,11 @@ export interface UnmappedDischargeCard {
   representative: TriageRepresentative;
 }
 
+/** A landed finding plus the audit's own evidence points (kept so doctor-facing reads can show them). */
+export type LandedFinding = TriageFinding & { evidence?: string[] };
+
 export interface LandedDischarge {
-  findings: TriageFinding[];
+  findings: LandedFinding[];
   unmapped: UnmappedDischargeCard[];
 }
 
@@ -73,6 +76,11 @@ function asFindingArray(value: unknown): Record<string, unknown>[] {
   return parsed.filter((row) => row && typeof row === 'object') as Record<string, unknown>[];
 }
 
+function evidencePoints(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((e) => String(e ?? '').trim()).filter(Boolean).slice(0, 8);
+}
+
 function toOpdFinding(raw: Record<string, unknown>): OpdFinding | null {
   const subject = String(raw.subject ?? '').trim();
   if (!subject) return null;
@@ -86,7 +94,7 @@ function toOpdFinding(raw: Record<string, unknown>): OpdFinding | null {
     confidence: Number(raw.confidence) || 0,
     domain,
     rationale: String(raw.rationale ?? ''),
-    evidence: [],
+    evidence: evidencePoints(raw.evidence),
     estimates: [],
     citation_ids,
     source: 'llm',
@@ -125,7 +133,7 @@ function attribute(ipUid: string, hop: DischargeHopView): Attribution {
  * unmapped cards (no uid). Name-shaped fields on the row are ignored.
  */
 export function landDischargeAudits(rows: readonly DischargeAuditSource[], hop: DischargeHopView): LandedDischarge {
-  const findings: TriageFinding[] = [];
+  const findings: LandedFinding[] = [];
   const unmappedBuckets = new Map<string, { card: UnmappedDischargeCard; count: number }>();
 
   for (const row of rows ?? []) {
@@ -140,7 +148,7 @@ export function landDischargeAudits(rows: readonly DischargeAuditSource[], hop: 
     for (const f of stamped) {
       if (!f.signal_type || !f.finding_ref) continue;
       if (f.informational) continue;
-      const base: TriageFinding = {
+      const base: LandedFinding = {
         audit_id,
         doctor_uid: attr.doctorUid ?? '',
         note_date,
@@ -153,6 +161,7 @@ export function landDischargeAudits(rows: readonly DischargeAuditSource[], hop: 
         citation_ids: f.citation_ids,
         note_class: 'discharge_summary',
       };
+      if (f.evidence?.length) base.evidence = f.evidence;
       if (attr.doctorUid) {
         base.doctor_uid = attr.doctorUid;
         findings.push(base);

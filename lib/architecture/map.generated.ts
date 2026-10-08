@@ -343,6 +343,10 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "unregistered"
   },
   {
+    "id": "doctor-facing",
+    "plane": "unregistered"
+  },
+  {
     "id": "doctor-metrics-refresh",
     "plane": "unregistered"
   },
@@ -1731,6 +1735,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "app/api",
     "to": "doc-transport-core",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
+    "to": "doctor-facing",
     "kind": "value"
   },
   {
@@ -3309,6 +3318,11 @@ export const MAP_EDGES: MapEdge[] = [
     "kind": "type"
   },
   {
+    "from": "doctor-facing",
+    "to": "opd-gov-signal-core",
+    "kind": "type"
+  },
+  {
     "from": "doctor-metrics-refresh",
     "to": "db",
     "kind": "value"
@@ -4680,6 +4694,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "opd-gov-read",
+    "to": "doctor-facing",
+    "kind": "value"
+  },
+  {
+    "from": "opd-gov-read",
     "to": "ipd-doctor-hop",
     "kind": "value"
   },
@@ -5881,6 +5900,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "triage",
     "to": "db",
+    "kind": "value"
+  },
+  {
+    "from": "triage",
+    "to": "doctor-facing",
     "kind": "value"
   },
   {
