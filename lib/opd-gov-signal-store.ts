@@ -367,6 +367,22 @@ export async function applyDoctorResponse(signal: StoredSignal, resp: Normalized
   return (await getBySignalId(signal.signal_id))!;
 }
 
+/**
+ * Has this exact governance action, under this gov_intervention_ref, already been applied to the
+ * thread? `ruling` keeps only the latest action; the event log keeps every one, so an ack(ref A)
+ * retried after close(ref B) is still recognised as a replay. Only applySignalAction writes a
+ * ruled/closed event with a payload.action (withdrawSignal's closed event has none).
+ */
+export async function hasSignalActionEvent(signalId: string, action: string, ref: string | null): Promise<boolean> {
+  if (!ref) return false;
+  const rows = await run(
+    `SELECT 1 AS hit FROM opd_gov_signal_event
+     WHERE signal_id=$1::uuid AND event IN ('ruled','closed')
+       AND payload->>'action'=$2 AND payload->>'gov_intervention_ref'=$3 LIMIT 1`,
+    [signalId, action, ref]);
+  return rows.length > 0;
+}
+
 /** Thrown by applySignalAction when the thread moved after the caller read it. The route answers 409. */
 export const SIGNAL_CHANGED = 'signal_changed';
 

@@ -44,6 +44,9 @@ const writes = () => issued.filter((q) => /^\s*(INSERT|UPDATE|DELETE)\b/i.test(q
 let signals: Row[] = [];
 let responseRequest: Row | null = null;
 let failNextSignalUpdate = false;
+let events: Row[] = [];
+let metabaseCalls = 0;
+let onLostRace: (() => void) | null = null;
 
 function neon(rows: Row[]): Response {
   const names = rows.length ? Object.keys(rows[0]) : [];
@@ -73,6 +76,9 @@ function reset(): void {
   issued.length = 0;
   responseRequest = null;
   failNextSignalUpdate = false;
+  events = [];
+  metabaseCalls = 0;
+  onLostRace = null;
   signals = [
     signalRow({ signal_id: SIG_DS, reference: 'EHRC-AUD-2026-0111', signal_type: DS_SIGNAL, note_class: 'discharge_summary' }),
     signalRow({ signal_id: SIG_OT, reference: 'EHRC-AUD-2026-0901', signal_type: OT_SIGNAL, note_class: 'ot' }),
@@ -84,6 +90,7 @@ const sig = (id: string) => signals.find((s) => s.signal_id === id)!;
 globalThis.fetch = (async (_url: unknown, init: { body?: unknown } = {}) => {
   const sent = JSON.parse(String(init.body || '{}')) as { query?: string; params?: unknown[]; native?: { query?: string } };
   if (sent.native?.query) {
+    metabaseCalls++;
     const q = String(sent.native.query);
     if (q.includes('karexpert_metadata__practitioner_id')) return metabase(['pid', 'n_uids', 'uid'], [['PX-POOR', 1, DOCTOR]]);
     if (q.includes('kx_ip_admissions')) return metabase(['encounter_id', 'current_treating_doctor_id'], [['IP-0111', 'PX-POOR']]);
@@ -93,9 +100,20 @@ globalThis.fetch = (async (_url: unknown, init: { body?: unknown } = {}) => {
   const params = sent.params || [];
   issued.push({ text, params });
 
+  // event log: appended by applySignalAction, read back for the replay check
+  if (/^\s*INSERT INTO opd_gov_signal_event\b/i.test(text)) {
+    events.push({ signal_id: params[0], event: params[1], actor: params[2], payload: JSON.parse(String(params[3])) });
+    return neon([]);
+  }
+  if (/^\s*SELECT 1 AS hit FROM opd_gov_signal_event\b/i.test(text)) {
+    const hit = events.some((e) => e.signal_id === params[0] && (e.event === 'ruled' || e.event === 'closed')
+      && (e.payload as any)?.action === params[1] && (e.payload as any)?.gov_intervention_ref === params[2]);
+    return neon(hit ? [{ hit: 1 }] : []);
+  }
+
   // thread store
   if (/^\s*UPDATE opd_gov_signal\b/i.test(text) && /ruling=\$2/.test(text)) {
-    if (failNextSignalUpdate) { failNextSignalUpdate = false; return neon([]); }
+    if (failNextSignalUpdate) { failNextSignalUpdate = false; onLostRace?.(); return neon([]); }
     const row = sig(String(params[0]));
     if (row.status !== params[3]) return neon([]);          // the conditional write
     row.ruling = params[1]; row.status = params[2];
@@ -157,7 +175,8 @@ test('signalActionTransition: closed is terminal, ruled may only close, the rest
   assert.equal(signalActionTransition('ruled', 'closed').ok, true);
   assert.equal(signalActionTransition('ruled', 'dismissed').ok, true);
   assert.equal(signalActionTransition('ruled', 'acknowledged_by_governance').ok, false);
-  assert.equal(signalActionTransition('ruled', 'privilege_action').ok, false);
+  // a privilege review after an acknowledgement is a legal escalation
+  assert.equal(signalActionTransition('ruled', 'privilege_action').ok, true);
 });
 
 test('isSignalActionReplay needs the same action AND the same non-empty gov_intervention_ref', () => {
@@ -247,11 +266,11 @@ test('signal-action: the same action + gov_intervention_ref twice is one write a
   assert.deepEqual(writes(), [], 'the replay writes nothing');
 });
 
-test('signal-action: a second, different ruling on a ruled thread is a 409 and writes nothing', async () => {
+test('signal-action: a second acknowledgement on a ruled thread is a 409 and writes nothing', async () => {
   reset();
   await post('signal-action', { reference: 'EHRC-AUD-2026-0111', action: 'acknowledged_by_governance', gov_intervention_ref: 'EPI-1' });
   issued.length = 0;
-  const res = await post('signal-action', { reference: 'EHRC-AUD-2026-0111', action: 'privilege_action', gov_intervention_ref: 'EPI-2' });
+  const res = await post('signal-action', { reference: 'EHRC-AUD-2026-0111', action: 'acknowledged_by_governance', gov_intervention_ref: 'EPI-2' });
   assert.equal(res.status, 409);
   assert.match(res.json.error, /already ruled/);
   assert.deepEqual(writes(), []);
@@ -317,7 +336,8 @@ test('doctor-response disagree on a discharge thread writes nothing to opd_audit
     });
     assert.equal(res.status, 200);
     assert.equal(res.json.status, 'escalated');
-    assert.equal(res.json.signal.representative.audit_id, DS_AUDIT, 'the response shows the discharge instance');
+    // a discharge thread is not resolved inside the doctor's POST (that needs Metabase)
+    assert.equal(res.json.signal.representative, null);
   } finally {
     console.warn = realWarn;
   }
@@ -391,7 +411,173 @@ test('the five routes use the class-aware resolver, not resolveInstances', () =>
     'app/api/governance/doctor-audits/route.ts',
   ]) {
     const src = readFileSync(file, 'utf8');
-    assert.match(src, /resolveInstancesForSignal/, file);
+    assert.match(src, /resolveInstancesForSignal|resolveInstancesLocal/, file);
     assert.doesNotMatch(src, /\bresolveInstances\b/, file);
   }
+});
+
+// ── Refuter fixes: signal-action history, privilege after acknowledgement ─────
+test('signal-action: a privilege review after an acknowledgement is legal (ruled -> ruled)', async () => {
+  reset();
+  const ack = await post('signal-action', { reference: 'EHRC-AUD-2026-0111', action: 'acknowledged_by_governance', gov_intervention_ref: 'EPI-1' });
+  assert.equal(ack.status, 200);
+  assert.equal(ack.json.status, 'ruled');
+  const priv = await post('signal-action', { reference: 'EHRC-AUD-2026-0111', action: 'privilege_action', gov_intervention_ref: 'EPI-2' });
+  assert.equal(priv.status, 200);
+  assert.equal(priv.json.replayed, false);
+  assert.equal(priv.json.status, 'ruled');
+  assert.equal(JSON.parse(String(sig(SIG_DS).ruling)).action, 'privilege_action');
+  assert.equal(events.filter((e) => e.event === 'ruled').length, 2);
+});
+
+test('signal-action: a delayed retry of an EARLIER (ref, action) pair is a 200 no-op, not a 409', async () => {
+  reset();
+  const ackBody = { reference: 'EHRC-AUD-2026-0111', action: 'acknowledged_by_governance', gov_intervention_ref: 'EPI-A' };
+  assert.equal((await post('signal-action', ackBody)).status, 200);
+  const closeBody = { reference: 'EHRC-AUD-2026-0111', action: 'closed', gov_intervention_ref: 'EPI-B' };
+  assert.equal((await post('signal-action', closeBody)).status, 200);
+  assert.equal(sig(SIG_DS).status, 'closed');
+  // the stored ruling is now close/EPI-B; ack/EPI-A survives only in the event log
+  issued.length = 0;
+  const retry = await post('signal-action', ackBody);
+  assert.equal(retry.status, 200);
+  assert.equal(retry.json.replayed, true);
+  assert.deepEqual(writes(), [], 'the retry writes nothing');
+  // a pair that was never applied is still refused on the closed thread
+  const fresh = await post('signal-action', { ...ackBody, gov_intervention_ref: 'EPI-NEVER' });
+  assert.equal(fresh.status, 409);
+  // same ref, different action: not the same pair
+  const otherAction = await post('signal-action', { ...ackBody, action: 'privilege_action' });
+  assert.equal(otherAction.status, 409);
+});
+
+test('signal-action: without a gov_intervention_ref the event log is not consulted', async () => {
+  reset();
+  await post('signal-action', { reference: 'EHRC-AUD-2026-0111', action: 'closed', gov_intervention_ref: 'EPI-1' });
+  issued.length = 0;
+  const res = await post('signal-action', { reference: 'EHRC-AUD-2026-0111', action: 'closed' });
+  assert.equal(res.status, 409);
+  assert.equal(reads(/opd_gov_signal_event/).length, 0);
+});
+
+test('signal-action: a pair already in the event log short-circuits before the conditional write', async () => {
+  reset();
+  events.push({ signal_id: SIG_DS, event: 'ruled', actor: 'gov:1', payload: { action: 'closed', gov_intervention_ref: 'EPI-DONE' } });
+  const res = await post('signal-action', { reference: 'EHRC-AUD-2026-0111', action: 'closed', gov_intervention_ref: 'EPI-DONE' });
+  assert.equal(res.status, 200);
+  assert.equal(res.json.replayed, true);
+  assert.deepEqual(writes(), []);
+});
+
+test('signal-action: a lost race is a 200 when the winner applied this same pair, a 409 when it applied another', async () => {
+  reset();
+  // The same pair is delivered twice at once: our read saw nothing, the other delivery wins the write.
+  failNextSignalUpdate = true;
+  onLostRace = () => { events.push({ signal_id: SIG_DS, event: 'closed', actor: 'gov:1', payload: { action: 'closed', gov_intervention_ref: 'EPI-RACE' } }); };
+  const same = await post('signal-action', { reference: 'EHRC-AUD-2026-0111', action: 'closed', gov_intervention_ref: 'EPI-RACE' });
+  assert.equal(same.status, 200);
+  assert.equal(same.json.replayed, true);
+
+  reset();
+  failNextSignalUpdate = true;
+  onLostRace = () => { events.push({ signal_id: SIG_DS, event: 'closed', actor: 'gov:1', payload: { action: 'closed', gov_intervention_ref: 'EPI-OTHER' } }); };
+  const other = await post('signal-action', { reference: 'EHRC-AUD-2026-0111', action: 'closed', gov_intervention_ref: 'EPI-MINE' });
+  assert.equal(other.status, 409);
+});
+
+// ── Refuter fixes: doctor-interactive POSTs never leave Neon ──────────────────
+test('doctor-response on a discharge thread makes no Metabase call and reads no discharge audit', async () => {
+  reset();
+  const realWarn = console.warn;
+  console.warn = () => {};
+  try {
+    const res = await post('doctor-response', {
+      reference: 'EHRC-AUD-2026-0111', verb: 'agree', comment: 'Agreed.', client_request_id: 'req-nometa-1',
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.json.status, 'responded');
+  } finally {
+    console.warn = realWarn;
+  }
+  assert.equal(metabaseCalls, 0, 'no Metabase query inside the doctor POST');
+  assert.equal(reads(/ipd_discharge_audits/).length, 0);
+});
+
+test('doctor-response on an OPD thread still resolves its representative (Neon only)', async () => {
+  reset();
+  const res = await post('doctor-response', {
+    reference: 'EHRC-AUD-2026-0030', verb: 'agree', comment: 'Agreed.', client_request_id: 'req-opd-1',
+  });
+  assert.equal(res.status, 200);
+  assert.equal(res.json.signal.representative.audit_id, OPD_AUDIT);
+  assert.equal(metabaseCalls, 0);
+});
+
+test('signal-reaction on a discharge thread makes no Metabase call and stores a null state ref', async () => {
+  reset();
+  const res = await post('signal-reaction', {
+    signal_id: SIG_DS, physician_id: 'PHY-1', cdmss_doctor_uid: DOCTOR, reaction: 'already_knew',
+  });
+  assert.equal(res.status, 200);
+  assert.equal(metabaseCalls, 0);
+  assert.equal(reads(/ipd_discharge_audits/).length, 0);
+  const insert = issued.find((q) => /^\s*INSERT INTO cognition_reactions\b/i.test(q.text));
+  assert.ok(insert);
+  assert.equal(insert!.params[3], null, 'clinical_state_ref is null: not resolved, which is not the same as none');
+});
+
+test('signal-reaction on an OT thread still records the OT audit (Neon only)', async () => {
+  reset();
+  const res = await post('signal-reaction', {
+    signal_id: SIG_OT, physician_id: 'PHY-1', cdmss_doctor_uid: DOCTOR, reaction: 'surprised',
+  });
+  assert.equal(res.status, 200);
+  assert.equal(res.json.reaction.signal_id, SIG_OT);
+  assert.equal(metabaseCalls, 0);
+});
+
+// ── Refuter fixes: roster-audits resolves threads concurrently, bounded ───────
+test('mapWithConcurrency: keeps input order, never exceeds the limit, handles empty and short lists', async () => {
+  const { mapWithConcurrency } = await import('../opd-gov-read.ts');
+  let live = 0;
+  let peak = 0;
+  const items = Array.from({ length: 12 }, (_, i) => i);
+  const out = await mapWithConcurrency(items, 5, async (n) => {
+    live++; peak = Math.max(peak, live);
+    await new Promise((r) => setTimeout(r, 5 + (n % 3)));
+    live--;
+    return n * 2;
+  });
+  assert.deepEqual(out, items.map((n) => n * 2));
+  assert.equal(peak, 5);
+  assert.deepEqual(await mapWithConcurrency([], 5, async (n: number) => n), []);
+  assert.deepEqual(await mapWithConcurrency([1, 2], 5, async (n) => n + 1), [2, 3]);
+});
+
+test('mapWithConcurrency: a failing item rejects the whole read rather than returning a hole', async () => {
+  const { mapWithConcurrency } = await import('../opd-gov-read.ts');
+  await assert.rejects(mapWithConcurrency([1, 2, 3], 2, async (n) => { if (n === 2) throw new Error('boom'); return n; }), /boom/);
+});
+
+test('roster-audits per doctor: several threads of one doctor all resolve, in order, with a bounded fan-out', async () => {
+  reset();
+  // seven OPD threads + the OT and discharge ones, all for DOCTOR
+  for (let i = 0; i < 7; i++) {
+    signals.push(signalRow({
+      signal_id: `20000000-0000-4000-8000-00000000000${i}`, reference: `EHRC-AUD-2026-05${i}0`,
+      signal_type: OPD_SIGNAL, note_class: 'opd', created_at: `2026-09-${10 + i}T10:00:00.000Z`,
+    }));
+  }
+  const { NextRequest } = await import('next/server');
+  const { GET } = await import('../../app/api/governance/roster-audits/route.ts');
+  const res = await GET(new NextRequest(`https://cat.test/api/governance/roster-audits?doctor_uid=${encodeURIComponent(DOCTOR)}`, { headers: H }));
+  assert.equal(res.status, 200);
+  const body = await res.json() as { doctors: { signals: { reference: string; representative: { audit_id: string } | null }[] }[] };
+  const refs = body.doctors[0].signals.map((s) => s.reference);
+  assert.equal(refs.length, 10);
+  assert.deepEqual(refs, signals.map((s) => String(s.reference)), 'order matches the thread list');
+  const byRef = new Map(body.doctors[0].signals.map((s) => [s.reference, s]));
+  assert.equal(byRef.get('EHRC-AUD-2026-0111')?.representative?.audit_id, DS_AUDIT);
+  assert.equal(byRef.get('EHRC-AUD-2026-0901')?.representative?.audit_id, OT_AUDIT);
+  assert.equal(byRef.get('EHRC-AUD-2026-0500')?.representative?.audit_id, OPD_AUDIT);
 });

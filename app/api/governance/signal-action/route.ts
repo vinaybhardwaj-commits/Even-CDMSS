@@ -4,8 +4,9 @@
  * a gov_intervention on its side, then syncs it here (gov_intervention_ref) to close the CDMSS
  * thread. CDMSS never enacts enforcement — it stores the ruling reference + updates status.
  *
- * Guarded: a repeat of the same action + gov_intervention_ref is a 200 no-op (replayed: true); an
- * illegal status transition (anything on a closed thread, a second ruling on a ruled one) is a 409.
+ * Guarded: a repeat of ANY earlier (gov_intervention_ref, action) pair on the thread is a 200 no-op
+ * (replayed: true); an illegal status transition (anything on a closed thread; on a ruled one,
+ * anything but privilege_action, closed or dismissed) is a 409.
  */
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -13,7 +14,9 @@ export const runtime = 'nodejs';
 import { NextRequest, NextResponse } from 'next/server';
 import { isAdminUnlocked } from '@/lib/admin-cookie';
 import { govKeyValid } from '@/lib/gov-auth';
-import { getByReference, getBySignalId, applySignalAction, toSignalRow, SIGNAL_CHANGED } from '@/lib/opd-gov-signal-store';
+import {
+  getByReference, getBySignalId, applySignalAction, hasSignalActionEvent, toSignalRow, SIGNAL_CHANGED,
+} from '@/lib/opd-gov-signal-store';
 import {
   validateSignalAction, signalObject, signalActionTransition, isSignalActionReplay, type SignalActionInput,
 } from '@/lib/opd-gov-signal-core';
@@ -41,7 +44,12 @@ export async function POST(req: NextRequest) {
   };
 
   // Idempotency first: the second delivery of a ruling the thread already carries changes nothing.
-  if (isSignalActionReplay(signal.ruling, v.value)) return respond(signal, true);
+  // The current ruling answers the common case; the event log answers an earlier pair (ack A, then
+  // close B, then a delayed retry of ack A).
+  const seenBefore = async (s: typeof signal) =>
+    isSignalActionReplay(s.ruling, v.value)
+    || await hasSignalActionEvent(s.signal_id, v.value.action, v.value.gov_intervention_ref);
+  if (await seenBefore(signal)) return respond(signal, true);
 
   const guard = signalActionTransition(signal.status, v.value.action);
   if (!guard.ok) return NextResponse.json({ ok: false, error: guard.error }, { status: 409 });
@@ -53,7 +61,7 @@ export async function POST(req: NextRequest) {
     if ((e as Error).message === SIGNAL_CHANGED) {
       // Lost a race. If the winner carried this same ruling it is a replay; otherwise the thread moved.
       const current = await getBySignalId(signal.signal_id);
-      if (current && isSignalActionReplay(current.ruling, v.value)) return respond(current, true);
+      if (current && await seenBefore(current)) return respond(current, true);
       return NextResponse.json({ ok: false, error: 'signal changed while the action was applied; reload and retry' }, { status: 409 });
     }
     throw e;
