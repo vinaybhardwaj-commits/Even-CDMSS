@@ -367,12 +367,22 @@ export async function applyDoctorResponse(signal: StoredSignal, resp: Normalized
   return (await getBySignalId(signal.signal_id))!;
 }
 
-/** Record a governance ruling (roster). Sets ruling + status + an event. */
+/** Thrown by applySignalAction when the thread moved after the caller read it. The route answers 409. */
+export const SIGNAL_CHANGED = 'signal_changed';
+
+/**
+ * Record a governance ruling (roster). Sets ruling + status + an event.
+ * The write is conditional on the status the caller validated against, so two racing actions cannot
+ * both pass the transition guard: the loser writes nothing and gets SIGNAL_CHANGED.
+ */
 export async function applySignalAction(signal: StoredSignal, action: NormalizedSignalAction): Promise<StoredSignal> {
   const newStatus = statusAfterAction(action.action);
   const payload = { action: action.action, note: action.note, actor: action.actor, gov_intervention_ref: action.gov_intervention_ref, ruled_at: new Date().toISOString() };
-  await run(`UPDATE opd_gov_signal SET ruling=$2::jsonb, status=$3, updated_at=now() WHERE signal_id=$1`,
-    [signal.signal_id, JSON.stringify(payload), newStatus]);
+  const written = await run(
+    `UPDATE opd_gov_signal SET ruling=$2::jsonb, status=$3, updated_at=now()
+     WHERE signal_id=$1 AND status=$4 RETURNING signal_id`,
+    [signal.signal_id, JSON.stringify(payload), newStatus, signal.status]);
+  if (!written.length) throw new Error(SIGNAL_CHANGED);
   await appendEvent(signal.signal_id, newStatus === 'closed' ? 'closed' : 'ruled', action.actor || 'gov:unknown', payload);
   return (await getBySignalId(signal.signal_id))!;
 }

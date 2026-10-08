@@ -20,7 +20,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { isAdminUnlocked } from '@/lib/admin-cookie';
 import { govKeyValid } from '@/lib/gov-auth';
 import { getBySignalId } from '@/lib/opd-gov-signal-store';
-import { resolveInstances } from '@/lib/opd-gov-read';
+import { resolveInstancesForSignal } from '@/lib/opd-gov-read';
 import { classifyReaction, isReactionVerb } from '@/lib/cognition/reactions';
 import { getReaction, insertReaction, listReactionsFor, type ReactionRow } from '@/lib/cognition/reactions-store';
 
@@ -77,7 +77,7 @@ export async function POST(req: NextRequest) {
   // doctor was actually looking at. NULL means "could not resolve", never "there was none".
   let clinicalStateRef: string | null = null;
   try {
-    const { representative } = await resolveInstances(signal.doctor_uid, signal.signal_type, signal.window_from, signal.window_to);
+    const { representative } = await resolveInstancesForSignal(signal);
     clinicalStateRef = representative?.audit_id ?? null;
   } catch { clinicalStateRef = null; }
 

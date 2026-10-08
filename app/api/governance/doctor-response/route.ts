@@ -23,8 +23,10 @@ import {
   releaseDoctorResponseRequest,
   toSignalRow,
 } from '@/lib/opd-gov-signal-store';
-import { validateDoctorResponse, classifyDoctorResponse, signalObject, type DoctorResponseInput } from '@/lib/opd-gov-signal-core';
-import { resolveInstances } from '@/lib/opd-gov-read';
+import {
+  validateDoctorResponse, classifyDoctorResponse, signalObject, calibrationTarget, type DoctorResponseInput,
+} from '@/lib/opd-gov-signal-core';
+import { resolveInstancesForSignal } from '@/lib/opd-gov-read';
 
 const run = sql as unknown as (text: string, params?: unknown[]) => Promise<Record<string, unknown>[]>;
 
@@ -75,16 +77,26 @@ export async function POST(req: NextRequest) {
   }
 
   // A disagree feeds the calibration corpus (opd_audit_feedback), keyed on the representative note.
+  // Only OPD threads qualify: a discharge or OT thread's audit id belongs to another table, and
+  // writing it into the OPD corpus would corrupt it. Those classes skip, with the reason logged.
   if (!replay && v.value.verb === 'disagree') {
-    try {
-      const { representative } = await resolveInstances(signal.doctor_uid, signal.signal_type, signal.window_from, signal.window_to);
-      if (representative?.audit_id) {
-        await run(
-          `INSERT INTO opd_audit_feedback (app_source, audit_id, uid, verdict, comment, author)
-           VALUES ('standalone', $1::uuid, $2, 'disagree', $3, $4)`,
-          [representative.audit_id, null, v.value.comment, `doctor:${signal.doctor_uid}`]);
-      }
-    } catch { /* calibration write is best-effort; the response is already recorded */ }
+    const target = calibrationTarget(signal.note_class);
+    if (!target.ok) {
+      console.warn(JSON.stringify({
+        event: 'doctor_response_calibration_skipped',
+        reference: signal.reference, note_class: signal.note_class, reason: target.reason,
+      }));
+    } else {
+      try {
+        const { representative } = await resolveInstancesForSignal(signal);
+        if (representative?.audit_id) {
+          await run(
+            `INSERT INTO opd_audit_feedback (app_source, audit_id, uid, verdict, comment, author)
+             VALUES ('standalone', $1::uuid, $2, 'disagree', $3, $4)`,
+            [representative.audit_id, null, v.value.comment, `doctor:${signal.doctor_uid}`]);
+        }
+      } catch { /* calibration write is best-effort; the response is already recorded */ }
+    }
   }
 
   if (!replay) {
@@ -92,7 +104,7 @@ export async function POST(req: NextRequest) {
   }
 
   const now = new Date().toISOString();
-  const { count, representative } = await resolveInstances(updated.doctor_uid, updated.signal_type, updated.window_from, updated.window_to);
+  const { count, representative } = await resolveInstancesForSignal(updated);
   return NextResponse.json({
     ok: true,
     replayed: replay,

@@ -14,7 +14,7 @@ import { fetchDoctorNames } from '@/lib/metabase';
 import { sql } from '@/lib/db';
 import { listSignalsRoster, toSignalRow, type StoredSignal } from '@/lib/opd-gov-signal-store';
 import { signalObject, isOverdue } from '@/lib/opd-gov-signal-core';
-import { resolveInstances, doctorAuditMetrics } from '@/lib/opd-gov-read';
+import { resolveInstancesForSignal, doctorAuditMetrics } from '@/lib/opd-gov-read';
 import { getOperationalBlocks, type OperationalBlock } from '@/lib/doctor-metrics-store';
 
 const run = sql as unknown as (text: string, params?: unknown[]) => Promise<Record<string, unknown>[]>;
@@ -60,7 +60,7 @@ export async function GET(req: NextRequest) {
     const sigObjs = [];
     for (const s of list) {
       // resolve representatives only for the focused profile view (?doctor_uid=)
-      const inst = doctorUid ? await resolveInstances(s.doctor_uid, s.signal_type, s.window_from, s.window_to) : { count: null, representative: null };
+      const inst = doctorUid ? await resolveInstancesForSignal(s) : { count: null, representative: null };
       sigObjs.push(signalObject(toSignalRow(s, inst.count), inst.representative, now));
     }
     // operational folded in (batch, cheap); audit metrics only for the focused profile view

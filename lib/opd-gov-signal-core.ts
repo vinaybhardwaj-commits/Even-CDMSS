@@ -212,6 +212,51 @@ export function validateSignalAction(input: SignalActionInput): { ok: true; valu
   };
 }
 
+/**
+ * Which governance actions a thread in `status` may take.
+ *   routed | responded | escalated → any of the four actions
+ *   ruled                          → only closing it (closed | dismissed)
+ *   closed                         → nothing; closed is terminal
+ * A repeat of the SAME action + gov_intervention_ref is handled before this (see isSignalActionReplay).
+ */
+export function signalActionTransition(
+  status: string,
+  action: SignalAction,
+): { ok: true } | { ok: false; error: string } {
+  if (status === 'closed') {
+    return { ok: false, error: `signal is closed; ${action} is not allowed` };
+  }
+  if (status === 'ruled' && action !== 'closed' && action !== 'dismissed') {
+    return { ok: false, error: `signal is already ruled; only closed or dismissed may follow (got ${action})` };
+  }
+  return { ok: true };
+}
+
+/**
+ * Idempotency for POST /signal-action: the same action carrying the same gov_intervention_ref as the
+ * ruling already on the thread is a replay (200, nothing written). Without a reference there is
+ * nothing to key on, so the transition guard decides instead.
+ */
+export function isSignalActionReplay(ruling: unknown, incoming: { action: string; gov_intervention_ref: string | null }): boolean {
+  if (!incoming.gov_intervention_ref) return false;
+  if (!ruling || typeof ruling !== 'object') return false;
+  const r = ruling as { action?: unknown; gov_intervention_ref?: unknown };
+  return r.action === incoming.action && r.gov_intervention_ref === incoming.gov_intervention_ref;
+}
+
+/**
+ * Where a doctor's `disagree` may be recorded as calibration feedback. Only OPD threads have a
+ * calibration store keyed on their audit id (opd_audit_feedback.audit_id is an opd_note_audits id).
+ * A discharge or OT thread's audit id is a different table's uuid, so writing it there would put a
+ * foreign id into the OPD corpus. Those classes skip, with a reason the caller logs.
+ */
+export function calibrationTarget(noteClass: string | null | undefined):
+  { ok: true; table: 'opd_audit_feedback' } | { ok: false; reason: string } {
+  const cls = noteClass || 'opd';
+  if (cls === 'opd') return { ok: true, table: 'opd_audit_feedback' };
+  return { ok: false, reason: `no calibration store for note_class=${cls}; opd_audit_feedback only accepts opd_note_audits ids` };
+}
+
 // ── Outbound signal object (contract §6) ──────────────────────────────────────
 export interface SignalRow {
   reference: string; signal_id: string; doctor_uid: string; signal_type: string;
