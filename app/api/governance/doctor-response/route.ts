@@ -27,6 +27,7 @@ import {
   validateDoctorResponse, classifyDoctorResponse, signalObject, calibrationTarget, type DoctorResponseInput,
 } from '@/lib/opd-gov-signal-core';
 import { resolveInstancesLocal } from '@/lib/opd-gov-read';
+import { doctorInstance, doctorSignal } from '@/lib/doctor-facing';
 
 const run = sql as unknown as (text: string, params?: unknown[]) => Promise<Record<string, unknown>[]>;
 
@@ -111,6 +112,11 @@ export async function POST(req: NextRequest) {
     replayed: replay,
     client_request_id: v.value.client_request_id,
     status: updated.status,
-    signal: signalObject(toSignalRow(updated, count), representative, now),
+    // The caller is the doctor portal: return the allowlisted doctor signal (the same shape
+    // doctor-audits serves), never the governance object with importance and ruling.
+    signal: doctorSignal(
+      signalObject(toSignalRow(updated, count), representative, now),
+      representative ? doctorInstance(representative, updated.note_class, true) : null,
+    ),
   });
 }

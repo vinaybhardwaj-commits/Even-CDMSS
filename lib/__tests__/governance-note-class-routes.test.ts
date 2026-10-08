@@ -581,3 +581,47 @@ test('roster-audits per doctor: several threads of one doctor all resolve, in or
   assert.equal(byRef.get('EHRC-AUD-2026-0901')?.representative?.audit_id, OT_AUDIT);
   assert.equal(byRef.get('EHRC-AUD-2026-0500')?.representative?.audit_id, OPD_AUDIT);
 });
+
+// ── Refuter F9: doctor POST responses carry the allowlisted doctor signal only ─
+const DOCTOR_SIGNAL_KEYS = [
+  'doctor_uid', 'instances', 'label', 'note_class', 'overdue', 'reference', 'representative', 'response',
+  'response_required', 'routed_at', 'signal_id', 'signal_type', 'sla_due_at', 'status', 'window',
+];
+const GOV_ONLY = ['importance', 'ruling', 'triage', 'events', 'actor', 'source_triage_ref', 'confidence', 'policy_version'];
+
+test('doctor-response returns the doctor signal object: no importance, ruling or other governance keys', async () => {
+  for (const [ref, cls] of [['EHRC-AUD-2026-0030', 'opd'], ['EHRC-AUD-2026-0901', 'ot'], ['EHRC-AUD-2026-0111', 'discharge']] as const) {
+    reset();
+    // plant governance-only content on the thread
+    for (const s of signals) s.ruling = JSON.stringify({ action: 'privilege_action', note: 'GOV-ONLY-NOTE', actor: 'gov:42', gov_intervention_ref: 'EPI-1' });
+    const res = await post('doctor-response', { reference: ref, verb: 'agree', comment: 'Agreed.', client_request_id: `req-f9-${cls}` });
+    assert.equal(res.status, 200, ref);
+    assert.deepEqual(Object.keys(res.json.signal).sort(), DOCTOR_SIGNAL_KEYS, ref);
+    assert.equal(res.json.signal.note_class, cls);
+    const blob = JSON.stringify(res.json);
+    for (const k of GOV_ONLY) assert.ok(!(k in res.json.signal) && !blob.includes(`"${k}"`), `${ref}: ${k}`);
+    assert.ok(!blob.includes('GOV-ONLY-NOTE') && !blob.includes('gov:42') && !blob.includes('EPI-1'), ref);
+    assert.equal(res.json.signal.response.verb, 'agree');
+    assert.ok(!('client_request_id' in res.json.signal.response));
+    if (cls === 'discharge') assert.equal(res.json.signal.representative, null);
+    else assert.ok(!('finding_ref' in res.json.signal.representative));
+  }
+});
+
+test('doctor-response replay and signal-reaction also return no governance keys', async () => {
+  reset();
+  const body = { reference: 'EHRC-AUD-2026-0030', verb: 'agree', comment: 'Agreed.', client_request_id: 'req-f9-replay' };
+  await post('doctor-response', body);
+  const replay = await post('doctor-response', body);
+  assert.equal(replay.json.replayed, true);
+  assert.deepEqual(Object.keys(replay.json.signal).sort(), DOCTOR_SIGNAL_KEYS);
+  assert.ok(!('importance' in replay.json.signal) && !('ruling' in replay.json.signal));
+
+  reset();
+  const react = await post('signal-reaction', { signal_id: SIG_OPD, physician_id: 'PHY-1', cdmss_doctor_uid: DOCTOR, reaction: 'surprised' });
+  assert.equal(react.status, 200);
+  assert.deepEqual(Object.keys(react.json).sort(), ['ok', 'reaction', 'replay']);
+  assert.deepEqual(Object.keys(react.json.reaction).sort(), ['after_cdmss', 'at', 'reference', 'signal_id', 'reaction'].sort());
+  const blob = JSON.stringify(react.json);
+  for (const k of GOV_ONLY) assert.ok(!blob.includes(`"${k}"`), k);
+});
