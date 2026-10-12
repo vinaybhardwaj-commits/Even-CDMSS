@@ -15,6 +15,7 @@
  * box arithmetic is derived from these numbers (see the worker route).
  */
 
+import { isProviderAuthUnavailable } from '../bedrock';
 import { GEMINI_MODEL, TEXT_MODEL, geminiConfigured } from '../llm';
 import { startTrace, finishTrace, tracedChat } from '../trace';
 import { PROVIDER_BUDGETS } from '../lab-provider-core';
@@ -563,14 +564,15 @@ export async function runReadmissionAudit(row: PendingRow): Promise<ReadmitAudit
       };
     } catch (e) {
       // Transient (model/parse) failure: row stays 'detected' → the sweep IS the retry.
+      // An auth denial is not a fact about this finding: do not increment its attempt counter.
       const msg = String((e as Error).message);
-      await recordAuditError(row.dedup_key, msg);
+      if (!isProviderAuthUnavailable(e)) await recordAuditError(row.dedup_key, msg);
       await finishTrace(traceId, 'error', msg);
       return { dedupKey: row.dedup_key, status: 'failed', reason: msg, traceId, latencyMs: Date.now() - t0 };
     }
   } catch (e) {
     const msg = String((e as Error).message);
-    await recordAuditError(row.dedup_key, msg);
+    if (!isProviderAuthUnavailable(e)) await recordAuditError(row.dedup_key, msg);
     return { dedupKey: row.dedup_key, status: 'failed', reason: msg, latencyMs: Date.now() - t0 };
   }
 }
