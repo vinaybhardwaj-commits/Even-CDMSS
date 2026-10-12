@@ -9,7 +9,14 @@ import { exitLabExecution } from '../lab-execution-context';
 import { saveOpdAudit, updateOpdAudit } from '../opd-audit-store';
 import { persistLongitudinal, replayLongitudinal, runLongitudinalPass } from '../opd-longitudinal';
 import { insertDecision, insertQueueDisposition } from '../opd-triage-store';
-import { applyDoctorResponse, applySignalAction, mintOrUpdateSignal, withdrawSignal } from '../opd-gov-signal-store';
+import {
+  applyDoctorResponse, applySignalAction, claimDoctorResponseRequest, completeDoctorResponseRequest,
+  ensureDoctorResponseRequestsTable, ensureGovSignalTables, mintOrUpdateSignal, releaseDoctorResponseRequest,
+  withdrawSignal,
+} from '../opd-gov-signal-store';
+import { ensureDoctorMetricsTables, upsertOperationalMetrics, upsertRoster } from '../doctor-metrics-store';
+import { refreshDoctorMetrics } from '../doctor-metrics-refresh';
+import { saveMemberLink } from '../record-audit-link-store';
 
 async function forbidden(fn: () => Promise<unknown>): Promise<void> {
   await assert.rejects(fn, (e: Error) => {
@@ -32,6 +39,16 @@ test('override/lab mode throws before any production audit writer runs', async (
     await forbidden(() => withdrawSignal('d', 's', null, null, null));
     await forbidden(() => applyDoctorResponse(undefined as never, undefined as never));
     await forbidden(() => applySignalAction(undefined as never, undefined as never));
+    await forbidden(() => claimDoctorResponseRequest(undefined as never, undefined as never));
+    await forbidden(() => completeDoctorResponseRequest(undefined as never, undefined as never, undefined as never));
+    await forbidden(() => releaseDoctorResponseRequest(undefined as never, undefined as never));
+    await forbidden(() => ensureGovSignalTables());
+    await forbidden(() => ensureDoctorResponseRequestsTable());
+    await forbidden(() => ensureDoctorMetricsTables());
+    await forbidden(() => upsertOperationalMetrics([]));
+    await forbidden(() => upsertRoster([]));
+    await forbidden(() => refreshDoctorMetrics());
+    await forbidden(() => saveMemberLink('run', { uhid: 'x' }));
   });
 });
 

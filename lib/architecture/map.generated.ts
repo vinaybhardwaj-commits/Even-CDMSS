@@ -3347,6 +3347,11 @@ export const MAP_EDGES: MapEdge[] = [
     "kind": "value"
   },
   {
+    "from": "doctor-metrics-refresh",
+    "to": "opd-lab-write-guard",
+    "kind": "value"
+  },
+  {
     "from": "doctor-metrics-store",
     "to": "db",
     "kind": "value"
@@ -3355,6 +3360,11 @@ export const MAP_EDGES: MapEdge[] = [
     "from": "doctor-metrics-store",
     "to": "doctor-directory-core",
     "kind": "type"
+  },
+  {
+    "from": "doctor-metrics-store",
+    "to": "opd-lab-write-guard",
+    "kind": "value"
   },
   {
     "from": "dose-aggregation-core",
@@ -5624,6 +5634,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "record-audit-link-store",
     "to": "db",
+    "kind": "value"
+  },
+  {
+    "from": "record-audit-link-store",
+    "to": "opd-lab-write-guard",
     "kind": "value"
   },
   {

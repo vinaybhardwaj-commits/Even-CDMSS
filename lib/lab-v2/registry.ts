@@ -271,8 +271,10 @@ const D3 = { ...CASE_SCHEMAS, ...MINIMIZE_SCHEMAS } as unknown as Record<string,
  * Paired signed/override OPD audit. A new slice on purpose: A-1 stays the original fifteen.
  *
  * Submit is `research_write` and identifying on every call, so the research key can see it and
- * is refused, and a reviewer cannot launch it. Status and results are `research_read`, which
- * is the scope a reviewer holds, and they do not return the override text.
+ * is refused, and a reviewer cannot launch it. Status and the de-identified results are
+ * `research_read`. Status is counts only. De-identified results join arms on a pair key and
+ * omit uid, external_ref, clinician uid and rationale. The identifying results tool is
+ * `research_write` and identifying on every call.
  */
 const PAIRED = PAIRED_AUDIT_SCHEMAS as unknown as Record<string, { input: ZodTypeAny; output: ZodTypeAny }>;
 const paired = (
@@ -405,12 +407,17 @@ export const REGISTRY: readonly ToolSpec[] = [
 
   // ── Paired signed/override OPD audit. Not a production write. ────────────────────
   {
-    ...paired('paired_audit_submit', 'Queue a paired OPD audit: for each explicit uid, re-audit the signed prescription and audit the supplied override text on the same engine version, prompt hash and model. Returns a run id. The cron does the work. Results land in the lab store only. Identifying on every call.', ['research_write'], 'research_write', 'metered'),
+    ...paired('paired_audit_submit', 'Queue a paired OPD audit: for each explicit uid, re-audit the signed prescription and audit the supplied structured override (medications, diagnoses, investigations, procedures, advice, plan, exam, follow-up) on the same engine version, prompt hash and model. override_text is the fallback and is parsed into those same columns. Returns a run id. The cron does the work. Results land in the lab store only. Identifying on every call.', ['research_write'], 'research_write', 'metered'),
     identifying_input: true,
     identifying_always: true,
   },
-  paired('paired_audit_status', 'Counts and budget for one paired-audit run: queued, running, succeeded, deduped, skipped, failed, stopped, calls used and spend. No note text.', ['research_read'], 'read'),
-  paired('paired_audit_results', 'Per-uid per-arm findings for one paired-audit run (subject, verdict, severity, signal type, category) plus flag diffs between the signed arm and the override arm. Does not return the override text.', ['research_read'], 'read'),
+  paired('paired_audit_status', 'Counts and budget for one paired-audit run: queued, running, succeeded, deduped, skipped, failed, stopped, calls used and spend. No uid, no note text.', ['research_read'], 'read'),
+  paired('paired_audit_results', 'De-identified per-arm findings for one paired-audit run (subject, verdict, severity, signal type, category) plus flag diffs and per-flag agreement. Arms join on pair_key. Does not return uid, external_ref, clinician uid, rationale, or the override.', ['research_read'], 'read'),
+  {
+    ...paired('paired_audit_results_identifying', 'Identifying per-uid per-arm findings for one paired-audit run, including external_ref, clinician uid on the signed arm, and rationale. Does not return the override text. Identifying on every call.', ['research_write'], 'read'),
+    identifying_input: true,
+    identifying_always: true,
+  },
 ];
 
 export const BY_NAME: Record<string, ToolSpec> = Object.fromEntries(REGISTRY.map((s) => [s.name, s]));

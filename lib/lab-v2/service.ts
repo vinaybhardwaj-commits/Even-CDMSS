@@ -68,7 +68,8 @@ import { QUEUE_SCHEMAS, reviewQueue } from './tools/queue';
 import { CASE_SCHEMAS, caseAsk, caseTimeline } from './tools/case';
 import { MINIMIZE_SCHEMAS, failureMinimize } from './tools/minimize';
 import {
-  PAIRED_AUDIT_SCHEMAS, pairedAuditResultsTool, pairedAuditStatusTool, pairedAuditSubmitTool,
+  PAIRED_AUDIT_SCHEMAS, pairedAuditResultsIdentifyingTool, pairedAuditResultsTool,
+  pairedAuditStatusTool, pairedAuditSubmitTool,
 } from './tools/paired-audit';
 import { FREEZE_ARM_HASH, freezeItemKey } from './adapters/dataset-freeze';
 import { freezeCohort } from './sources/cohort';
@@ -1132,6 +1133,12 @@ const PAIRED_HANDLERS: Record<string, Handler> = {
   },
   async paired_audit_results(deps, args) {
     return pairedAuditResultsTool(
+      { db: deps.db },
+      args as { run_id: string; limit: number; offset: number },
+    );
+  },
+  async paired_audit_results_identifying(deps, args) {
+    return pairedAuditResultsIdentifyingTool(
       { db: deps.db },
       args as { run_id: string; limit: number; offset: number },
     );

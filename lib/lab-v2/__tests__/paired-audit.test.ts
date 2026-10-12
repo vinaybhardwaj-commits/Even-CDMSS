@@ -17,10 +17,11 @@ import { saveOpdAudit } from '../../opd-audit-store';
 import { opdCaseText, rowToOpdCase } from '../../opd-ingest-core';
 import { enterOpdLabWriteFence } from '../../opd-lab-write-guard';
 import {
-  applyNoteBodyOverride, diffFlags, pairedLogRecord, sameFlagSet, type ProjectedFinding,
+  applyStructuredOverride, caseTextSections, diffFlags, flagAgreement, pairedLogRecord, resolveOverride,
+  sameFlagSet, structureFromOverrideText, type ProjectedFinding,
 } from '../paired-audit-core';
 import {
-  pairedAuditResults, pairedAuditTick, submitPairedAudit,
+  pairedAuditResults, pairedAuditResultsIdentifying, pairedAuditTick, submitPairedAudit,
   type AuditOutcome, type PairedAuditDeps, type ResolveResult,
 } from '../paired-audit';
 import type { OpdLabDependencies } from '../../opd-note-audit';
@@ -90,9 +91,9 @@ function deps(opts: {
       return LAB;
     },
     audit: opts.audit ?? (async (row, _lab, charge) => {
-      charge();
-      const text = String(row.dpipe_pc ?? '');
-      const findings = text.includes('Freescript')
+      await charge();
+      const override = JSON.stringify(row.medications ?? '').toLowerCase().includes('paracetamol');
+      const findings = override
         ? [finding('Shared flag', 'shared'), finding('Override only', 'override_only')]
         : [finding('Shared flag', 'shared'), finding('Signed only', 'signed_only')];
       return { audit: auditOf(findings), spend_microusd: 1 } satisfies AuditOutcome;
@@ -113,19 +114,73 @@ const SUBMIT = {
   model: 'vertex:gemini-2.5-pro',
 };
 
-test('the override replaces the prescription body and keeps encounter context', () => {
-  const row = noteRow(UID);
-  const next = applyNoteBodyOverride(row, 'Freescript: paracetamol 500 mg for three days');
-  const mapped = rowToOpdCase(next);
-  const text = opdCaseText(mapped.case);
-  assert.match(text, /paracetamol 500 mg/);
-  assert.equal(text.includes('AmoxicillinSigned'), false);
-  assert.equal(text.includes('signed complaint'), false);
-  assert.equal(text.includes('amoxicillin plan'), false);
-  assert.match(text, /penicillin/);
+test('the override keeps patient context and a non-zero medication count', () => {
+  const base = noteRow(UID);
+  const row = {
+    ...base,
+    comorbidities: ['Hypertension'],
+    relevant_medical_history: [{ text: 'prior asthma' }],
+    reason_for_consultation: 'cough for 3 days',
+    dpipe_dx: [{ diagnosis: 'Acute bronchitis', icd_code: 'J20.9' }],
+    dpipe_pom: [{ management_plan: 'amoxicillin plan that must not leak' }],
+    general_practitioner_prescription__presenting_complaints: [
+      { symptoms: 'nested cough', diagnoses: [{ diagnosis_or_impression: 'Nested signed dx' }] },
+    ],
+  };
+  const structured = {
+    medications: [{ name: 'Paracetamol', dose: '500 mg', route: 'oral', frequency: 'TDS', duration: '3 days' }],
+    diagnoses: [{ name: 'Viral fever', icd_code: 'B34.9' }],
+    investigations: ['CBC'],
+    procedures: ['nebulisation'],
+    advice: ['rest'],
+    plan: ['review if worse'],
+    exam: ['throat congested'],
+    follow_up: { type: 'OPD', date: '2026-09-08' },
+  };
+  const next = applyStructuredOverride(row, structured);
+  const signed = rowToOpdCase(row).case;
+  const over = rowToOpdCase(next).case;
+  const signedText = opdCaseText(signed);
+  const overText = opdCaseText(over);
+  assert.ok(over.medications.length > 0);
+  assert.match(overText, /Medications \(1\)/);
+  assert.equal(overText.includes('NONE prescribed'), false);
+  assert.match(overText, /Paracetamol/);
+  assert.equal(overText.includes('AmoxicillinSigned'), false);
+  assert.equal(overText.includes('amoxicillin plan'), false);
+  assert.equal(overText.includes('Acute bronchitis'), false);
+  assert.equal(overText.includes('Nested signed dx'), false);
+  assert.match(overText, /Viral fever/);
+  assert.deepEqual(over.comorbidities, signed.comorbidities);
+  assert.deepEqual(over.history, signed.history);
+  assert.equal(over.reasonForConsult, signed.reasonForConsult);
+  assert.deepEqual(over.presentingComplaints, signed.presentingComplaints);
+  assert.equal(over.allergies, 'penicillin');
+  assert.match(overText, /Hypertension/);
+  assert.match(overText, /signed complaint/);
+  const signedParts = caseTextSections(signedText);
+  const overParts = caseTextSections(overText);
+  assert.deepEqual(overParts.kept, signedParts.kept);
+  assert.deepEqual(signedParts.other, []);
+  assert.deepEqual(overParts.other, []);
+  assert.notEqual(overParts.prescription.join('\n'), signedParts.prescription.join('\n'));
   assert.equal(next.prescription_url, null);
   assert.equal(next.doctor_uid, 'doctor01');
-  assert.equal(next.timestamp, row.timestamp);
+  assert.equal(next.timestamp, base.timestamp);
+
+  const textOnly = applyStructuredOverride(row, structureFromOverrideText('Freescript: paracetamol 500 mg oral TDS for 3 days'));
+  const parsed = rowToOpdCase(textOnly).case;
+  assert.ok(parsed.medications.length > 0);
+  assert.match(opdCaseText(parsed), /Paracetamol|paracetamol/);
+  assert.deepEqual(parsed.comorbidities, signed.comorbidities);
+  const resolved = resolveOverride({
+    override: structured,
+    override_text: 'this text must not win',
+  });
+  assert.equal(resolved.path, 'structured');
+  assert.equal(resolved.text, null);
+  const fromText = resolveOverride({ override_text: 'Freescript: paracetamol 500 mg for three days' });
+  assert.equal(fromText.path, 'text');
 });
 
 test('log records keep ids and drop override text', () => {
@@ -149,6 +204,13 @@ test('flag diff and repeat agreement are pure set comparisons', () => {
   assert.deepEqual(diff.only_b.map((f) => f.signal_type), ['b']);
   assert.equal(sameFlagSet([[shared], [shared]]), true);
   assert.equal(sameFlagSet([[shared], [onlyA]]), false);
+  const agreement = flagAgreement([[shared, onlyA], [shared]]);
+  const sharedRate = agreement.find((f) => f.signal_type === 'shared');
+  const onlyRate = agreement.find((f) => f.signal_type === 'a');
+  assert.equal(sharedRate?.agreement, 1);
+  assert.equal(onlyRate?.present_in, 1);
+  assert.equal(onlyRate?.repeats, 2);
+  assert.equal(onlyRate?.agreement, 0.5);
 });
 
 test('a paired run shares one context fetch, stores both arms, and does not return the override', async () => {
@@ -171,9 +233,9 @@ test('a paired run shares one context fetch, stores both arms, and does not retu
     audit: async (row, lab, charge) => {
       audits += 1;
       labs.push(lab);
-      charge();
-      const text = String(row.dpipe_pc ?? '');
-      const findings = text.includes('Freescript')
+      await charge();
+      const override = JSON.stringify(row.medications ?? '').toLowerCase().includes('paracetamol');
+      const findings = override
         ? [finding('Shared flag', 'shared'), finding('Override only', 'override_only')]
         : [finding('Shared flag', 'shared'), finding('Signed only', 'signed_only')];
       return { audit: auditOf(findings), spend_microusd: 1 };
@@ -193,10 +255,18 @@ test('a paired run shares one context fetch, stores both arms, and does not retu
   assert.equal(byArm.signed, 'doctor01');
   assert.equal(byArm.freescript, null);
 
-  const page = await pairedAuditResults(db, submitted.run_id, 20, 0);
-  const flat = JSON.stringify(page);
+  const stripped = await pairedAuditResults(db, submitted.run_id, 20, 0);
+  const flat = JSON.stringify(stripped);
   assert.equal(flat.includes('paracetamol'), false);
   assert.equal(flat.includes('Freescript'), false);
+  assert.equal(flat.includes(UID), false);
+  assert.equal(flat.includes('doctor01'), false);
+  assert.equal(flat.includes('eta-enc-1'), false);
+  assert.equal(flat.includes('test rationale'), false);
+  assert.equal(flat.includes('rationale'), false);
+  const overItem = stripped.items.find((i) => i.arm === 'freescript')!;
+  assert.equal(overItem.input_path, 'text');
+  const page = await pairedAuditResultsIdentifying(db, submitted.run_id, 20, 0);
   const diff = page.diffs[0];
   assert.deepEqual(diff.only_a.map((f) => f.signal_type), ['signed_only']);
   assert.deepEqual(diff.only_b.map((f) => f.signal_type), ['override_only']);
@@ -205,6 +275,8 @@ test('a paired run shares one context fetch, stores both arms, and does not retu
   const over = page.items.find((i) => i.arm === 'freescript')!;
   assert.equal(signed.clinician_uid, 'doctor01');
   assert.equal(over.clinician_uid, null);
+  assert.equal(signed.uid, UID);
+  assert.equal(signed.findings[0].rationale, 'test rationale');
   assert.equal(signed.findings.length, 2);
   await db.close();
 });
@@ -227,7 +299,7 @@ test('a missing or ambiguous uid is skipped and never audited', async () => {
     },
     audit: async (_row, _lab, charge) => {
       audits += 1;
-      charge();
+      await charge();
       return { audit: auditOf([]), spend_microusd: 0 };
     },
   }), { maxGroups: 4 });
@@ -240,6 +312,8 @@ test('a missing or ambiguous uid is skipped and never audited', async () => {
     { uid: UID, skip_reason: 'uid_not_found' },
     { uid: UID_B, skip_reason: 'uid_ambiguous' },
   ]);
+  const run = await db.query<{ status: string }>(`SELECT status FROM lab_v2.paired_audit_runs`);
+  assert.equal(run[0].status, 'degraded');
   await db.close();
 });
 
@@ -250,7 +324,7 @@ test('the call budget stops the run before the next arm is billed', async () => 
   const report = await pairedAuditTick(db, deps({
     audit: async (_row, _lab, charge) => {
       audits += 1;
-      charge();
+      await charge();
       return { audit: auditOf([finding('Shared flag', 'shared')]), spend_microusd: 1 };
     },
   }));
@@ -274,7 +348,7 @@ test('a second run reuses the stored result and does not call the engine', async
   let audits = 0;
   const audit: PairedAuditDeps['audit'] = async (_row, _lab, charge) => {
     audits += 1;
-    charge();
+    await charge();
     return { audit: auditOf([finding('Shared flag', 'shared')]), spend_microusd: 1 };
   };
   await submitPairedAudit(db, 'operator', { ...SUBMIT, idempotency_key: 'first' });
@@ -321,6 +395,8 @@ test('noise repeats stay on the signed arm and are reported per repeat', async (
   assert.equal(page.items.filter((i) => i.arm === 'freescript').length, 1);
   assert.equal(page.signed_repeats[0].repeats, 2);
   assert.equal(page.signed_repeats[0].identical_flag_sets, true);
+  assert.equal(page.signed_repeats[0].flag_agreement.length > 0, true);
+  assert.ok(page.signed_repeats[0].flag_agreement.every((f) => f.agreement === 1));
   await db.close();
 });
 
@@ -347,8 +423,8 @@ test('an override result cannot store a clinician uid', async () => {
   const db = await pairedDb();
   await assert.rejects(() => db.query(
     `INSERT INTO lab_v2.paired_audit_results
-      (id, uid, arm, engine_version, prompt_hash, repeat_idx, clinician_uid, result)
-     VALUES ('11111111-1111-1111-1111-111111111111', $1, 'freescript', 'e', 'p', 0, 'doctor01', '{}'::jsonb)`,
+      (id, uid, arm, engine_version, prompt_hash, model, override_hash, input_path, repeat_idx, clinician_uid, result)
+     VALUES ('11111111-1111-1111-1111-111111111111', $1, 'freescript', 'e', 'p', 'vertex:gemini-2.5-pro', 'h', 'text', 0, 'doctor01', '{}'::jsonb)`,
     [UID],
   ));
   await db.close();
@@ -373,7 +449,7 @@ test('a stale claim is retried and a fresh claim is left to the tick that holds 
   const rescued = await pairedAuditTick(db, deps({
     audit: async (_r, _l, charge) => {
       audits += 1;
-      charge();
+      await charge();
       return { audit: auditOf([finding('Shared flag', 'shared')]), spend_microusd: 0 };
     },
   }), { maxGroups: 4, reclaimAfter: '20 minutes' });
@@ -466,6 +542,167 @@ test('reviewer can read a paired run and cannot launch one; research cannot laun
   assert.ok(reviewer.includes('paired_audit_status'));
   assert.ok(reviewer.includes('paired_audit_results'));
   assert.equal(reviewer.includes('paired_audit_submit'), false);
+  assert.equal(reviewer.includes('paired_audit_results_identifying'), false);
   assert.equal(release.includes('paired_audit_status'), false);
+  await assert.rejects(
+    () => callTool(depsFor('reviewer'), 'paired_audit_results_identifying', { run_id: submitted.run_id }),
+    (e: LabError) => e instanceof LabError && e.code === 'SCOPE_DENIED',
+  );
+  await assert.rejects(
+    () => callTool(depsFor('research'), 'paired_audit_results_identifying', { run_id: submitted.run_id }),
+    (e: LabError) => e instanceof LabError && e.code === 'CLASSIFICATION_REQUIRED',
+  );
+  await db.close();
+});
+
+test('a revised prescription or a different model is not deduped', async () => {
+  const db = await pairedDb();
+  let audits = 0;
+  const audit: PairedAuditDeps['audit'] = async (_row, _lab, charge) => {
+    audits += 1;
+    await charge();
+    return { audit: auditOf([finding('Shared flag', 'shared')]), spend_microusd: 1 };
+  };
+  await submitPairedAudit(db, 'operator', { ...SUBMIT, idempotency_key: 'hash-1' });
+  await pairedAuditTick(db, deps({ audit }), { maxGroups: 4 });
+  assert.equal(audits, 2);
+  await submitPairedAudit(db, 'operator', {
+    ...SUBMIT,
+    idempotency_key: 'hash-2',
+    pairs: [{ uid: UID, override_text: 'Freescript: ibuprofen 400 mg for five days', external_ref: 'eta-enc-1' }],
+  });
+  const revised = await pairedAuditTick(db, deps({ audit }), { maxGroups: 4 });
+  assert.equal(revised.audited, 1);
+  assert.equal(revised.deduped, 1);
+  assert.equal(audits, 3);
+  await submitPairedAudit(db, 'operator', {
+    ...SUBMIT,
+    idempotency_key: 'hash-3',
+    model: 'vertex:gemini-2.5-flash',
+  });
+  const otherModel = await pairedAuditTick(db, deps({ audit }), { maxGroups: 4 });
+  assert.equal(otherModel.audited, 2);
+  assert.equal(audits, 5);
+  await db.close();
+});
+
+test('a structured override is the path that is recorded and keeps the signed comorbidity', async () => {
+  const db = await pairedDb();
+  await submitPairedAudit(db, 'operator', {
+    ...SUBMIT,
+    idempotency_key: 'structured',
+    pairs: [{
+      uid: UID,
+      external_ref: 'eta-enc-1',
+      override: {
+        medications: [{ name: 'Paracetamol', dose: '500 mg', route: 'oral', frequency: 'TDS', duration: '3 days' }],
+        diagnoses: [{ name: 'Viral fever' }],
+      },
+    }],
+  });
+  await pairedAuditTick(db, deps({
+    resolve: async (uid) => ({
+      status: 'ok',
+      row: { ...noteRow(uid), comorbidities: ['Hypertension'] },
+    }),
+    audit: async (row, _lab, charge) => {
+      await charge();
+      const text = opdCaseText(rowToOpdCase(row).case);
+      assert.match(text, /Hypertension/);
+      if (JSON.stringify(row.medications ?? '').includes('Paracetamol')) {
+        assert.match(text, /Medications \(1\)/);
+        assert.equal(text.includes('NONE prescribed'), false);
+        assert.equal(text.includes('AmoxicillinSigned'), false);
+      }
+      return { audit: auditOf([finding('Shared flag', 'shared')]), spend_microusd: 1 };
+    },
+  }), { maxGroups: 4 });
+  const paths = await db.query<{ arm: string; input_path: string }>(
+    `SELECT arm, input_path FROM lab_v2.paired_audit_items ORDER BY arm`,
+  );
+  assert.deepEqual(paths, [
+    { arm: 'freescript', input_path: 'structured' },
+    { arm: 'signed', input_path: 'signed' },
+  ]);
+  await db.close();
+});
+
+test('external_ref must match kx_encounter_id or consult_uid when either is present', async () => {
+  const db = await pairedDb();
+  let audits = 0;
+  await submitPairedAudit(db, 'operator', { ...SUBMIT, idempotency_key: 'ref-miss' });
+  const missed = await pairedAuditTick(db, deps({
+    resolve: async (uid) => ({ status: 'ok', row: { ...noteRow(uid), kx_encounter_id: 'other-encounter' } }),
+    audit: async (_row, _lab, charge) => {
+      audits += 1;
+      await charge();
+      return { audit: auditOf([]), spend_microusd: 0 };
+    },
+  }), { maxGroups: 2 });
+  assert.equal(audits, 0);
+  assert.equal(missed.skipped, 2);
+  const reason = await db.query<{ skip_reason: string }>(`SELECT DISTINCT skip_reason FROM lab_v2.paired_audit_items`);
+  assert.deepEqual(reason, [{ skip_reason: 'external_ref_mismatch' }]);
+
+  await submitPairedAudit(db, 'operator', { ...SUBMIT, idempotency_key: 'ref-hit' });
+  const hit = await pairedAuditTick(db, deps({
+    resolve: async (uid) => ({ status: 'ok', row: { ...noteRow(uid), consult_uid: 'eta-enc-1' } }),
+    audit: async (_row, _lab, charge) => {
+      audits += 1;
+      await charge();
+      return { audit: auditOf([finding('Shared flag', 'shared')]), spend_microusd: 0 };
+    },
+  }), { maxGroups: 2 });
+  assert.equal(hit.audited, 2);
+  assert.equal(audits, 2);
+  await db.close();
+});
+
+test('a claim that has already been attempted twice is not requeued', async () => {
+  const db = await pairedDb();
+  let audits = 0;
+  const submitted = await submitPairedAudit(db, 'operator', { ...SUBMIT, idempotency_key: 'cap' });
+  await db.query(
+    `UPDATE lab_v2.paired_audit_items
+        SET status = 'running', attempts = 2, claimed_at = now() - interval '21 minutes'
+      WHERE run_id = $1`,
+    [submitted.run_id],
+  );
+  const report = await pairedAuditTick(db, deps({
+    audit: async (_r, _l, charge) => {
+      audits += 1;
+      await charge();
+      return { audit: auditOf([]), spend_microusd: 0 };
+    },
+  }), { maxGroups: 4, reclaimAfter: '20 minutes' });
+  assert.equal(audits, 0);
+  assert.equal(report.audited, 0);
+  const rows = await db.query<{ status: string; skip_reason: string }>(
+    `SELECT status, skip_reason FROM lab_v2.paired_audit_items`,
+  );
+  assert.ok(rows.every((r) => r.status === 'failed' && r.skip_reason === 'attempt_cap'));
+  await db.close();
+});
+
+test('override repeats are stored and reported per flag', async () => {
+  const db = await pairedDb();
+  await submitPairedAudit(db, 'operator', {
+    ...SUBMIT,
+    idempotency_key: 'override-noise',
+    signed_repeats: 1,
+    override_repeats: 2,
+    noise_uids: [UID],
+    max_llm_calls: 6,
+  });
+  const runId = (await db.query<{ id: string }>(`SELECT id FROM lab_v2.paired_audit_runs`))[0].id;
+  await pairedAuditTick(db, deps(), { maxGroups: 4 });
+  const page = await pairedAuditResults(db, runId, 20, 0);
+  assert.equal(page.items.filter((i) => i.arm === 'freescript').length, 2);
+  assert.equal(page.items.filter((i) => i.arm === 'signed').length, 1);
+  assert.equal(page.override_repeats[0].repeats, 2);
+  assert.equal(page.override_repeats[0].identical_flag_sets, true);
+  assert.ok(page.override_repeats[0].flag_agreement.every((f) => f.agreement === 1));
+  const calls = await db.query<{ calls_used: number }>(`SELECT calls_used FROM lab_v2.paired_audit_runs`);
+  assert.equal(Number(calls[0].calls_used), 3);
   await db.close();
 });

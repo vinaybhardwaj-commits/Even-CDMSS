@@ -5,9 +5,17 @@
 -- name order. Nothing here is created in the production database, and nothing here is
 -- read by doctors.evenos.app.
 --
--- override_text is the alternate prescription. It lives in this store and nowhere else.
--- clinician_uid is constrained so an override arm cannot be stamped with the
--- signing doctor's uid.
+-- This file has not shipped. The dedupe key, the attempt cap and the structured
+-- override columns are in the original migration rather than a follow-up.
+--
+-- override_text is the alternate prescription when the caller sent text. Structured
+-- JSON is the preferred input and lives in override_struct. Neither is selected by
+-- the results tools. clinician_uid is constrained so an override arm cannot be
+-- stamped with the signing doctor's uid.
+--
+-- content identity for dedupe is override_hash: sha256 of the raw text, of the
+-- canonical structured override, or of the signed case actually audited. model is
+-- part of the same key, so a new model or a revised prescription never reuses a row.
 
 CREATE TABLE IF NOT EXISTS lab_v2.paired_audit_runs (
   id                    uuid PRIMARY KEY,
@@ -26,6 +34,7 @@ CREATE TABLE IF NOT EXISTS lab_v2.paired_audit_runs (
   spend_microusd        bigint NOT NULL DEFAULT 0,
   unpriced              boolean NOT NULL DEFAULT false,
   signed_repeats        integer NOT NULL DEFAULT 1,
+  override_repeats      integer NOT NULL DEFAULT 1,
   created_at            timestamptz NOT NULL DEFAULT now(),
   finished_at           timestamptz
 );
@@ -39,6 +48,10 @@ CREATE TABLE IF NOT EXISTS lab_v2.paired_audit_results (
   arm                text NOT NULL,
   engine_version     text NOT NULL,
   prompt_hash        text NOT NULL,
+  model              text NOT NULL,
+  -- Signed case hash, structured-override hash, or raw-text hash. See the header.
+  override_hash      text NOT NULL,
+  input_path         text NOT NULL,
   repeat_idx         integer NOT NULL,
   clinician_uid      text,
   result             jsonb NOT NULL,
@@ -50,9 +63,9 @@ CREATE TABLE IF NOT EXISTS lab_v2.paired_audit_results (
     CHECK (arm = 'signed' OR clinician_uid IS NULL)
 );
 
--- One billed result per (uid, arm, engine, prompt, repeat). A later run reuses the row.
+-- One billed result per uid, arm, engine, prompt, model, content and repeat.
 CREATE UNIQUE INDEX IF NOT EXISTS paired_audit_results_dedupe
-  ON lab_v2.paired_audit_results (uid, arm, engine_version, prompt_hash, repeat_idx);
+  ON lab_v2.paired_audit_results (uid, arm, engine_version, prompt_hash, model, override_hash, repeat_idx);
 
 CREATE TABLE IF NOT EXISTS lab_v2.paired_audit_items (
   id              uuid PRIMARY KEY,
@@ -63,17 +76,23 @@ CREATE TABLE IF NOT EXISTS lab_v2.paired_audit_items (
   repeat_idx      integer NOT NULL,
   status          text NOT NULL,
   skip_reason     text,
+  -- Incremented when a tick claims the row. Capped at 2: a stale claim is requeued
+  -- while attempts < 2, and marked failed (attempt_cap) once it has been claimed twice.
+  attempts        integer NOT NULL DEFAULT 0,
   -- Set when a tick claims the row. A tick that dies mid-item leaves status 'running';
-  -- the next tick requeues a claim older than 20 minutes. A live tick finishes well
-  -- inside that window, so two overlapping crons do not both bill the same item.
+  -- the next tick requeues a claim older than 20 minutes only while attempts remain.
   claimed_at      timestamptz,
-  -- Alternate prescription. NULL on the signed arm. Never selected by the results tool.
+  -- Alternate prescription. NULL on the signed arm. Never selected by a results tool.
   override_text   text,
+  override_struct jsonb,
+  override_hash   text,
+  -- signed | structured | text. structured is the caller's JSON; text is the fallback parser.
+  input_path      text NOT NULL,
   result_id       uuid REFERENCES lab_v2.paired_audit_results(id),
   created_at      timestamptz NOT NULL DEFAULT now(),
   finished_at     timestamptz,
   CONSTRAINT paired_audit_items_override_ck
-    CHECK (arm <> 'signed' OR override_text IS NULL)
+    CHECK (arm <> 'signed' OR (override_text IS NULL AND override_struct IS NULL))
 );
 
 CREATE INDEX IF NOT EXISTS paired_audit_items_run_idx

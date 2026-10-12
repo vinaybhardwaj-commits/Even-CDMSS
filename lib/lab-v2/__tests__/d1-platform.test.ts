@@ -96,10 +96,10 @@ test('§17.8 decision 105: dataset_create is the tool that declares identifying_
    * is still where a fourth would be noticed.
    */
   const marked = Object.values(BY_NAME).filter((s) => s.identifying_input === true).map((s) => String(s.name)).sort();
-  assert.deepEqual(marked, ['case_ask', 'case_timeline', 'dataset_create', 'paired_audit_submit']);
-  // And the always-flag is carried by the case tools and paired_audit_submit, never by dataset_create.
+  assert.deepEqual(marked, ['case_ask', 'case_timeline', 'dataset_create', 'paired_audit_results_identifying', 'paired_audit_submit']);
+  // And the always-flag is carried by the case tools, paired submit, and the identifying results read.
   const always = Object.values(BY_NAME).filter((s) => s.identifying_always === true).map((s) => String(s.name)).sort();
-  assert.deepEqual(always, ['case_ask', 'case_timeline', 'paired_audit_submit']);
+  assert.deepEqual(always, ['case_ask', 'case_timeline', 'paired_audit_results_identifying', 'paired_audit_submit']);
   assert.notEqual(BY_NAME.dataset_create.identifying_always, true);
 });
 
@@ -253,7 +253,7 @@ test('§17.8 decision 108: the operator can now run an identifying experiment en
   // `research_write`-scoped, which is the scope research and operator hold and the other two do
   // not. The reviewer and release counts above are unchanged BY CONSTRUCTION rather than by luck,
   // and that is what this trio of assertions is for.
-  assert.equal(visibleTools(SCOPES_BY_PRINCIPAL.research).length, 45);
+  assert.equal(visibleTools(SCOPES_BY_PRINCIPAL.research).length, 46);
 });
 
 test('§17.8 decision 108: the operator gains NINE tools, not three, and that is reported', () => {
@@ -277,7 +277,7 @@ test('§17.8 decision 108: the operator gains NINE tools, not three, and that is
   // reviewer and release keys as well. So they land in exactly this list, which is what it is for.
   assert.deepEqual(gained, [
     'case_ask', 'case_timeline', 'corpus_stage', 'dataset_create', 'episode_replay',
-    'experiment_create', 'experiment_run', 'failure_minimize', 'paired_audit_submit',
-    'rule_propose', 'run_cancel', 'run_replay', 'run_retry',
+    'experiment_create', 'experiment_run', 'failure_minimize', 'paired_audit_results_identifying',
+    'paired_audit_submit', 'rule_propose', 'run_cancel', 'run_replay', 'run_retry',
   ]);
 });

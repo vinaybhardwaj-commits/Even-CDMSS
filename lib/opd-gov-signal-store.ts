@@ -20,6 +20,7 @@ const run = sql as unknown as (text: string, params?: unknown[]) => Promise<Reco
 const SLA_DAYS = Math.max(1, Math.min(60, Number(process.env.OPD_AUDIT_SLA_DAYS) || 7));
 
 export async function ensureGovSignalTables(): Promise<void> {
+  assertOpdProductionWrite('opd_gov_signal.ensureGovSignalTables');
   await run(`CREATE TABLE IF NOT EXISTS opd_gov_signal (
     signal_id         uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     app_source        text NOT NULL DEFAULT 'standalone',
@@ -57,6 +58,7 @@ export async function ensureGovSignalTables(): Promise<void> {
 }
 
 export async function ensureDoctorResponseRequestsTable(): Promise<void> {
+  assertOpdProductionWrite('opd_gov_signal.ensureDoctorResponseRequestsTable');
   await run(`CREATE TABLE IF NOT EXISTS opd_doctor_response_request (
     id                uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     signal_id         uuid NOT NULL,
@@ -284,6 +286,7 @@ export async function claimDoctorResponseRequest(
   signal: StoredSignal,
   resp: NormalizedDoctorResponse,
 ): Promise<DoctorResponseRequestClaim> {
+  assertOpdProductionWrite('opd_gov_signal.claimDoctorResponseRequest');
   const replay = await run(
     `SELECT client_request_id, verb, comment
      FROM opd_doctor_response_request
@@ -333,6 +336,7 @@ export async function completeDoctorResponseRequest(
   resp: NormalizedDoctorResponse,
   stored: StoredSignal,
 ): Promise<void> {
+  assertOpdProductionWrite('opd_gov_signal.completeDoctorResponseRequest');
   await run(
     `UPDATE opd_doctor_response_request
      SET response=$4::jsonb, completed_at=now()
@@ -342,6 +346,7 @@ export async function completeDoctorResponseRequest(
 }
 
 export async function releaseDoctorResponseRequest(signal: StoredSignal, resp: NormalizedDoctorResponse): Promise<void> {
+  assertOpdProductionWrite('opd_gov_signal.releaseDoctorResponseRequest');
   await run(
     `DELETE FROM opd_doctor_response_request
      WHERE signal_id=$1::uuid AND doctor_uid=$2 AND client_request_id=$3 AND completed_at IS NULL`,

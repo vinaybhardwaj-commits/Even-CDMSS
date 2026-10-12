@@ -70,8 +70,8 @@ test('§15.3: tools/list is scope-filtered for each of the four principals', asy
   // failure_minimize, all `research_write`. The reviewer and release counts below do NOT move,
   // which is the point of scoping them that way rather than on production_read.
   // Paired audit adds three research-visible tools (submit is research_write; status and
-  // results are research_read). 42 → 45.
-  assert.equal(listed.research.length, 45);
+  // results are research_read) plus the identifying results variant (research_write). 42 → 46.
+  assert.equal(listed.research.length, 46);
 
   // The operator holds production_write, so it alone sees worker_control.
   assert.ok(listed.operator.includes('worker_control'));
@@ -97,8 +97,9 @@ test('§15.3: tools/list is scope-filtered for each of the four principals', asy
    * because activation is the `release` scope, which `operator` does not hold and does not gain.
    */
   // ⚠️ RULE 1a, §17.11 — 42 → 45, D3's three, which the operator sees through `research_write`.
-  // Paired audit: the operator holds both research_write and research_read, so it sees all three. 45 → 48.
-  assert.equal(listed.operator.length, 48);
+  // Paired audit: the operator holds both research_write and research_read, so it sees
+  // submit, status, results, and the identifying results variant. 45 → 49.
+  assert.equal(listed.operator.length, 49);
   // ⚠️ RULE 1a, §17.8 DECISION 108 — inverted for the same reason as dataset_create above. A
   // replay IS a research write and the operator now holds that scope; what it still does not hold
   // is `release`, which is what actually keeps it from changing what a clinician sees.
@@ -174,7 +175,7 @@ test('§8: a real tool call round-trips through the SDK with structured content'
   assert.equal(body.principal, 'research');
   assert.equal(body.protocol_version, MCP_V2_PROTOCOL_VERSION);
   assert.equal(body.sdk_version, MCP_V2_SDK_VERSION);
-  assert.equal(body.tools.length, 45);   // paired audit: submit + status + results, on top of D3's 42
+  assert.equal(body.tools.length, 46);   // paired audit: submit, status, results, identifying results
   assert.ok(body.pricing_version.startsWith('lab-v2-pricing/'));
   /**
    * ⚠️ RULE 1a, §17.11 DECISION 143 — the first retirement this platform has performed, asserted on
