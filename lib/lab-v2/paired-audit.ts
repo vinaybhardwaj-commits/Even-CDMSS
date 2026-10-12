@@ -12,29 +12,32 @@
  * A/B, and it is not the production retrieval path. The longitudinal / prior-visit pass
  * is not run on either arm.
  *
- * Each model call increments `calls_used` in the database before the network call.
- * `paired_audit_results` strips uid, external_ref, clinician_uid and rationale.
+ * Each model call increments `calls_used` in the database before the network call,
+ * and the same statement refuses the call when a spend budget is already exhausted.
+ * `paired_audit_results` strips uid, external_ref, clinician_uid, rationale and subject.
  * `pairedAuditResultsIdentifying` returns them for an identifying principal.
  */
 import { randomUUID } from 'node:crypto';
 import type { Db } from './db';
 import { LabError } from '../lab-execution-context';
 import { withLabExecution, exitLabExecution } from '../lab-execution-context';
-import { enterOpdLabWriteFence, OpdLabWriteForbidden } from '../opd-lab-write-guard';
+import { enterOpdLabWriteFence, opdLabWriteFenceTripped, OpdLabWriteForbidden } from '../opd-lab-write-guard';
 import { auditOpdNote, doctorSpecialtyFor, getLvcRules, opdAuditPerAttemptMs, type OpdLabDependencies } from '../opd-note-audit';
 import { fetchOpdNotesByUids, fetchPatientHistoryBundle } from '../metabase';
-import { loadActiveSuppressions, loadQuietingConfig } from '../audit-suppression-store';
+import { loadActiveSuppressionsOrThrow, loadQuietingConfig } from '../audit-suppression-store';
 import { rowToOpdCase } from '../opd-ingest-core';
 import { bandFor } from '../opd-complexity-core';
 import { retrieve as productionRetrieve, type RetrieveOptions } from '../retrieve';
 import { governedLabChat } from '../trace';
 import { costMicrousd, isSupportedModel } from './pricing';
 import {
-  PAIRED_MAX_ATTEMPTS, applyStructuredOverride, diffFlags, externalRefMatches, flagAgreement,
-  flagKey, opdAuditPromptHash, pairKeyFor, pairedEngineVersion, pairedLogRecord, parsePairedModel,
-  projectAudit, publicFinding, resolveOverride, sameFlagSet, signedContentHash,
-  type FlagAgreement, type InputPath, type ProjectedAudit, type ProjectedFinding,
-  type PublicFinding, type StructuredOverride,
+  PAIRED_MAX_ATTEMPTS, applyStructuredOverride, assessOverrideText, diffFlags, externalRefJoin,
+  flagAgreement, flagKey, hasStructuredContent, opdAuditPromptHash, overrideContentHash,
+  overrideUnparsed, pairKeyFor, pairedEngineVersion, pairedLogRecord, parsePairedModel,
+  projectAudit, publicAgreement, publicFinding, publicFlag, resolveOverride, sameFlagSet,
+  signedContentHash, type FlagAgreement, type InputPath, type PairedHashContext,
+  type ProjectedAudit, type ProjectedFinding, type PublicAgreement, type PublicFinding,
+  type PublicFlagRef, type StructuredOverride,
 } from './paired-audit-core';
 
 export interface PairInput {
@@ -55,6 +58,8 @@ export interface SubmitInput {
   max_llm_calls: number;
   max_spend_microusd: number | null;
   model: string;
+  /** Text overrides are refused unless the caller sets this. Structured JSON is the contract. */
+  debug_text_override?: boolean;
 }
 
 export type ResolveResult =
@@ -173,7 +178,7 @@ export async function loadSharedOpdContext(row: Record<string, unknown>): Promis
   let suppressions: OpdLabDependencies['suppressions'];
   let quietingConfig: OpdLabDependencies['quietingConfig'];
   try {
-    suppressions = (await loadActiveSuppressions()) as unknown as OpdLabDependencies['suppressions'];
+    suppressions = (await loadActiveSuppressionsOrThrow()) as unknown as OpdLabDependencies['suppressions'];
   } catch (e) {
     throw new LabError('SOURCE_UNAVAILABLE', `audit_suppression unavailable: ${(e as Error).message}`);
   }
@@ -209,51 +214,65 @@ function spendOf(completion: unknown, provider: 'bedrock' | 'openrouter' | 'olla
  * Retrieval is `skipExpand` and `useReranker: false` on every arm. The longitudinal
  * pass is not requested.
  */
+export type PairedEngine = (
+  row: Record<string, unknown>,
+  opts: { labDependencies: OpdLabDependencies; trace?: boolean },
+) => Promise<unknown>;
+
 export async function auditPairedArm(
   row: Record<string, unknown>,
   lab: OpdLabDependencies,
   charge: () => void | Promise<void>,
   model: { provider: 'bedrock' | 'openrouter' | 'ollama' | 'vertex'; model: string },
   noteSpend: (microusd: number | null) => void,
+  engine: PairedEngine = auditOpdNote,
 ): Promise<AuditOutcome> {
   let budgetHit = false;
   let spend = 0;
   let sawUnpriced = false;
-  const audit = await enterOpdLabWriteFence(() => withLabExecution({
-    chat: async (_label, params, signal) => {
-      try {
-        await charge();
-      } catch (e) {
-        budgetHit = true;
-        throw e;
-      }
-      const completion = await governedLabChat(model.provider, model.model, params, opdAuditPerAttemptMs(), signal);
-      const part = spendOf(completion, model.provider, model.model);
-      if (part == null) sawUnpriced = true;
-      else spend += part;
-      return completion;
-    },
-    retrieve: async (query, opts) => exitLabExecution(() => productionRetrieve(
-      query,
-      { ...((opts ?? {}) as RetrieveOptions), skipExpand: true, useReranker: false },
-    )),
-    event: () => {},
-  }, () => auditOpdNote(row, { labDependencies: lab, trace: false })));
+  const audit = await enterOpdLabWriteFence(async () => {
+    const result = await withLabExecution({
+      chat: async (_label, params, signal) => {
+        try {
+          await charge();
+        } catch (e) {
+          budgetHit = true;
+          throw e;
+        }
+        const completion = await governedLabChat(model.provider, model.model, params, opdAuditPerAttemptMs(), signal);
+        const part = spendOf(completion, model.provider, model.model);
+        if (part == null) sawUnpriced = true;
+        else spend += part;
+        return completion;
+      },
+      retrieve: async (query, opts) => exitLabExecution(() => productionRetrieve(
+        query,
+        { ...((opts ?? {}) as RetrieveOptions), skipExpand: true, useReranker: false },
+      )),
+      event: () => {},
+    }, () => engine(row, { labDependencies: lab, trace: false }));
+    // The engine catch turns a refused write into llmLegFailed. The fence bit is the signal.
+    const tripped = opdLabWriteFenceTripped();
+    if (tripped) throw tripped;
+    return result;
+  });
   noteSpend(sawUnpriced ? null : spend);
   if (budgetHit) throw new LabError('BUDGET_EXHAUSTED', 'paired audit stopped: call budget reached');
   return { audit, spend_microusd: sawUnpriced ? null : spend };
 }
 
-export function defaultPairedDeps(extra: Partial<PairedAuditDeps> = {}): PairedAuditDeps {
+export function defaultPairedDeps(extra: Partial<PairedAuditDeps> & { engine?: PairedEngine } = {}): PairedAuditDeps {
+  const { engine, ...rest } = extra;
+  const runEngine = engine ?? auditOpdNote;
   return {
     resolveNote: resolveNoteExact,
     loadContext: loadSharedOpdContext,
     audit: async (row, lab, charge, model) => {
       let recorded: number | null = 0;
-      const out = await auditPairedArm(row, lab, charge, model, (spent) => { recorded = spent; });
+      const out = await auditPairedArm(row, lab, charge, model, (spent) => { recorded = spent; }, runEngine);
       return { audit: out.audit, spend_microusd: recorded };
     },
-    ...extra,
+    ...rest,
   };
 }
 
@@ -314,7 +333,17 @@ export async function submitPairedAudit(db: Db, owner: string, input: SubmitInpu
     override_hash: string | null;
     input_path: InputPath;
   }> = [];
+  const debugText = input.debug_text_override === true;
   for (const pair of input.pairs) {
+    if (pair.override && overrideUnparsed(pair.override)) {
+      throw new LabError('INVALID_INPUT', 'override_unparsed');
+    }
+    if (!debugText) {
+      if (pair.override_text) throw new LabError('INVALID_INPUT', 'override_text requires debug_text_override');
+      if (!hasStructuredContent(pair.override)) throw new LabError('INVALID_INPUT', 'a pair needs a structured override');
+    } else if (!pair.override_text && !hasStructuredContent(pair.override)) {
+      throw new LabError('INVALID_INPUT', 'a pair needs a structured override or debug override_text');
+    }
     const resolved = resolveOverride({ override: pair.override, override_text: pair.override_text });
     const signedN = noise.has(pair.uid) ? input.signed_repeats : 1;
     const overrideN = noise.has(pair.uid) ? overrideRepeats : 1;
@@ -415,7 +444,12 @@ async function chargeCall(db: Db, runId: string): Promise<number> {
   const rows = await db.query<{ calls_used: number }>(
     `UPDATE lab_v2.paired_audit_runs
         SET calls_used = calls_used + 1
-      WHERE id = $1 AND calls_used < max_llm_calls
+      WHERE id = $1
+        AND calls_used < max_llm_calls
+        AND (
+          max_spend_microusd IS NULL
+          OR (unpriced = false AND spend_microusd < max_spend_microusd)
+        )
       RETURNING calls_used`,
     [runId],
   );
@@ -444,6 +478,38 @@ async function markItem(db: Db, id: string, status: string, reason: string | nul
       WHERE id = $1`,
     [id, status, reason, resultId],
   );
+}
+
+async function markUnparsed(db: Db, id: string, linesTotal: number | null, linesParsed: number | null) {
+  await db.query(
+    `UPDATE lab_v2.paired_audit_items
+        SET status = 'skipped', skip_reason = 'override_unparsed',
+            parse_lines_total = $2, parse_lines_parsed = $3, finished_at = now()
+      WHERE id = $1`,
+    [id, linesTotal, linesParsed],
+  );
+}
+
+/** A claim that the deadline stopped before the model call is not an attempt. */
+async function releaseUnstarted(db: Db, id: string) {
+  await db.query(
+    `UPDATE lab_v2.paired_audit_items
+        SET status = 'queued', claimed_at = NULL, attempts = GREATEST(attempts - 1, 0)
+      WHERE id = $1 AND status = 'running' AND result_id IS NULL`,
+    [id],
+  );
+}
+
+function hashContext(lab: OpdLabDependencies): PairedHashContext {
+  const complexity = lab.complexity;
+  return {
+    specialty: lab.specialty,
+    complexityBand: complexity?.band ?? null,
+    complexityInputs: complexity?.inputs ?? null,
+    lvcRuleIds: lab.lvcRules.map((rule) => rule.id).sort(),
+    suppressionIds: lab.suppressions.map((rule) => rule.id).filter((id): id is string => Boolean(id)).sort(),
+    quietingGen: lab.quietingConfig?.gen ?? 0,
+  };
 }
 
 async function stopRemaining(db: Db, runId: string, reason: string): Promise<number> {
@@ -603,6 +669,11 @@ export async function pairedAuditTick(
       log(deps, 'paired_audit_stop', { run_id: run.id, reason: 'model_unsupported', path: 'paired_audit_tick' });
       continue;
     }
+    if (run.engine_version !== pairedEngineVersion() || run.prompt_hash !== opdAuditPromptHash()) {
+      report.stopped += await stopRemaining(db, run.id, 'engine_drift');
+      log(deps, 'paired_audit_stop', { run_id: run.id, reason: 'engine_drift', path: 'paired_audit_tick' });
+      continue;
+    }
     const items = await claimUidGroup(db, run.id, opts.groupSize ?? 8);
     if (items.length === 0) {
       await closeRunIfDrained(db, run.id);
@@ -612,7 +683,7 @@ export async function pairedAuditTick(
     const uid = items[0].uid;
     let resolved: ResolveResult;
     try {
-      resolved = await deps.resolveNote(uid);
+      resolved = await enterOpdLabWriteFence(() => deps.resolveNote(uid));
     } catch (e) {
       const reason = reasonCode(e);
       for (const item of items) await markItem(db, item.id, 'failed', reason, null);
@@ -629,17 +700,24 @@ export async function pairedAuditTick(
       await closeRunIfDrained(db, run.id);
       continue;
     }
-    if (items.some((item) => !externalRefMatches(resolved.row, item.external_ref))) {
+    const join = externalRefJoin(resolved.row, items[0].external_ref);
+    if (!join.matches || items.some((item) => !externalRefJoin(resolved.row, item.external_ref).matches)) {
       for (const item of items) await markItem(db, item.id, 'skipped', 'external_ref_mismatch', null);
       report.skipped += items.length;
       log(deps, 'paired_audit_uid', { run_id: run.id, uid, status: 'skipped', reason: 'external_ref_mismatch', path: 'paired_audit_tick' });
       await closeRunIfDrained(db, run.id);
       continue;
     }
+    if (join.neitherKey) {
+      await db.query(
+        `UPDATE lab_v2.paired_audit_runs SET external_ref_unkeyed = external_ref_unkeyed + 1 WHERE id = $1`,
+        [run.id],
+      );
+    }
 
     let lab: OpdLabDependencies;
     try {
-      lab = await deps.loadContext(resolved.row);
+      lab = await enterOpdLabWriteFence(() => deps.loadContext(resolved.row));
     } catch (e) {
       const reason = reasonCode(e);
       for (const item of items) await markItem(db, item.id, 'failed', reason, null);
@@ -650,7 +728,15 @@ export async function pairedAuditTick(
     }
 
     let halt: string | null = null;
-    for (const item of items) {
+    let outOfTime = false;
+    const ctx = hashContext(lab);
+    for (let index = 0; index < items.length; index++) {
+      const item = items[index];
+      if (now() >= deadline) {
+        for (const pending of items.slice(index)) await releaseUnstarted(db, pending.id);
+        outOfTime = true;
+        break;
+      }
       let ledger = await readLedger(db, run);
       const blocked = budgetBlocked(ledger);
       if (blocked) {
@@ -659,7 +745,29 @@ export async function pairedAuditTick(
         halt = blocked;
         continue;
       }
-      const contentHash = item.arm === 'signed' ? signedContentHash(resolved.row) : (item.override_hash ?? '');
+      if (item.arm !== 'signed') {
+        const structured = asStruct(item.override_struct);
+        const coverage = item.input_path === 'text' ? assessOverrideText(item.override_text ?? '') : null;
+        const bad = coverage ? !coverage.ok : overrideUnparsed(structured);
+        if (bad) {
+          await markUnparsed(db, item.id, coverage?.linesTotal ?? null, coverage?.linesParsed ?? null);
+          report.skipped += 1;
+          log(deps, 'paired_audit_item', {
+            run_id: run.id, uid: item.uid, arm: item.arm, repeat_idx: item.repeat_idx,
+            status: 'skipped', reason: 'override_unparsed', path: 'paired_audit_tick',
+          });
+          continue;
+        }
+      }
+      const contentHash = item.arm === 'signed'
+        ? signedContentHash(resolved.row, ctx)
+        : overrideContentHash(
+          item.input_path === 'text' ? 'text' : 'structured',
+          asStruct(item.override_struct),
+          item.input_path === 'text' ? item.override_text : null,
+          resolved.row,
+          ctx,
+        );
       const prior = await db.query<{ id: string }>(
         `SELECT id FROM lab_v2.paired_audit_results
           WHERE uid = $1 AND arm = $2 AND engine_version = $3 AND prompt_hash = $4
@@ -735,6 +843,7 @@ export async function pairedAuditTick(
       }
       if (halt) break;
     }
+    if (outOfTime) break;
     if (halt) {
       const latest = await readLedger(db, run);
       report.stopped += await stopRemaining(db, run.id, halt);
@@ -758,11 +867,12 @@ export async function pairedAuditStatus(db: Db, runId: string): Promise<{
   spend_microusd: number;
   max_llm_calls: number;
   max_spend_microusd: number | null;
+  external_ref_unkeyed: number;
   counts: { queued: number; running: number; succeeded: number; deduped: number; skipped: number; failed: number; stopped: number };
 }> {
-  const [run] = await db.query<RunRow & { experiment_label: string }>(
+  const [run] = await db.query<RunRow & { experiment_label: string; external_ref_unkeyed: number }>(
     `SELECT id, experiment_label, engine_version, prompt_hash, model, status, stop_reason,
-            max_llm_calls, max_spend_microusd, calls_used, spend_microusd
+            max_llm_calls, max_spend_microusd, calls_used, spend_microusd, external_ref_unkeyed
        FROM lab_v2.paired_audit_runs WHERE id = $1`,
     [runId],
   );
@@ -780,6 +890,7 @@ export async function pairedAuditStatus(db: Db, runId: string): Promise<{
     spend_microusd: num(run.spend_microusd),
     max_llm_calls: num(run.max_llm_calls),
     max_spend_microusd: run.max_spend_microusd == null ? null : num(run.max_spend_microusd),
+    external_ref_unkeyed: num(run.external_ref_unkeyed),
     counts: {
       queued: counts.queued ?? 0,
       running: counts.running ?? 0,
@@ -917,12 +1028,12 @@ export async function pairedAuditResults(db: Db, runId: string, limit: number, o
   }>;
   diffs: Array<{
     pair_key: string;
-    only_a: ReturnType<typeof diffFlags>['only_a'];
-    only_b: ReturnType<typeof diffFlags>['only_b'];
-    both: ReturnType<typeof diffFlags>['both'];
+    only_a: PublicFlagRef[];
+    only_b: PublicFlagRef[];
+    both: PublicFlagRef[];
   }>;
-  signed_repeats: Array<{ pair_key: string; repeats: number; identical_flag_sets: boolean; flag_agreement: FlagAgreement[] }>;
-  override_repeats: Array<{ pair_key: string; arm: string; repeats: number; identical_flag_sets: boolean; flag_agreement: FlagAgreement[] }>;
+  signed_repeats: Array<{ pair_key: string; repeats: number; identical_flag_sets: boolean; flag_agreement: PublicAgreement[] }>;
+  override_repeats: Array<{ pair_key: string; arm: string; repeats: number; identical_flag_sets: boolean; flag_agreement: PublicAgreement[] }>;
   limit: number;
   offset: number;
   total: number;
@@ -948,12 +1059,19 @@ export async function pairedAuditResults(db: Db, runId: string, limit: number, o
         findings: (base.projected?.findings ?? []).map(publicFinding),
       };
     }),
-    diffs: loaded.diffs.map((d) => ({ pair_key: key(d.uid), only_a: d.only_a, only_b: d.only_b, both: d.both })),
+    diffs: loaded.diffs.map((d) => ({
+      pair_key: key(d.uid),
+      only_a: d.only_a.map(publicFlag),
+      only_b: d.only_b.map(publicFlag),
+      both: d.both.map(publicFlag),
+    })),
     signed_repeats: loaded.repeats.filter((r) => r.arm === 'signed').map((r) => ({
-      pair_key: key(r.uid), repeats: r.repeats, identical_flag_sets: r.identical_flag_sets, flag_agreement: r.flag_agreement,
+      pair_key: key(r.uid), repeats: r.repeats, identical_flag_sets: r.identical_flag_sets,
+      flag_agreement: r.flag_agreement.map(publicAgreement),
     })),
     override_repeats: loaded.repeats.filter((r) => r.arm !== 'signed').map((r) => ({
-      pair_key: key(r.uid), arm: r.arm, repeats: r.repeats, identical_flag_sets: r.identical_flag_sets, flag_agreement: r.flag_agreement,
+      pair_key: key(r.uid), arm: r.arm, repeats: r.repeats, identical_flag_sets: r.identical_flag_sets,
+      flag_agreement: r.flag_agreement.map(publicAgreement),
     })),
     limit,
     offset,

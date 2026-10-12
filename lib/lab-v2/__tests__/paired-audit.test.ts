@@ -17,13 +17,17 @@ import { saveOpdAudit } from '../../opd-audit-store';
 import { opdCaseText, rowToOpdCase } from '../../opd-ingest-core';
 import { enterOpdLabWriteFence } from '../../opd-lab-write-guard';
 import {
-  applyStructuredOverride, caseTextSections, diffFlags, flagAgreement, pairedLogRecord, resolveOverride,
-  sameFlagSet, structureFromOverrideText, type ProjectedFinding,
+  PAIRED_PROMPT_VERSION, applyStructuredOverride, assessOverrideText, caseTextSections, diffFlags,
+  flagAgreement, opdAuditPromptHash, overrideContentHash, pairedLogRecord, resolveOverride,
+  sameFlagSet, signedContentHash, structureFromOverrideText, type ProjectedFinding,
 } from '../paired-audit-core';
 import {
-  pairedAuditResults, pairedAuditResultsIdentifying, pairedAuditTick, submitPairedAudit,
+  defaultPairedDeps, pairedAuditResults, pairedAuditResultsIdentifying, pairedAuditStatus,
+  pairedAuditTick, submitPairedAudit,
   type AuditOutcome, type PairedAuditDeps, type ResolveResult,
 } from '../paired-audit';
+import { isProductionReadSql, setSqlSpy, sql } from '../../db';
+import { labV2Url } from '../db';
 import type { OpdLabDependencies } from '../../opd-note-audit';
 
 const UID = 'noteuid01';
@@ -102,10 +106,15 @@ function deps(opts: {
   };
 }
 
+const PARACETAMOL = {
+  medications: [{ name: 'Paracetamol', dose: '500 mg', frequency: 'TDS', duration: '3 days' }],
+  diagnoses: [{ name: 'Viral fever' }],
+};
+
 const SUBMIT = {
   experiment_label: 'eta-freescript',
   idempotency_key: 'batch-1',
-  pairs: [{ uid: UID, override_text: 'Freescript: paracetamol 500 mg for three days', external_ref: 'eta-enc-1' }],
+  pairs: [{ uid: UID, override: PARACETAMOL, external_ref: 'eta-enc-1' }],
   arms: ['signed', 'freescript'] as [string, string],
   signed_repeats: 1,
   noise_uids: [] as string[],
@@ -265,7 +274,9 @@ test('a paired run shares one context fetch, stores both arms, and does not retu
   assert.equal(flat.includes('test rationale'), false);
   assert.equal(flat.includes('rationale'), false);
   const overItem = stripped.items.find((i) => i.arm === 'freescript')!;
-  assert.equal(overItem.input_path, 'text');
+  assert.equal(overItem.input_path, 'structured');
+  assert.equal(flat.includes('Shared flag'), false);
+  assert.equal(flat.includes('Signed only'), false);
   const page = await pairedAuditResultsIdentifying(db, submitted.run_id, 20, 0);
   const diff = page.diffs[0];
   assert.deepEqual(diff.only_a.map((f) => f.signal_type), ['signed_only']);
@@ -277,7 +288,10 @@ test('a paired run shares one context fetch, stores both arms, and does not retu
   assert.equal(over.clinician_uid, null);
   assert.equal(signed.uid, UID);
   assert.equal(signed.findings[0].rationale, 'test rationale');
+  assert.equal(signed.findings[0].subject, 'Shared flag');
   assert.equal(signed.findings.length, 2);
+  const status = await pairedAuditStatus(db, submitted.run_id);
+  assert.equal(status.external_ref_unkeyed, 1);
   await db.close();
 });
 
@@ -288,8 +302,8 @@ test('a missing or ambiguous uid is skipped and never audited', async () => {
     ...SUBMIT,
     idempotency_key: 'missing',
     pairs: [
-      { uid: UID, override_text: 'one', external_ref: 'e1' },
-      { uid: UID_B, override_text: 'two', external_ref: 'e2' },
+      { uid: UID, override: PARACETAMOL, external_ref: 'e1' },
+      { uid: UID_B, override: PARACETAMOL, external_ref: 'e2' },
     ],
   });
   const report = await pairedAuditTick(db, deps({
@@ -436,6 +450,12 @@ test('the runner does not name the production writer or the repair adapter', () 
   assert.equal(src.includes('opd-audit-store'), false);
   assert.equal(src.includes('makeOpdRepairAdapter'), false);
   assert.equal(src.includes('enterOpdLabWriteFence'), true);
+  assert.equal(src.includes('loadActiveSuppressionsOrThrow'), true);
+  assert.equal(src.includes('loadActiveSuppressions('), false);
+  const core = readFileSync(join(process.cwd(), 'lib/lab-v2/paired-audit-core.ts'), 'utf8');
+  const hashFn = core.slice(core.indexOf('export function opdAuditPromptHash'), core.indexOf('export function pairedEngineVersion'));
+  assert.equal(hashFn.includes('toString'), false);
+  assert.equal(opdAuditPromptHash(), PAIRED_PROMPT_VERSION);
 });
 
 test('a stale claim is retried and a fresh claim is left to the tick that holds it', async () => {
@@ -481,7 +501,7 @@ function withIdentifying<T>(fn: () => Promise<T>): Promise<T> {
 const TOOL_ARGS = {
   experiment_label: 'eta-freescript',
   idempotency_key: 'tool-1',
-  pairs: [{ uid: UID, override_text: 'Freescript: paracetamol 500 mg', external_ref: 'eta-enc-9' }],
+  pairs: [{ uid: UID, override: PARACETAMOL, external_ref: 'eta-enc-9' }],
   arms: ['signed', 'freescript'],
   max_llm_calls: 4,
 };
@@ -569,7 +589,11 @@ test('a revised prescription or a different model is not deduped', async () => {
   await submitPairedAudit(db, 'operator', {
     ...SUBMIT,
     idempotency_key: 'hash-2',
-    pairs: [{ uid: UID, override_text: 'Freescript: ibuprofen 400 mg for five days', external_ref: 'eta-enc-1' }],
+    pairs: [{
+      uid: UID,
+      external_ref: 'eta-enc-1',
+      override: { medications: [{ name: 'Ibuprofen', dose: '400 mg', duration: '5 days' }], diagnoses: [{ name: 'Viral fever' }] },
+    }],
   });
   const revised = await pairedAuditTick(db, deps({ audit }), { maxGroups: 4 });
   assert.equal(revised.audited, 1);
@@ -702,7 +726,238 @@ test('override repeats are stored and reported per flag', async () => {
   assert.equal(page.override_repeats[0].repeats, 2);
   assert.equal(page.override_repeats[0].identical_flag_sets, true);
   assert.ok(page.override_repeats[0].flag_agreement.every((f) => f.agreement === 1));
+  assert.equal(JSON.stringify(page.override_repeats).includes('Shared flag'), false);
   const calls = await db.query<{ calls_used: number }>(`SELECT calls_used FROM lab_v2.paired_audit_runs`);
   assert.equal(Number(calls[0].calls_used), 3);
   await db.close();
+});
+
+const METFORMIN_ROW = (uid: string) => ({
+  ...noteRow(uid),
+  medications: [{ generic_name: 'Metformin', dosage: '500 mg' }],
+  dpipe_dx: [{ diagnosis: 'Type 2 diabetes mellitus', icd_code: 'E11' }],
+  comorbidities: ['Hypertension'],
+});
+
+test('text that does not parse, and empty meds without no_medications, do not audit', async () => {
+  const proseZero = assessOverrideText('Amoxicillin TDS x5 days / Paracetamol SOS');
+  assert.equal(proseZero.ok, false);
+  assert.equal(proseZero.linesParsed, 0);
+  assert.equal(proseZero.linesTotal, 2);
+  const dropped = assessOverrideText('Tab Augmentin 625mg BD / Azithromycin OD x3 days');
+  assert.equal(dropped.ok, false);
+  assert.equal(dropped.linesParsed, 1);
+  assert.equal(dropped.linesTotal, 2);
+  const drugKey = assessOverrideText('{"medications":[{"drug":"Amoxicillin","dose":"500 mg"}]}');
+  assert.equal(drugKey.ok, false);
+  assert.equal(drugKey.linesParsed, 0);
+  assert.equal((drugKey.structured.medications ?? []).length, 0);
+
+  const db = await pairedDb();
+  await assert.rejects(
+    () => submitPairedAudit(db, 'operator', {
+      ...SUBMIT,
+      idempotency_key: 'empty-meds',
+      pairs: [{ uid: UID, external_ref: 'eta-enc-1', override: { diagnoses: [{ name: 'T2DM' }] } }],
+    }),
+    (e: Error) => e instanceof LabError && e.code === 'INVALID_INPUT' && e.message === 'override_unparsed',
+  );
+  await assert.rejects(
+    () => submitPairedAudit(db, 'operator', {
+      ...SUBMIT,
+      idempotency_key: 'text-closed',
+      pairs: [{ uid: UID, external_ref: 'eta-enc-1', override_text: 'Amoxicillin TDS x5 days / Paracetamol SOS' }],
+    }),
+    (e: Error) => e instanceof LabError && e.code === 'INVALID_INPUT',
+  );
+
+  const texts = [
+    { uid: 'noteuid11', text: 'Amoxicillin TDS x5 days / Paracetamol SOS', total: 2, parsed: 0 },
+    { uid: 'noteuid12', text: 'Tab Augmentin 625mg BD / Azithromycin OD x3 days', total: 2, parsed: 1 },
+    { uid: 'noteuid13', text: '{"medications":[{"drug":"Amoxicillin","dose":"500 mg"}]}', total: 1, parsed: 0 },
+    { uid: 'noteuid14', text: '{"drug":"Metformin","dose":"500 mg"}', total: 1, parsed: 0 },
+  ];
+  let audits = 0;
+  let sawNone = false;
+  let sawMetforminOnOverride = false;
+  await submitPairedAudit(db, 'operator', {
+    ...SUBMIT,
+    idempotency_key: 'unparsed',
+    debug_text_override: true,
+    max_llm_calls: 20,
+    pairs: [
+      ...texts.map((row) => ({ uid: row.uid, external_ref: 'eta-enc-1', override_text: row.text })),
+      {
+        uid: 'noteuid15',
+        external_ref: 'eta-enc-1',
+        override: { no_medications: true, diagnoses: [{ name: 'Type 2 diabetes mellitus' }] },
+      },
+    ],
+  });
+  await pairedAuditTick(db, deps({
+    resolve: async (uid) => ({ status: 'ok', row: METFORMIN_ROW(uid) }),
+    audit: async (row, _lab, charge) => {
+      audits += 1;
+      await charge();
+      const text = opdCaseText(rowToOpdCase(row).case);
+      const meds = JSON.stringify(row.medications ?? '');
+      if (!meds.includes('Metformin') && !meds.includes('Paracetamol')) {
+        sawNone = text.includes('NONE prescribed');
+        sawMetforminOnOverride = text.includes('Metformin');
+      }
+      return { audit: auditOf([finding('Shared flag', 'shared')]), spend_microusd: 0 };
+    },
+  }), { maxGroups: 8 });
+  const skipped = await db.query<{ uid: string; parse_lines_total: number | null; parse_lines_parsed: number | null }>(
+    `SELECT uid, parse_lines_total, parse_lines_parsed
+       FROM lab_v2.paired_audit_items
+      WHERE arm = 'freescript' AND skip_reason = 'override_unparsed'
+      ORDER BY uid`,
+  );
+  assert.deepEqual(skipped, texts.map((row) => ({
+    uid: row.uid, parse_lines_total: row.total, parse_lines_parsed: row.parsed,
+  })));
+  assert.equal(sawNone, true);
+  assert.equal(sawMetforminOnOverride, false);
+  // Four text overrides are skipped. The four signed arms and both arms of the
+  // no-medication encounter are the calls.
+  assert.equal(audits, 6);
+  const none = await db.query<{ status: string }>(
+    `SELECT status FROM lab_v2.paired_audit_items WHERE uid = 'noteuid15' AND arm = 'freescript'`,
+  );
+  assert.equal(none[0].status, 'succeeded');
+  await db.close();
+});
+
+test('content hashes include vitals, shared context, and the signed row context', () => {
+  const row = METFORMIN_ROW(UID);
+  const base = signedContentHash(row);
+  const withVitals = signedContentHash({
+    ...row, vitals_consult_uid: 'consult1', measurements__blood_pressure: '120/80',
+  });
+  assert.notEqual(base, withVitals);
+  const gp = signedContentHash(row, { specialty: 'General Practitioner', lvcRuleIds: ['r1'] });
+  const cardio = signedContentHash(row, { specialty: 'Cardiology', lvcRuleIds: ['r1'] });
+  assert.notEqual(gp, cardio);
+  const sameRx = { medications: [{ name: 'Paracetamol', dose: '500 mg' }] };
+  const plain = overrideContentHash('structured', sameRx, null, row, { specialty: 'General Practitioner' });
+  const otherContext = overrideContentHash(
+    'structured', sameRx, null,
+    { ...row, comorbidities: ['Asthma'] },
+    { specialty: 'General Practitioner' },
+  );
+  assert.notEqual(plain, otherContext);
+});
+
+test('a drifted prompt hash stops the run before any audit', async () => {
+  const db = await pairedDb();
+  let audits = 0;
+  const submitted = await submitPairedAudit(db, 'operator', { ...SUBMIT, idempotency_key: 'drift' });
+  await db.query(`UPDATE lab_v2.paired_audit_runs SET prompt_hash = 'paired-opd-prompt/0' WHERE id = $1`, [submitted.run_id]);
+  const report = await pairedAuditTick(db, deps({
+    audit: async (_r, _l, charge) => {
+      audits += 1;
+      await charge();
+      return { audit: auditOf([]), spend_microusd: 0 };
+    },
+  }), { maxGroups: 2 });
+  assert.equal(audits, 0);
+  assert.ok(report.stopped >= 2);
+  const run = await db.query<{ stop_reason: string }>(`SELECT stop_reason FROM lab_v2.paired_audit_runs`);
+  assert.equal(run[0].stop_reason, 'engine_drift');
+  await db.close();
+});
+
+test('a spend budget is enforced inside the charge, before the next call', async () => {
+  const db = await pairedDb();
+  let audits = 0;
+  await submitPairedAudit(db, 'operator', { ...SUBMIT, idempotency_key: 'spend', max_spend_microusd: 1, max_llm_calls: 8 });
+  const report = await pairedAuditTick(db, deps({
+    audit: async (_r, _l, charge) => {
+      audits += 1;
+      await charge();
+      return { audit: auditOf([finding('Shared flag', 'shared')]), spend_microusd: 1 };
+    },
+  }), { maxGroups: 2 });
+  assert.equal(audits, 1);
+  assert.ok(report.stopped >= 1);
+  const run = await db.query<{ stop_reason: string; spend_microusd: string }>(
+    `SELECT stop_reason, spend_microusd FROM lab_v2.paired_audit_runs`,
+  );
+  assert.equal(run[0].stop_reason, 'budget_exhausted');
+  assert.equal(Number(run[0].spend_microusd), 1);
+  await db.close();
+});
+
+test('an item is not started once the deadline has passed', async () => {
+  const db = await pairedDb();
+  let audits = 0;
+  let clock = 0;
+  await submitPairedAudit(db, 'operator', { ...SUBMIT, idempotency_key: 'deadline' });
+  await pairedAuditTick(db, deps({
+    audit: async (_r, _l, charge) => {
+      audits += 1;
+      clock = 5_000;
+      await charge();
+      return { audit: auditOf([finding('Shared flag', 'shared')]), spend_microusd: 0 };
+    },
+  }), { deadlineAt: 1_000, now: () => clock, maxGroups: 2 });
+  assert.equal(audits, 1);
+  const rows = await db.query<{ arm: string; status: string }>(
+    `SELECT arm, status FROM lab_v2.paired_audit_items ORDER BY arm`,
+  );
+  const queued = rows.filter((r) => r.status === 'queued');
+  const done = rows.filter((r) => r.status === 'succeeded');
+  assert.equal(done.length, 1);
+  assert.equal(queued.length, 1);
+  await db.close();
+});
+
+test('auditPairedArm halts when the engine calls saveOpdAudit, and production sql sees no write', async () => {
+  const db = await pairedDb();
+  const seen: { sql: string; executed: boolean }[] = [];
+  setSqlSpy((statement, executed) => { seen.push({ sql: statement, executed }); });
+  try {
+    await submitPairedAudit(db, 'operator', { ...SUBMIT, idempotency_key: 'fence-arm' });
+    await pairedAuditTick(db, defaultPairedDeps({
+      resolveNote: async (uid) => ({ status: 'ok', row: noteRow(uid) }),
+      loadContext: async () => LAB,
+      engine: async () => {
+        try { await saveOpdAudit(undefined as never); } catch { /* the engine catch */ }
+        try { await sql('DELETE FROM opd_note_audits WHERE uid = $1', [UID]); } catch { /* the engine catch */ }
+        return auditOf([], true);
+      },
+    }), { maxGroups: 2 });
+    const rows = await db.query<{ status: string; skip_reason: string | null }>(
+      `SELECT status, skip_reason FROM lab_v2.paired_audit_items`,
+    );
+    assert.ok(rows.every((r) => r.status === 'stopped' && r.skip_reason === 'production_write_refused'));
+    assert.equal(seen.some((row) => row.executed && !isProductionReadSql(row.sql)), false);
+    assert.ok(seen.some((row) => /delete/i.test(row.sql) && row.executed === false));
+    const stored = await db.query<{ n: string }>(`SELECT count(*)::text AS n FROM lab_v2.paired_audit_results`);
+    assert.equal(stored[0].n, '0');
+  } finally {
+    setSqlSpy(null);
+    await db.close();
+  }
+});
+
+test('lab v2 refuses a url that names the same host and database as production', () => {
+  const prevLab = process.env.LAB_V2_DATABASE_URL;
+  const prevProd = process.env.DATABASE_URL;
+  process.env.DATABASE_URL = 'postgres://prod-user:prod-secret@ep-lab.neon.tech/cdmss?sslmode=require';
+  process.env.LAB_V2_DATABASE_URL = 'postgres://lab-user:lab-secret@ep-lab.neon.tech/cdmss?sslmode=require';
+  try {
+    assert.throws(
+      () => labV2Url(),
+      (e: Error) => e instanceof LabError && e.code === 'NOT_CONFIGURED',
+    );
+    process.env.LAB_V2_DATABASE_URL = 'postgres://lab-user:lab-secret@ep-lab.neon.tech/cdmss_lab?sslmode=require';
+    assert.equal(labV2Url().includes('cdmss_lab'), true);
+  } finally {
+    if (prevLab === undefined) delete process.env.LAB_V2_DATABASE_URL;
+    else process.env.LAB_V2_DATABASE_URL = prevLab;
+    if (prevProd === undefined) delete process.env.DATABASE_URL;
+    else process.env.DATABASE_URL = prevProd;
+  }
 });

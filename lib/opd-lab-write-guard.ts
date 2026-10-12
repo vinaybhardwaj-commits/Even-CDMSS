@@ -14,7 +14,16 @@
  */
 import { AsyncLocalStorage } from 'node:async_hooks';
 
-const fence = new AsyncLocalStorage<true>();
+/**
+ * `tripped` survives a catch inside the production engine. `auditOpdNote` turns
+ * OpdLabWriteForbidden and LAB_IO_FORBIDDEN into a deterministic-only audit, so the
+ * paired runner has to see the bit after that call returns.
+ */
+interface FenceState {
+  tripped: Error | null;
+}
+
+const fence = new AsyncLocalStorage<FenceState>();
 
 export class OpdLabWriteForbidden extends Error {
   readonly code = 'OPD_LAB_WRITE_FORBIDDEN' as const;
@@ -27,12 +36,23 @@ export class OpdLabWriteForbidden extends Error {
 }
 
 export function opdLabWriteFenceActive(): boolean {
-  return fence.getStore() === true;
+  return fence.getStore() != null;
 }
 
-/** Run `fn` with production audit writers sealed. Nested fences stay sealed. */
+/** Remember a refused write. A later catch inside the engine must not clear this. */
+export function tripOpdLabWriteFence(error: Error): void {
+  const state = fence.getStore();
+  if (state && !state.tripped) state.tripped = error;
+}
+
+export function opdLabWriteFenceTripped(): Error | null {
+  return fence.getStore()?.tripped ?? null;
+}
+
+/** Run `fn` with production audit writers sealed. A nested call keeps the outer bit. */
 export function enterOpdLabWriteFence<T>(fn: () => Promise<T>): Promise<T> {
-  return fence.run(true, fn);
+  if (fence.getStore()) return fn();
+  return fence.run({ tripped: null }, fn);
 }
 
 /**
@@ -40,5 +60,8 @@ export function enterOpdLabWriteFence<T>(fn: () => Promise<T>): Promise<T> {
  * `writer` is a stable id (`opd_note_audits.saveOpdAudit`, …), never note text.
  */
 export function assertOpdProductionWrite(writer: string): void {
-  if (fence.getStore() === true) throw new OpdLabWriteForbidden(writer);
+  if (!fence.getStore()) return;
+  const err = new OpdLabWriteForbidden(writer);
+  tripOpdLabWriteFence(err);
+  throw err;
 }

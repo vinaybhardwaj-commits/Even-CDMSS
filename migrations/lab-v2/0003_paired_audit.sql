@@ -35,6 +35,8 @@ CREATE TABLE IF NOT EXISTS lab_v2.paired_audit_runs (
   unpriced              boolean NOT NULL DEFAULT false,
   signed_repeats        integer NOT NULL DEFAULT 1,
   override_repeats      integer NOT NULL DEFAULT 1,
+  -- Uids whose signed row had neither kx_encounter_id nor consult_uid. The join still passes.
+  external_ref_unkeyed  integer NOT NULL DEFAULT 0,
   created_at            timestamptz NOT NULL DEFAULT now(),
   finished_at           timestamptz
 );
@@ -86,8 +88,11 @@ CREATE TABLE IF NOT EXISTS lab_v2.paired_audit_items (
   override_text   text,
   override_struct jsonb,
   override_hash   text,
-  -- signed | structured | text. structured is the caller's JSON; text is the fallback parser.
+  -- signed | structured | text. structured is the caller's JSON; text is the debug parser.
   input_path      text NOT NULL,
+  -- Set when a text override is judged. A skip of override_unparsed stores both counts.
+  parse_lines_total  integer,
+  parse_lines_parsed integer,
   result_id       uuid REFERENCES lab_v2.paired_audit_results(id),
   created_at      timestamptz NOT NULL DEFAULT now(),
   finished_at     timestamptz,

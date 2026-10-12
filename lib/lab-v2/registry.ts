@@ -407,14 +407,14 @@ export const REGISTRY: readonly ToolSpec[] = [
 
   // ── Paired signed/override OPD audit. Not a production write. ────────────────────
   {
-    ...paired('paired_audit_submit', 'Queue a paired OPD audit: for each explicit uid, re-audit the signed prescription and audit the supplied structured override (medications, diagnoses, investigations, procedures, advice, plan, exam, follow-up) on the same engine version, prompt hash and model. override_text is the fallback and is parsed into those same columns. Returns a run id. The cron does the work. Results land in the lab store only. Identifying on every call.', ['research_write'], 'research_write', 'metered'),
+    ...paired('paired_audit_submit', 'Queue a paired OPD audit: for each explicit uid, re-audit the signed prescription and audit the supplied structured override (medications, diagnoses, investigations, procedures, advice, plan, exam, follow-up) on the same engine version, prompt hash and model. Structured JSON is required. override_text is accepted only with debug_text_override, and a text parse that drops a line is skipped. Returns a run id. The cron does the work. Results land in the lab store only. Identifying on every call.', ['research_write'], 'research_write', 'metered'),
     identifying_input: true,
     identifying_always: true,
   },
   paired('paired_audit_status', 'Counts and budget for one paired-audit run: queued, running, succeeded, deduped, skipped, failed, stopped, calls used and spend. No uid, no note text.', ['research_read'], 'read'),
-  paired('paired_audit_results', 'De-identified per-arm findings for one paired-audit run (subject, verdict, severity, signal type, category) plus flag diffs and per-flag agreement. Arms join on pair_key. Does not return uid, external_ref, clinician uid, rationale, or the override.', ['research_read'], 'read'),
+  paired('paired_audit_results', 'De-identified per-arm findings for one paired-audit run (verdict, severity, signal type, category) plus flag diffs and per-flag agreement. Arms join on pair_key. Does not return uid, external_ref, clinician uid, rationale, finding subject, or the override.', ['research_read'], 'read'),
   {
-    ...paired('paired_audit_results_identifying', 'Identifying per-uid per-arm findings for one paired-audit run, including external_ref, clinician uid on the signed arm, and rationale. Does not return the override text. Identifying on every call.', ['research_write'], 'read'),
+    ...paired('paired_audit_results_identifying', 'Identifying per-uid per-arm findings for one paired-audit run, including external_ref, clinician uid on the signed arm, finding subject and rationale. Does not return the override text. Identifying on every call.', ['research_write'], 'read'),
     identifying_input: true,
     identifying_always: true,
   },

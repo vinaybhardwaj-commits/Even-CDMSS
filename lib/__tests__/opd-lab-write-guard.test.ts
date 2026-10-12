@@ -6,9 +6,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { enterOpdLabWriteFence, OpdLabWriteForbidden } from '../opd-lab-write-guard';
 import { exitLabExecution } from '../lab-execution-context';
-import { saveOpdAudit, updateOpdAudit } from '../opd-audit-store';
+import { deleteOpdAuditsForUid, saveOpdAudit, updateOpdAudit } from '../opd-audit-store';
 import { persistLongitudinal, replayLongitudinal, runLongitudinalPass } from '../opd-longitudinal';
-import { insertDecision, insertQueueDisposition } from '../opd-triage-store';
+import { ensureOpdTriageTable, insertDecision, insertQueueDisposition } from '../opd-triage-store';
+import { ensureSuppressionTable } from '../audit-suppression-store';
+import { isProductionReadSql, setSqlSpy, sql } from '../db';
 import {
   applyDoctorResponse, applySignalAction, claimDoctorResponseRequest, completeDoctorResponseRequest,
   ensureDoctorResponseRequestsTable, ensureGovSignalTables, mintOrUpdateSignal, releaseDoctorResponseRequest,
@@ -63,4 +65,32 @@ test('outside the fence a bad call is an ordinary failure, not the lab refusal',
     () => saveOpdAudit(undefined as never),
     (e: Error) => !(e instanceof OpdLabWriteForbidden),
   );
+});
+
+test('a read statement is a read, and a write is not', () => {
+  assert.equal(isProductionReadSql('SELECT id FROM audit_suppression WHERE active = true'), true);
+  assert.equal(isProductionReadSql('WITH c AS (SELECT 1) SELECT * FROM c'), true);
+  assert.equal(isProductionReadSql("SELECT id FROM t FOR UPDATE"), true);
+  assert.equal(isProductionReadSql('DELETE FROM opd_note_audits WHERE uid = $1'), false);
+  assert.equal(isProductionReadSql('WITH picked AS (SELECT id FROM t) UPDATE t SET a = 1'), false);
+  assert.equal(isProductionReadSql('INSERT INTO triage_stamp_events (id) VALUES ($1)'), false);
+  assert.equal(isProductionReadSql('CREATE TABLE IF NOT EXISTS opd_audit_triage (id uuid)'), false);
+});
+
+test('production sql refuses a write while the fence is active and does not execute it', async () => {
+  const seen: { sql: string; executed: boolean }[] = [];
+  setSqlSpy((statement, executed) => { seen.push({ sql: statement, executed }); });
+  try {
+    await enterOpdLabWriteFence(async () => {
+      await forbidden(async () => { await sql('DELETE FROM opd_note_audits WHERE uid = $1', ['uid123']); });
+      await forbidden(() => deleteOpdAuditsForUid('uid123'));
+      await forbidden(() => ensureOpdTriageTable());
+      await forbidden(() => ensureSuppressionTable());
+    });
+    assert.equal(seen.some((row) => row.executed), false);
+    assert.ok(seen.some((row) => /delete/i.test(row.sql) && row.executed === false));
+    assert.ok(seen.some((row) => /create/i.test(row.sql) && row.executed === false));
+  } finally {
+    setSqlSpy(null);
+  }
 });

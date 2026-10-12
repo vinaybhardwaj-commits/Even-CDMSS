@@ -3147,6 +3147,11 @@ export const MAP_EDGES: MapEdge[] = [
     "kind": "value"
   },
   {
+    "from": "db",
+    "to": "opd-lab-write-guard",
+    "kind": "value"
+  },
+  {
     "from": "ddi",
     "to": "ddi-tags",
     "kind": "value"
@@ -6351,6 +6356,12 @@ export const VERSION_REGISTRY: VersionRow[] = [
     "value": "[OT_ENGINE_VERSION]",
     "file": "lib/triage/ot-audit-core.ts",
     "derived": true
+  },
+  {
+    "constName": "PAIRED_PROMPT_VERSION",
+    "value": "paired-opd-prompt/1",
+    "file": "lib/lab-v2/paired-audit-core.ts",
+    "derived": false
   },
   {
     "constName": "PATIENT_SUMMARY_API_VERSION",

@@ -2,17 +2,18 @@
  * lib/lab-v2/tools/paired-audit.ts — paired signed/override OPD audit.
  *
  * `paired_audit_submit` queues the batch and returns a run id. The lab-v2 cron drains it.
- * Structured override JSON is the input. `override_text` is the fallback and is parsed
- * through the same mapper. `paired_audit_status` is counts only.
+ * Structured override JSON is required. `override_text` is accepted only when
+ * `debug_text_override` is set, and a text parse that drops a line is skipped.
+ * `paired_audit_status` is counts only.
  * `paired_audit_results` is the de-identified read: pair_key, no uid, no external_ref,
- * no clinician uid, no rationale. `paired_audit_results_identifying` returns those fields
- * and is identifying on every call.
+ * no clinician uid, no rationale, no finding subject. `paired_audit_results_identifying`
+ * returns those fields and is identifying on every call.
  */
 import { z } from 'zod';
 import type { Db } from '../db';
 import {
   PAIRED_DEFAULT_MODEL, PAIRED_MAX_LLM_CALLS, PAIRED_MAX_OVERRIDE_REPEATS, PAIRED_MAX_PAIRS,
-  PAIRED_MAX_SIGNED_REPEATS, PAIRED_UID_RE, hasStructuredContent, type StructuredOverride,
+  PAIRED_MAX_SIGNED_REPEATS, PAIRED_UID_RE, hasStructuredContent, overrideUnparsed, type StructuredOverride,
 } from '../paired-audit-core';
 import {
   pairedAuditResults, pairedAuditResultsIdentifying, pairedAuditStatus, submitPairedAudit,
@@ -21,7 +22,6 @@ import {
 const ARM_RE = /^[a-z][a-z0-9_-]{0,31}$/;
 
 const findingCore = {
-  subject: z.string().nullable(),
   verdict: z.string().nullable(),
   confidence: z.number().nullable(),
   domain: z.string().nullable(),
@@ -34,26 +34,28 @@ const findingCore = {
 };
 
 const publicFindingSchema = z.object(findingCore);
-const findingSchema = z.object({ ...findingCore, rationale: z.string().nullable() });
+const findingSchema = z.object({ ...findingCore, subject: z.string().nullable(), rationale: z.string().nullable() });
 
-const flagSchema = z.object({
+const publicFlagSchema = z.object({
   key: z.string(),
-  subject: z.string().nullable(),
   verdict: z.string().nullable(),
   signal_type: z.string().nullable(),
   domain: z.string().nullable(),
   severity: z.string().nullable(),
 });
 
-const agreementSchema = z.object({
+const flagSchema = publicFlagSchema.extend({ subject: z.string().nullable() });
+
+const publicAgreementSchema = z.object({
   key: z.string(),
   signal_type: z.string().nullable(),
-  subject: z.string().nullable(),
   verdict: z.string().nullable(),
   present_in: z.number().int(),
   repeats: z.number().int(),
   agreement: z.number(),
 });
+
+const agreementSchema = publicAgreementSchema.extend({ subject: z.string().nullable() });
 
 const medicationSchema = z.object({
   name: z.string().min(1).max(200).optional(),
@@ -102,6 +104,7 @@ const structuredSchema = z.object({
     z.string().min(1).max(4000),
     z.array(z.string().min(1).max(2000)).max(40),
   ]).optional(),
+  no_medications: z.boolean().optional(),
 });
 
 const pairSchema = z.object({
@@ -122,7 +125,7 @@ const repeatPublic = z.object({
   pair_key: z.string(),
   repeats: z.number().int(),
   identical_flag_sets: z.boolean(),
-  flag_agreement: z.array(agreementSchema),
+  flag_agreement: z.array(publicAgreementSchema),
 });
 
 const repeatIdentifying = z.object({
@@ -145,6 +148,7 @@ export const PAIRED_AUDIT_SCHEMAS = {
       max_llm_calls: z.number().int().min(1).max(PAIRED_MAX_LLM_CALLS),
       max_spend_microusd: z.number().int().positive().nullable().optional(),
       model: z.string().min(3).max(200).default(PAIRED_DEFAULT_MODEL),
+      debug_text_override: z.boolean().default(false),
     }).superRefine((data, ctx) => {
       const signed = data.arms.filter((arm) => arm === 'signed').length;
       if (signed !== 1) {
@@ -173,6 +177,29 @@ export const PAIRED_AUDIT_SCHEMAS = {
           ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['noise_uids'], message: `noise uid ${uid} is not in pairs` });
         }
       }
+      data.pairs.forEach((pair, i) => {
+        const structured = pair.override as StructuredOverride | undefined;
+        if (structured && overrideUnparsed(structured)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom, path: ['pairs', i, 'override'],
+            message: 'override_unparsed',
+          });
+        }
+        if (!data.debug_text_override) {
+          if (pair.override_text) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom, path: ['pairs', i, 'override_text'],
+              message: 'override_text requires debug_text_override',
+            });
+          }
+          if (!hasStructuredContent(structured)) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom, path: ['pairs', i, 'override'],
+              message: 'a pair needs a structured override',
+            });
+          }
+        }
+      });
     }),
     output: z.object({
       run_id: z.string().uuid(),
@@ -203,6 +230,7 @@ export const PAIRED_AUDIT_SCHEMAS = {
       spend_microusd: z.number(),
       max_llm_calls: z.number(),
       max_spend_microusd: z.number().nullable(),
+      external_ref_unkeyed: z.number().int(),
       counts: z.object({
         queued: z.number().int(),
         running: z.number().int(),
@@ -238,9 +266,9 @@ export const PAIRED_AUDIT_SCHEMAS = {
       })),
       diffs: z.array(z.object({
         pair_key: z.string(),
-        only_a: z.array(flagSchema),
-        only_b: z.array(flagSchema),
-        both: z.array(flagSchema),
+        only_a: z.array(publicFlagSchema),
+        only_b: z.array(publicFlagSchema),
+        both: z.array(publicFlagSchema),
       })),
       signed_repeats: z.array(repeatPublic),
       override_repeats: z.array(repeatPublic.extend({ arm: z.string() })),
@@ -300,6 +328,7 @@ type SubmitArgs = {
   max_llm_calls: number;
   max_spend_microusd?: number | null;
   model: string;
+  debug_text_override?: boolean;
 };
 
 export async function pairedAuditSubmitTool(deps: { db: Db; principal: string }, args: SubmitArgs) {
@@ -314,6 +343,7 @@ export async function pairedAuditSubmitTool(deps: { db: Db; principal: string },
     max_llm_calls: args.max_llm_calls,
     max_spend_microusd: args.max_spend_microusd ?? null,
     model: args.model,
+    debug_text_override: args.debug_text_override,
   });
 }
 

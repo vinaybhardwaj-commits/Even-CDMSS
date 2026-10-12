@@ -8,12 +8,12 @@
  * investigations, procedures, advice, plan, exam, follow-up, referrals). Comorbidities,
  * history, allergies, vitals, and the chief complaint stay on the signed row unless the
  * override itself supplies a complaint or a reason. Structured JSON is the input the
- * ETA-to-Freescript caller already has. `override_text` is the fallback, and it goes
- * through the same mapper.
+ * ETA-to-Freescript caller already has. `override_text` is accepted only when the
+ * caller sets the debug flag, and a text parse that drops a line is not audited.
  */
 import { createHash } from 'node:crypto';
-import { opdCaseText, rowToOpdCase } from '../opd-ingest-core';
-import { buildOpdAuditUser, OPD_AUDIT_SYSTEM, OPD_ENGINE_VERSION } from '../opd-note-audit-core';
+import { rowToOpdCase } from '../opd-ingest-core';
+import { OPD_ENGINE_VERSION } from '../opd-note-audit-core';
 
 /** Same shape `lib/metabase.ts` uses for a db13 uid. Not exported there; duplicated on purpose. */
 export const PAIRED_UID_RE = /^[A-Za-z0-9_-]{6,64}$/;
@@ -57,6 +57,8 @@ export interface StructuredOverride {
   follow_up?: { type?: string; date?: string } | string;
   reason?: string;
   presenting_complaints?: string[] | string;
+  /** Required when the encounter prescribed nothing. Empty meds without this are unparsed. */
+  no_medications?: boolean;
 }
 
 /**
@@ -80,15 +82,16 @@ const RX_CLEAR_KEYS = [
   'prescription_url',
 ] as const;
 
-/** sha256 of the system prompt and of the two functions that build the user prompt. */
+/**
+ * Identity of the prompt the paired audit bills against.
+ * Bump when `OPD_AUDIT_SYSTEM`, `buildOpdAuditUser`, `opdCaseText`, or `formatOpdMed` changes.
+ * A hash of `Function.toString()` changes when a bundler rewrites a function body and would
+ * miss dedupe on every deploy.
+ */
+export const PAIRED_PROMPT_VERSION = 'paired-opd-prompt/1';
+
 export function opdAuditPromptHash(): string {
-  return createHash('sha256')
-    .update(OPD_AUDIT_SYSTEM)
-    .update('\n')
-    .update(buildOpdAuditUser.toString())
-    .update('\n')
-    .update(opdCaseText.toString())
-    .digest('hex');
+  return PAIRED_PROMPT_VERSION;
 }
 
 export function pairedEngineVersion(): string {
@@ -188,6 +191,7 @@ function toMedRow(m: OverrideMedication): Record<string, string | null> | null {
 
 export function hasStructuredContent(s: StructuredOverride | null | undefined): boolean {
   if (!s) return false;
+  if (s.no_medications === true) return true;
   const follow = s.follow_up;
   const followPresent = typeof follow === 'string'
     ? plain(follow).length > 0
@@ -295,31 +299,127 @@ function pushLine(out: StructuredOverride, key: keyof StructuredOverride, line: 
   }
 }
 
+function effectiveMeds(s: StructuredOverride | null | undefined): number {
+  if (!s?.medications) return 0;
+  return s.medications.map(toMedRow).filter((m) => m != null).length;
+}
+
+/** Zero medications is a real encounter only when the caller says so. */
+export function overrideUnparsed(s: StructuredOverride | null | undefined): boolean {
+  if (!s) return true;
+  if (s.no_medications === true && effectiveMeds(s) > 0) return true;
+  if (effectiveMeds(s) > 0) return false;
+  return s.no_medications !== true;
+}
+
+export interface TextCoverage {
+  structured: StructuredOverride;
+  linesTotal: number;
+  linesParsed: number;
+  ok: boolean;
+}
+
+function jsonMed(value: unknown): OverrideMedication | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const o = value as Record<string, unknown>;
+  const str = (key: string) => (typeof o[key] === 'string' ? o[key] as string : undefined);
+  const med: OverrideMedication = {
+    name: str('name'),
+    generic_name: str('generic_name'),
+    brand: str('brand'),
+    brand_name: str('brand_name'),
+    dose: str('dose'),
+    dosage: str('dosage'),
+    strength: str('strength'),
+    route: str('route'),
+    route_of_administration: str('route_of_administration'),
+    frequency: str('frequency'),
+    duration: str('duration'),
+    instruction: str('instruction'),
+    instruction_to_patient: str('instruction_to_patient'),
+  };
+  return toMedRow(med) ? med : null;
+}
+
+function assessJsonText(text: string): TextCoverage {
+  let value: unknown;
+  try { value = JSON.parse(text); } catch {
+    return { structured: {}, linesTotal: 1, linesParsed: 0, ok: false };
+  }
+  const root = Array.isArray(value) ? { medications: value } : value;
+  if (!root || typeof root !== 'object') {
+    return { structured: {}, linesTotal: 1, linesParsed: 0, ok: false };
+  }
+  const o = root as Record<string, unknown>;
+  const structured: StructuredOverride = {};
+  if (o.no_medications === true) structured.no_medications = true;
+  const named = o.name != null || o.generic_name != null || o.brand != null || o.brand_name != null || o.drug != null;
+  const medSource = Array.isArray(o.medications) ? o.medications : (named ? [o] : []);
+  const meds: OverrideMedication[] = [];
+  let parsed = 0;
+  for (const item of medSource) {
+    const med = jsonMed(item);
+    if (med) { meds.push(med); parsed += 1; }
+  }
+  if (meds.length) structured.medications = meds;
+  const linesTotal = medSource.length > 0 ? medSource.length : 1;
+  const ok = medSource.length === parsed && !overrideUnparsed(structured);
+  return { structured, linesTotal, linesParsed: parsed, ok };
+}
+
+function lineChanged(before: string, out: StructuredOverride): boolean {
+  return JSON.stringify(out) !== before;
+}
+
 /**
  * The one text-to-structure path. Headed sections map onto the structured fields.
- * A line with no heading becomes a medication only when it carries a dose, so a
- * free-text prescription is not dumped into the complaint channel.
+ * An unheaded line is split on `/` and counts only when it parses as a medication.
+ * `ok` is false when any of those lines is dropped or when the result has no medications.
  */
-export function structureFromOverrideText(text: string): StructuredOverride {
+export function assessOverrideText(text: string): TextCoverage {
+  const trimmed = text.trim();
+  if (!trimmed) return { structured: {}, linesTotal: 0, linesParsed: 0, ok: false };
+  if (trimmed.startsWith('{') || trimmed.startsWith('[')) return assessJsonText(trimmed);
   const out: StructuredOverride = {};
   let section: keyof StructuredOverride | null = null;
-  for (const raw of text.split(/\r?\n/)) {
+  let linesTotal = 0;
+  let linesParsed = 0;
+  for (const raw of trimmed.split(/\r?\n/)) {
     const line = raw.trim().replace(/^[-•*]\s*/, '');
     if (!line) continue;
     const headed = SECTION_HEAD.find((h) => h.re.test(line));
     if (headed) {
       section = headed.key;
+      linesTotal += 1;
       const rest = headed.re.exec(line)?.[1]?.trim() ?? '';
-      if (rest) pushLine(out, section, rest);
+      if (!rest) { linesParsed += 1; continue; }
+      const before = JSON.stringify(out);
+      pushLine(out, section, rest);
+      if (lineChanged(before, out)) linesParsed += 1;
       continue;
     }
-    if (section) pushLine(out, section, line);
-    else {
-      const med = parseMedLine(line);
-      if (med) (out.medications ??= []).push(med);
+    const pieces = section ? [line] : line.split(/\s*\/\s*/).map((s) => s.trim()).filter(Boolean);
+    for (const piece of pieces) {
+      linesTotal += 1;
+      if (section) {
+        const before = JSON.stringify(out);
+        pushLine(out, section, piece);
+        if (lineChanged(before, out)) linesParsed += 1;
+      } else {
+        const med = parseMedLine(piece);
+        if (med && toMedRow(med)) {
+          (out.medications ??= []).push(med);
+          linesParsed += 1;
+        }
+      }
     }
   }
-  return out;
+  const ok = linesTotal > 0 && linesParsed === linesTotal && !overrideUnparsed(out);
+  return { structured: out, linesTotal, linesParsed, ok };
+}
+
+export function structureFromOverrideText(text: string): StructuredOverride {
+  return assessOverrideText(text).structured;
 }
 
 /**
@@ -372,33 +472,74 @@ export function applyNoteBodyOverride(row: Record<string, unknown>, overrideText
   return applyStructuredOverride(row, structureFromOverrideText(overrideText));
 }
 
+/** Shared context and vitals that change the prompt but are not the prescription itself. */
+export interface PairedHashContext {
+  specialty?: string | null;
+  complexityBand?: string | null;
+  complexityInputs?: unknown;
+  lvcRuleIds?: string[];
+  suppressionIds?: string[];
+  quietingGen?: number;
+}
+
+const VITAL_ROW_KEYS = [
+  'vitals_consult_uid', 'vitals_update_time',
+  'measurements__blood_pressure', 'measurements__pulse_rate', 'measurements__spo2_level',
+  'measurements__temperature', 'measurements__respiratory_value', 'measurements__early_warning_score',
+  'patient_details__weight', 'patient_details__height',
+] as const;
+
+function patientContext(row: Record<string, unknown>, ctx?: PairedHashContext) {
+  const { case: oc } = rowToOpdCase(row);
+  const vitalsRaw: Record<string, unknown> = {};
+  for (const key of VITAL_ROW_KEYS) vitalsRaw[key] = row[key] ?? null;
+  return {
+    consultType: oc.consultType,
+    reason: oc.reasonForConsult,
+    complaints: oc.presentingComplaints,
+    history: oc.history,
+    comorbidities: oc.comorbidities,
+    allergies: oc.allergies,
+    vitals: oc.vitals ?? null,
+    vitalsRecorded: oc.vitalsRecorded ?? false,
+    weightKg: oc.weightKg ?? null,
+    heightCm: oc.heightCm ?? null,
+    vitalsRaw,
+    specialty: ctx?.specialty ?? null,
+    complexityBand: ctx?.complexityBand ?? null,
+    complexityInputs: ctx?.complexityInputs ?? null,
+    lvcRuleIds: [...(ctx?.lvcRuleIds ?? [])].sort(),
+    suppressionIds: [...(ctx?.suppressionIds ?? [])].sort(),
+    quietingGen: ctx?.quietingGen ?? 0,
+  };
+}
+
 export function overrideContentHash(
   path: 'structured' | 'text',
   structured: StructuredOverride,
   text: string | null,
+  row?: Record<string, unknown>,
+  ctx?: PairedHashContext,
 ): string {
-  if (path === 'text') return sha256(stable({ path, text: text ?? '' }));
-  return sha256(stable({ path, structured }));
+  const body = path === 'text'
+    ? { path, text: text ?? '' }
+    : { path, structured };
+  return sha256(stable({ ...body, context: row ? patientContext(row, ctx) : null }));
 }
 
 /** Hash of the signed case the engine will actually read, so a revised signed Rx misses dedupe. */
-export function signedContentHash(row: Record<string, unknown>): string {
+export function signedContentHash(row: Record<string, unknown>, ctx?: PairedHashContext): string {
   const { case: oc } = rowToOpdCase(row);
   return sha256(stable({
     path: 'signed',
-    consultType: oc.consultType,
-    reason: oc.reasonForConsult,
-    complaints: oc.presentingComplaints,
+    context: patientContext(row, ctx),
     diagnosisCodes: oc.diagnosisCodes,
     impressions: oc.impressions,
     impressionCodes: oc.impressionCodes,
-    history: oc.history,
-    comorbidities: oc.comorbidities,
     medications: oc.medications,
     investigations: oc.investigations,
     advice: oc.advice,
     examination: oc.examination,
-    allergies: oc.allergies,
     followUpType: oc.followUpType,
     followUpDateSet: oc.followUpDateSet,
     referrals: oc.referrals,
@@ -408,26 +549,48 @@ export function signedContentHash(row: Record<string, unknown>): string {
 export function resolveOverride(input: {
   override?: StructuredOverride | null;
   override_text?: string | null;
-}): { path: 'structured' | 'text'; structured: StructuredOverride; text: string | null; hash: string } {
+}): {
+  path: 'structured' | 'text';
+  structured: StructuredOverride;
+  text: string | null;
+  hash: string;
+  unparsed: boolean;
+  coverage: TextCoverage | null;
+} {
   if (hasStructuredContent(input.override)) {
     const structured = input.override!;
-    return { path: 'structured', structured, text: null, hash: overrideContentHash('structured', structured, null) };
+    return {
+      path: 'structured', structured, text: null,
+      hash: overrideContentHash('structured', structured, null),
+      unparsed: overrideUnparsed(structured),
+      coverage: null,
+    };
   }
   const text = input.override_text ?? '';
-  const structured = structureFromOverrideText(text);
-  return { path: 'text', structured, text, hash: overrideContentHash('text', structured, text) };
+  const coverage = assessOverrideText(text);
+  return {
+    path: 'text', structured: coverage.structured, text,
+    hash: overrideContentHash('text', coverage.structured, text),
+    unparsed: !coverage.ok,
+    coverage,
+  };
 }
 
 /**
  * When the signed row carries kx_encounter_id or consult_uid, the caller's external_ref
- * must be one of them. Both empty means the warehouse did not send a join key: do not fail.
+ * must be one of them. Both empty means the warehouse did not send a join key: do not fail,
+ * and the caller counts that case.
  */
-export function externalRefMatches(row: Record<string, unknown>, externalRef: string): boolean {
+export function externalRefJoin(row: Record<string, unknown>, externalRef: string): { matches: boolean; neitherKey: boolean } {
   const present = [row.kx_encounter_id, row.consult_uid]
     .map((v) => (v == null ? '' : String(v).trim()))
     .filter((v) => v.length > 0);
-  if (present.length === 0) return true;
-  return present.includes(externalRef);
+  if (present.length === 0) return { matches: true, neitherKey: true };
+  return { matches: present.includes(externalRef), neitherKey: false };
+}
+
+export function externalRefMatches(row: Record<string, unknown>, externalRef: string): boolean {
+  return externalRefJoin(row, externalRef).matches;
 }
 
 /** Stable join key for a de-identified results page. Not reversible to the note uid. */
@@ -543,11 +706,26 @@ export function projectAudit(audit: unknown, arm: string): ProjectedAudit {
   };
 }
 
-export type PublicFinding = Omit<ProjectedFinding, 'rationale'>;
+export type PublicFinding = Omit<ProjectedFinding, 'rationale' | 'subject'>;
 
 export function publicFinding(f: ProjectedFinding): PublicFinding {
-  const { rationale: _rationale, ...rest } = f;
+  const { rationale: _rationale, subject: _subject, ...rest } = f;
   return rest;
+}
+
+export type PublicFlagRef = Omit<FlagRef, 'subject'>;
+
+/** De-identified flag identity. The raw key contains the subject, so the public key is a hash. */
+export function publicFlag(f: FlagRef): PublicFlagRef {
+  const { subject: _subject, ...rest } = f;
+  return { ...rest, key: sha256(f.key).slice(0, 24) };
+}
+
+export type PublicAgreement = Omit<FlagAgreement, 'subject'>;
+
+export function publicAgreement(f: FlagAgreement): PublicAgreement {
+  const { subject: _subject, ...rest } = f;
+  return { ...rest, key: sha256(f.key).slice(0, 24) };
 }
 
 export interface FlagRef {
