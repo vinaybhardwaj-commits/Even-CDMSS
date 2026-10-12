@@ -747,6 +747,10 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "unregistered"
   },
   {
+    "id": "opd-lab-write-guard",
+    "plane": "unregistered"
+  },
+  {
     "id": "opd-longitudinal",
     "plane": "advisory"
   },
@@ -3979,6 +3983,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "lab-v2",
+    "to": "opd-lab-write-guard",
+    "kind": "value"
+  },
+  {
+    "from": "lab-v2",
     "to": "opd-note-audit",
     "kind": "value"
   },
@@ -4639,6 +4648,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "opd-audit-store",
+    "to": "opd-lab-write-guard",
+    "kind": "value"
+  },
+  {
+    "from": "opd-audit-store",
     "to": "opd-longitudinal",
     "kind": "value"
   },
@@ -4734,6 +4748,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "opd-gov-signal-store",
+    "to": "opd-lab-write-guard",
+    "kind": "value"
+  },
+  {
+    "from": "opd-gov-signal-store",
     "to": "triage",
     "kind": "value"
   },
@@ -4776,6 +4795,11 @@ export const MAP_EDGES: MapEdge[] = [
     "from": "opd-longitudinal",
     "to": "opd-ingest-core",
     "kind": "type"
+  },
+  {
+    "from": "opd-longitudinal",
+    "to": "opd-lab-write-guard",
+    "kind": "value"
   },
   {
     "from": "opd-longitudinal",
@@ -4975,6 +4999,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "opd-triage-store",
     "to": "opd-gov-signal-store",
+    "kind": "value"
+  },
+  {
+    "from": "opd-triage-store",
+    "to": "opd-lab-write-guard",
     "kind": "value"
   },
   {

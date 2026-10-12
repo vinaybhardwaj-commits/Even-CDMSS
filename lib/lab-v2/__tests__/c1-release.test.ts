@@ -997,14 +997,14 @@ test('§17.7 decision 88: the overlap is keyed to the staged books and filtered 
 
 test('§17.7: the 0002 migration is applied by the same route, and is checksum-stable', async () => {
   const files = migrationFiles();
-  assert.deepEqual(files.map((f) => f.name), ['0001_platform.sql', '0002_releases.sql']);
+  assert.deepEqual(files.map((f) => f.name), ['0001_platform.sql', '0002_releases.sql', '0003_paired_audit.sql']);
   const db = await embedded();
   const first = await applyMigrations(db, files);
-  assert.deepEqual(first.applied, ['0001_platform.sql', '0002_releases.sql']);
+  assert.deepEqual(first.applied, ['0001_platform.sql', '0002_releases.sql', '0003_paired_audit.sql']);
   // Idempotent: the route may be opened twice.
   const second = await applyMigrations(db, files);
   assert.deepEqual(second.applied, []);
-  assert.deepEqual(second.skipped, ['0001_platform.sql', '0002_releases.sql']);
+  assert.deepEqual(second.skipped, ['0001_platform.sql', '0002_releases.sql', '0003_paired_audit.sql']);
   // ⚠️ An EDITED file that was already applied is an error, never a silent re-apply.
   await assert.rejects(
     () => applyMigrations(db, [{ ...files[1], sql: `${files[1].sql}\n-- edited`, checksum: 'different' }]),

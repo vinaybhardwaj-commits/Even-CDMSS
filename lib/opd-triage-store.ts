@@ -9,6 +9,7 @@
  */
 
 import { randomUUID } from 'crypto';
+import { assertOpdProductionWrite } from './opd-lab-write-guard';
 import { sql } from './db';
 import { validateDecision, NONCLINICAL_VALIDITY, QUEUE_DISPOSITIONS, type DecisionInput, type NormalizedDecision, type QueueDisposition, type TriageDecisionRow } from './opd-triage-core';
 import { mintOrUpdateSignal, withdrawSignal, type StoredSignal } from './opd-gov-signal-store';
@@ -157,6 +158,7 @@ export async function insertDecision(input: DecisionInput): Promise<{
   id: string; decision: NormalizedDecision;
   signal?: { reference: string; signal_id: string; status: string } | null; signal_error?: string;
 }> {
+  assertOpdProductionWrite('opd_audit_triage.insertDecision');
   const v = validateDecision(input);
   if (!v.ok) throw new Error(v.error);
   const d = v.value;
@@ -242,6 +244,7 @@ export async function insertQueueDisposition(input: QueueDispositionInput): Prom
   id: string;
   decision: QueueDispositionDecision;
 }> {
+  assertOpdProductionWrite('opd_audit_triage.insertQueueDisposition');
   const doctor_uid = (input.doctor_uid || '').trim().slice(0, 64);
   if (!doctor_uid) throw new Error('doctor_uid required');
   const signal_type = (input.signal_type || '').trim().slice(0, 80);

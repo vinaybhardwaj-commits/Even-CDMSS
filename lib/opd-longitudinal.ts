@@ -11,6 +11,7 @@
 // Dark unless OPD_LONGITUDINAL_ENABLED=1 (the store hook) — replay drives it explicitly regardless.
 
 import { sql } from './db';
+import { assertOpdProductionWrite } from './opd-lab-write-guard';
 import { individualUidForPresc, getMemberSnapshotAsOf } from './member-state/member-state';
 import { presentMemberState } from './member-state/present-core';
 import { loadActiveSuppressions } from './audit-suppression-store';
@@ -103,6 +104,7 @@ export async function runLongitudinalAudit(input: LongitudinalNoteInput, opts: {
 /** Persist ONLY the additive `longitudinal` column for one note (own DB). Keyed by (uid, engine_version)
  *  so it targets the exact base row the audit was written to; base columns are never touched. */
 export async function persistLongitudinal(uid: string, engineVersion: string, block: LongitudinalBlock): Promise<'updated' | 'skipped'> {
+  assertOpdProductionWrite('opd_note_audits.persistLongitudinal');
   if (!uid) return 'skipped';
   const rows = (await sql(
     `UPDATE opd_note_audits SET longitudinal = $3::jsonb WHERE uid = $1 AND engine_version = $2 RETURNING id`,
@@ -116,6 +118,8 @@ export async function persistLongitudinal(uid: string, engineVersion: string, bl
  * can never affect the base row or the persist path. Dark unless OPD_LONGITUDINAL_ENABLED=1.
  */
 export async function runLongitudinalPass(audit: OpdNoteAudit): Promise<void> {
+  // Before the try: the fail-open catch below must not swallow a lab-mode refusal.
+  assertOpdProductionWrite('opd_note_audits.runLongitudinalPass');
   if (process.env.OPD_LONGITUDINAL_ENABLED !== '1') return;
   const input = audit.longitudinalInput;
   if (!input || !input.uid) return;
@@ -130,6 +134,7 @@ export async function runLongitudinalPass(audit: OpdNoteAudit): Promise<void> {
 /** Replay entry (admin/cron): recompute + store the longitudinal block for ONE already-audited note, from
  *  its rebuilt input. Explicit (flag-independent). Starts its own trace so the judged pass is observable. */
 export async function replayLongitudinal(input: LongitudinalNoteInput): Promise<{ uid: string; status: 'updated' | 'skipped'; excluded_reason: LongitudinalExcludedReason; findings: number }> {
+  assertOpdProductionWrite('opd_note_audits.replayLongitudinal');
   const traceId = await startTrace('opd_longitudinal_replay', { uid: input.uid, noteDate: input.noteDate }).catch(() => undefined);
   const block = await runLongitudinalAudit(input, { traceId });
   const status = await persistLongitudinal(input.uid, input.engineVersion, block);

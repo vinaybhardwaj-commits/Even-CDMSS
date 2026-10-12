@@ -8,6 +8,7 @@
  */
 
 import { randomUUID } from 'crypto';
+import { assertOpdProductionWrite } from './opd-lab-write-guard';
 import { sql } from './db';
 import {
   formatAuditRef, computeSlaDueAt, mintStatus, statusAfterDoctorVerb, statusAfterAction,
@@ -145,6 +146,7 @@ async function ensureGovReady(): Promise<void> {
 }
 
 export async function mintOrUpdateSignal(input: MintInput): Promise<StoredSignal> {
+  assertOpdProductionWrite('opd_gov_signal.mintOrUpdateSignal');
   await ensureGovReady();
   const note_class = noteClassOf(input.note_class);
   const actor = input.cm_user ? `cm:${input.cm_user}` : 'cm:unknown';
@@ -207,6 +209,7 @@ export async function withdrawSignal(
   doctorUid: string, signalType: string, windowFrom: string | null, windowTo: string | null, cmUser: string | null,
   noteClass: NoteClass = 'opd',
 ): Promise<void> {
+  assertOpdProductionWrite('opd_gov_signal.withdrawSignal');
   await ensureGovReady();
   const existing = await getByKey(doctorUid, signalType, windowFrom, windowTo, noteClass);
   if (!existing || existing.status === 'closed') return;
@@ -348,6 +351,7 @@ export async function releaseDoctorResponseRequest(signal: StoredSignal, resp: N
 
 /** Record a doctor response (portal). Sets latest_response + status + an event. */
 export async function applyDoctorResponse(signal: StoredSignal, resp: NormalizedDoctorResponse): Promise<StoredSignal> {
+  assertOpdProductionWrite('opd_gov_signal.applyDoctorResponse');
   const newStatus = statusAfterDoctorVerb(resp.verb, resp.type, resp.verdict);
   const payload = {
     verb: resp.verb,
@@ -392,6 +396,7 @@ export const SIGNAL_CHANGED = 'signal_changed';
  * both pass the transition guard: the loser writes nothing and gets SIGNAL_CHANGED.
  */
 export async function applySignalAction(signal: StoredSignal, action: NormalizedSignalAction): Promise<StoredSignal> {
+  assertOpdProductionWrite('opd_gov_signal.applySignalAction');
   const newStatus = statusAfterAction(action.action);
   const payload = { action: action.action, note: action.note, actor: action.actor, gov_intervention_ref: action.gov_intervention_ref, ruled_at: new Date().toISOString() };
   const written = await run(

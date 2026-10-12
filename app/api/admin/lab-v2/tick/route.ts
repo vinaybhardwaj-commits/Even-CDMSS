@@ -29,6 +29,7 @@ import { isAdminUnlocked } from '@/lib/admin-cookie';
 import { labV2Configured, postgres } from '@/lib/lab-v2/db';
 import { liveTransport } from '@/lib/lab-v2/transport';
 import { tick } from '@/lib/lab-v2/worker';
+import { defaultPairedDeps, pairedAuditTick } from '@/lib/lab-v2/paired-audit';
 
 /** Byte-identical in shape to the IPD episode worker's guard. */
 async function authed(req: NextRequest): Promise<boolean> {
@@ -54,7 +55,16 @@ export async function GET(req: NextRequest) {
   try {
     const db = await postgres();
     const report = await tick({ db, transport: liveTransport });
-    return NextResponse.json({ ok: true, mode: auto ? 'auto' : 'manual', ...report });
+    // Paired audits share this cron. A missing 0003 migration, or any other failure here,
+    // must not turn the existing tick into a 500. The log line is a name and a path.
+    let paired: unknown = { skipped: 'not_run' };
+    try {
+      paired = await pairedAuditTick(db, defaultPairedDeps(), { maxGroups: 2, maxElapsedMs: 180_000 });
+    } catch (err) {
+      console.error('[lab-v2/tick] paired audit skipped:', (err as Error).name ?? 'Error');
+      paired = { skipped: 'paired_audit_unavailable' };
+    }
+    return NextResponse.json({ ok: true, mode: auto ? 'auto' : 'manual', ...report, paired });
   } catch (e) {
     // §13 — a dead store is a skipped tick and a log line, NEVER a 500. A cron that
     // 500s wakes people up; a cron that reports `store_unavailable` is diagnosable.
