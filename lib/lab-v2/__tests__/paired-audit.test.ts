@@ -18,12 +18,13 @@ import { opdCaseText, rowToOpdCase } from '../../opd-ingest-core';
 import { enterOpdLabWriteFence } from '../../opd-lab-write-guard';
 import {
   PAIRED_PROMPT_VERSION, applyStructuredOverride, assessOverrideText, caseTextSections, diffFlags,
+  pairedAuditConcurrency,
   flagAgreement, opdAuditPromptHash, overrideContentHash, pairedLogRecord, resolveOverride,
   sameFlagSet, signedContentHash, structureFromOverrideText, type ProjectedFinding,
 } from '../paired-audit-core';
 import {
   defaultPairedDeps, pairedAuditResults, pairedAuditResultsIdentifying, pairedAuditStatus,
-  pairedAuditTick, submitPairedAudit,
+  claimItems, pairedAuditTick, submitPairedAudit,
   type AuditOutcome, type PairedAuditDeps, type ResolveResult,
 } from '../paired-audit';
 import { isProductionReadSql, setSqlSpy, sql } from '../../db';
@@ -901,7 +902,7 @@ test('an item is not started once the deadline has passed', async () => {
       await charge();
       return { audit: auditOf([finding('Shared flag', 'shared')]), spend_microusd: 0 };
     },
-  }), { deadlineAt: 1_000, now: () => clock, maxGroups: 2 });
+  }), { deadlineAt: 1_000, now: () => clock, maxGroups: 2, concurrency: 1 });
   assert.equal(audits, 1);
   const rows = await db.query<{ arm: string; status: string }>(
     `SELECT arm, status FROM lab_v2.paired_audit_items ORDER BY arm`,
@@ -940,6 +941,85 @@ test('auditPairedArm halts when the engine calls saveOpdAudit, and production sq
     setSqlSpy(null);
     await db.close();
   }
+});
+
+test('pairedAuditConcurrency clamps the env knob', () => {
+  assert.equal(pairedAuditConcurrency(undefined), 4);
+  assert.equal(pairedAuditConcurrency(''), 4);
+  assert.equal(pairedAuditConcurrency('nope'), 4);
+  assert.equal(pairedAuditConcurrency('1'), 1);
+  assert.equal(pairedAuditConcurrency('6'), 6);
+  assert.equal(pairedAuditConcurrency('9'), 6);
+});
+
+test('two concurrent claims take different rows and a full cap takes none', async () => {
+  const db = await pairedDb();
+  const submitted = await submitPairedAudit(db, 'operator', { ...SUBMIT, idempotency_key: 'claim-race' });
+  const [first, second] = await Promise.all([
+    claimItems(db, submitted.run_id, 1, 2),
+    claimItems(db, submitted.run_id, 1, 2),
+  ]);
+  const ids = [...first, ...second].map((row) => row.id);
+  assert.equal(ids.length, 2);
+  assert.equal(new Set(ids).size, 2);
+  const held = await db.query<{ status: string; attempts: number }>(
+    `SELECT status, attempts FROM lab_v2.paired_audit_items`,
+  );
+  assert.ok(held.every((row) => row.status === 'running' && Number(row.attempts) === 1));
+  await db.query(
+    `UPDATE lab_v2.paired_audit_items SET status = 'queued', claimed_at = NULL, attempts = 0 WHERE run_id = $1`,
+    [submitted.run_id],
+  );
+  const [left, right] = await Promise.all([
+    claimItems(db, submitted.run_id, 1, 1),
+    claimItems(db, submitted.run_id, 1, 1),
+  ]);
+  assert.equal(left.length + right.length, 1);
+  const running = await db.query<{ n: string }>(
+    `SELECT count(*)::text AS n FROM lab_v2.paired_audit_items WHERE status = 'running'`,
+  );
+  assert.equal(running[0].n, '1');
+  await db.close();
+});
+
+test('concurrent claims stay inside the call cap and do not double-claim', async () => {
+  const db = await pairedDb();
+  const uids = ['noteuid21', 'noteuid22', 'noteuid23'];
+  await submitPairedAudit(db, 'operator', {
+    ...SUBMIT,
+    idempotency_key: 'concurrent-cap',
+    max_llm_calls: 3,
+    pairs: uids.map((uid) => ({ uid, override: PARACETAMOL, external_ref: 'eta-enc-1' })),
+  });
+  let active = 0;
+  let peak = 0;
+  const audit: PairedAuditDeps['audit'] = async (_row, _lab, charge) => {
+    active += 1;
+    peak = Math.max(peak, active);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    active -= 1;
+    await charge();
+    return { audit: auditOf([finding('Shared flag', 'shared')]), spend_microusd: 0 };
+  };
+  await Promise.all([
+    pairedAuditTick(db, deps({ audit }), { concurrency: 4, maxGroups: 8 }),
+    pairedAuditTick(db, deps({ audit }), { concurrency: 4, maxGroups: 8 }),
+  ]);
+  assert.ok(peak <= 4);
+  assert.ok(peak >= 2);
+  const rows = await db.query<{ attempts: number; status: string }>(
+    `SELECT attempts, status FROM lab_v2.paired_audit_items`,
+  );
+  assert.equal(rows.length, 6);
+  assert.ok(rows.every((row) => row.attempts <= 1));
+  const calls = await db.query<{ calls_used: number }>(`SELECT calls_used FROM lab_v2.paired_audit_runs`);
+  assert.equal(Number(calls[0].calls_used), 3);
+  const stored = await db.query<{ n: string }>(`SELECT count(*)::text AS n FROM lab_v2.paired_audit_results`);
+  assert.equal(stored[0].n, '3');
+  const succeeded = rows.filter((row) => row.status === 'succeeded');
+  assert.equal(succeeded.length, 3);
+  assert.ok(rows.filter((row) => row.status !== 'succeeded').every((row) => row.status === 'stopped'));
+  await db.close();
 });
 
 test('lab v2 refuses a url that names the same host and database as production', () => {
