@@ -5,6 +5,8 @@ export const runtime = 'nodejs';
  * elapsed (§5.3.6), so the box is comfortably larger than the work it authorises — the
  * reserve absorbs one long final item rather than being consumed by routine load.
  */
+/** Kept in step with maxDuration. The paired slice is whatever this budget has left. */
+const ROUTE_BUDGET_MS = 800_000;
 export const maxDuration = 800;
 
 /**
@@ -29,6 +31,7 @@ import { isAdminUnlocked } from '@/lib/admin-cookie';
 import { labV2Configured, postgres } from '@/lib/lab-v2/db';
 import { liveTransport } from '@/lib/lab-v2/transport';
 import { tick } from '@/lib/lab-v2/worker';
+import { defaultPairedDeps, pairedAuditTick } from '@/lib/lab-v2/paired-audit';
 
 /** Byte-identical in shape to the IPD episode worker's guard. */
 async function authed(req: NextRequest): Promise<boolean> {
@@ -52,9 +55,29 @@ export async function GET(req: NextRequest) {
   if (!labV2Configured()) return NextResponse.json({ ok: true, skipped: 'unconfigured' });
 
   try {
+    const routeStarted = Date.now();
     const db = await postgres();
     const report = await tick({ db, transport: liveTransport });
-    return NextResponse.json({ ok: true, mode: auto ? 'auto' : 'manual', ...report });
+    // Paired audits share this cron. A missing 0003 migration, or any other failure here,
+    // must not turn the existing tick into a 500. The log line is a name and a path.
+    // The deadline is the route's remaining time, not a clock that starts when this
+    // slice starts. 20s stays in reserve so the response can still be written.
+    let paired: unknown = { skipped: 'not_run' };
+    try {
+      const remaining = ROUTE_BUDGET_MS - (Date.now() - routeStarted) - 20_000;
+      if (remaining < 5_000) {
+        paired = { skipped: 'no_time' };
+      } else {
+        paired = await pairedAuditTick(db, defaultPairedDeps(), {
+          maxGroups: 2,
+          deadlineAt: Date.now() + Math.min(180_000, remaining),
+        });
+      }
+    } catch (err) {
+      console.error('[lab-v2/tick] paired audit skipped:', (err as Error).name ?? 'Error');
+      paired = { skipped: 'paired_audit_unavailable' };
+    }
+    return NextResponse.json({ ok: true, mode: auto ? 'auto' : 'manual', ...report, paired });
   } catch (e) {
     // §13 — a dead store is a skipped tick and a log line, NEVER a 500. A cron that
     // 500s wakes people up; a cron that reports `store_unavailable` is diagnosable.
