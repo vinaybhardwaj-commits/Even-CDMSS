@@ -21,7 +21,7 @@ export const maxDuration = 800;
  *     A cron firing into a disabled engine must be free, must not look like a failure in
  *     the log, and must not block a manual run.
  *
- * The auth guard is likewise inherited: Vercel Cron header, Bearer/query CRON_SECRET, or
+ * The auth guard is likewise inherited: Authorization Bearer CRON_SECRET, or
  * a logged-in admin session. What is NOT inherited is the lock: the IPD worker holds a
  * single TTL lock in app_settings, while v2 uses per-item row leases (§5.3), so two ticks
  * overlapping is normal and safe rather than something to serialise.
@@ -32,15 +32,11 @@ import { labV2Configured, postgres } from '@/lib/lab-v2/db';
 import { liveTransport } from '@/lib/lab-v2/transport';
 import { tick } from '@/lib/lab-v2/worker';
 import { defaultPairedDeps, pairedAuditTick } from '@/lib/lab-v2/paired-audit';
+import { cronAuthorized } from '@/lib/cron-auth';
 
 /** Byte-identical in shape to the IPD episode worker's guard. */
 async function authed(req: NextRequest): Promise<boolean> {
-  const isCron = req.headers.get('x-vercel-cron') !== null;
-  const auth = req.headers.get('authorization') || '';
-  const bearerOk = !!process.env.CRON_SECRET && auth === `Bearer ${process.env.CRON_SECRET}`;
-  const secret = req.nextUrl.searchParams.get('secret');
-  const secretOk = !!process.env.CRON_SECRET && !!secret && secret === process.env.CRON_SECRET;
-  if (isCron || bearerOk || secretOk) return true;
+  if (cronAuthorized(req)) return true;
   try { return await isAdminUnlocked(); } catch { return false; }
 }
 
