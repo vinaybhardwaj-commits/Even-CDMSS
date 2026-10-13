@@ -132,6 +132,10 @@ export const BEDROCK_LIVE_ERROR_MAX = 200;
 
 export interface BedrockLiveResult { ok: boolean; checkedAt: string; error: string | null }
 
+/** Longest a liveness attempt may take before it counts as a failure. */
+export const BEDROCK_LIVE_TIMEOUT_MS = 8000;
+
+let inflightLive: Promise<BedrockLiveResult> | null = null;
 let cachedLiveFailure: { at: number; result: BedrockLiveResult } | null = null;
 
 /** Message only (never the error object), secret-shaped runs masked, cut to 200 chars. */
@@ -153,22 +157,38 @@ function liveErrorText(e: unknown): string {
 export async function bedrockLive(
   probe: () => Promise<unknown> = bedrockCredentials,
   now: () => number = Date.now,
+  timeoutMs: number = BEDROCK_LIVE_TIMEOUT_MS,
 ): Promise<BedrockLiveResult> {
   const t = now();
   if (cachedLiveFailure && t - cachedLiveFailure.at < BEDROCK_LIVE_FAILURE_TTL_MS) return cachedLiveFailure.result;
-  try {
-    await probe();
-    cachedLiveFailure = null;
-    return { ok: true, checkedAt: new Date(t).toISOString(), error: null };
-  } catch (e) {
-    const result: BedrockLiveResult = { ok: false, checkedAt: new Date(t).toISOString(), error: liveErrorText(e) };
-    cachedLiveFailure = { at: t, result };
-    return result;
-  }
+  // Concurrent callers share ONE attempt.
+  if (inflightLive) return inflightLive;
+  const attempt = (async (): Promise<BedrockLiveResult> => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        probe(),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error(`timeout after ${timeoutMs} ms`)), timeoutMs);
+        }),
+      ]);
+      cachedLiveFailure = null;
+      return { ok: true, checkedAt: new Date(t).toISOString(), error: null };
+    } catch (e) {
+      const result: BedrockLiveResult = { ok: false, checkedAt: new Date(t).toISOString(), error: liveErrorText(e) };
+      cachedLiveFailure = { at: t, result };
+      return result;
+    } finally {
+      if (timer) clearTimeout(timer);
+      inflightLive = null;
+    }
+  })();
+  inflightLive = attempt;
+  return attempt;
 }
 
 /** TEST SEAM — drop the cached liveness failure. Not used in production code. */
-export function __resetBedrockLiveCache(): void { cachedLiveFailure = null; }
+export function __resetBedrockLiveCache(): void { cachedLiveFailure = null; inflightLive = null; }
 
 /** TEST SEAM — drop the cached credentials. Not used in production code. */
 export function __resetBedrockCredentialCache(): void { cachedCreds = null; }

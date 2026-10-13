@@ -15,8 +15,6 @@ import type { ReadmissionHealthCounts } from './store';
 
 /** Work older than this is stuck. */
 export const HEALTH_STALE_MS = 24 * 60 * 60 * 1000;
-/** A failed Bedrock liveness is reused for this long (mirrors BEDROCK_LIVE_FAILURE_TTL_MS in lib/bedrock.ts). */
-export const HEALTH_LIVE_CACHE_MS = 5 * 60 * 1000;
 
 export interface BedrockLiveLike { ok: boolean; checkedAt: string; error: string | null }
 

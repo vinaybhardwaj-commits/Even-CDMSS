@@ -28,10 +28,7 @@ export async function GET(req: NextRequest) {
       { status: h.status, reasons: h.reasons, ages: h.ages, counts: h.counts, bedrock: h.bedrock },
       { status: h.status === 'green' ? 200 : 503 },
     );
-  } catch (e) {
-    return NextResponse.json(
-      { status: 'red', reasons: ['health check threw'], error: String((e as Error).message).slice(0, 200) },
-      { status: 503 },
-    );
+  } catch {
+    return NextResponse.json({ status: 'red', reasons: ['health route error'] }, { status: 503 });
   }
 }

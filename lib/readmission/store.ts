@@ -315,13 +315,13 @@ const HEALTH_NULL: ReadmissionHealthCounts = {
 /** The ONE health read. Timestamps and counts only. Fail-safe: all-null with readOk:false. */
 export const READMISSION_HEALTH_SQL = `SELECT
        to_char(MAX(audited_at) FILTER (WHERE audit_status = 'audited') AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS last_audit_at,
-       to_char(MAX((finding->'caseNarrative'->>'generatedAt')::timestamptz) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS last_narrative_at,
+       to_char(MAX(CASE WHEN finding->'caseNarrative'->>'generatedAt' ~ '^\\d{4}-\\d{2}-\\d{2}T' THEN (finding->'caseNarrative'->>'generatedAt')::timestamptz END) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS last_narrative_at,
        count(*) FILTER (WHERE audit_status = 'audited' AND (finding IS NULL OR finding->'caseNarrative' IS NULL))::int AS narrative_pending,
        to_char(MIN(audited_at) FILTER (WHERE audit_status = 'audited' AND (finding IS NULL OR finding->'caseNarrative' IS NULL)) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS oldest_narrative_pending_at,
        count(*) FILTER (WHERE audit_status = 'detected')::int AS detected_pending,
        to_char(MIN(created_at) FILTER (WHERE audit_status = 'detected') AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS oldest_detected_at,
        count(*) FILTER (WHERE finding ? 'narrativeError')::int AS narrative_errors,
-       to_char(MAX((finding->'narrativeError'->>'at')::timestamptz) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS last_narrative_error_at,
+       to_char(MAX(CASE WHEN finding->'narrativeError'->>'at' ~ '^\\d{4}-\\d{2}-\\d{2}T' THEN (finding->'narrativeError'->>'at')::timestamptz END) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS last_narrative_error_at,
        count(*) FILTER (WHERE last_error IS NOT NULL)::int AS audit_errors
   FROM readmission_findings
  WHERE engine_version = $1`;

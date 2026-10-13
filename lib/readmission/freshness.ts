@@ -32,6 +32,22 @@ export const FINDINGS_FRESHNESS_SQL = `SELECT to_char(MAX(readmit_admit_at) AT T
   FROM readmission_findings
  WHERE engine_version = $1 AND finding_class = 'even_even'`;
 
+/** Longest the board waits for the health read before leaving `health` absent. */
+export const FRESHNESS_HEALTH_TIMEOUT_MS = 4000;
+
+/** Resolves to the value, or null on fault or timeout. Clears its timer. */
+export async function withTimeout<T>(p: Promise<T>, ms: number): Promise<T | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      p.catch(() => null),
+      new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), ms); }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 const s = (v: unknown): string | null => (v == null || v === '' ? null : String(v));
 
 async function readFeedCurrentTo(): Promise<string | null> {
@@ -55,7 +71,7 @@ async function readFindingsFreshness(engineVersion: string): Promise<{ newestRet
 export async function readFreshness(engineVersion: string = READMIT_ENGINE_VERSION): Promise<FreshnessInfo> {
   const [feedCurrentTo, findings, health] = await Promise.all([
     readFeedCurrentTo(), readFindingsFreshness(engineVersion),
-    readReadmissionHealth(engineVersion).catch(() => null),
+    withTimeout(readReadmissionHealth(engineVersion), FRESHNESS_HEALTH_TIMEOUT_MS),
   ]);
   const info: FreshnessInfo = { feedCurrentTo, newestReturnAt: findings.newestReturnAt, lastAuditAt: findings.lastAuditAt, lastCheckAt: getLastCheckAt() };
   if (health) info.health = { status: health.status, reasons: health.reasons, lastNarrativeAt: health.counts.lastNarrativeAt };

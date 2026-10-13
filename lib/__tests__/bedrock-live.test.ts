@@ -4,7 +4,7 @@
  */
 import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { bedrockLive, __resetBedrockLiveCache, __resetBedrockCredentialCache, BEDROCK_LIVE_FAILURE_TTL_MS, BEDROCK_LIVE_ERROR_MAX } from '../bedrock';
+import { bedrockLive, __resetBedrockLiveCache, __resetBedrockCredentialCache, BEDROCK_LIVE_FAILURE_TTL_MS, BEDROCK_LIVE_ERROR_MAX, BEDROCK_LIVE_TIMEOUT_MS } from '../bedrock';
 
 beforeEach(() => __resetBedrockLiveCache());
 
@@ -70,4 +70,24 @@ test('default probe with no BEDROCK_* env fails without network', async () => {
     if (saved.a) process.env.BEDROCK_ROLE_ARN = saved.a;
     if (saved.o) process.env.BEDROCK_OIDC_AUDIENCE = saved.o;
   }
+});
+
+test('timeout is a failure, cached like any failure', async () => {
+  assert.equal(BEDROCK_LIVE_TIMEOUT_MS, 8000);
+  let calls = 0;
+  const hang = () => { calls++; return new Promise<never>(() => {}); };
+  const r = await bedrockLive(hang, () => 0, 20);
+  assert.equal(r.ok, false);
+  assert.equal(r.error, 'timeout after 20 ms');
+  const again = await bedrockLive(hang, () => 1000, 20);
+  assert.equal(calls, 1);
+  assert.deepEqual(again, r);
+});
+
+test('concurrent callers share one probe', async () => {
+  let calls = 0;
+  const probe = () => { calls++; return new Promise((res) => setTimeout(res, 15)); };
+  const [a, b, c] = await Promise.all([bedrockLive(probe, () => 0), bedrockLive(probe, () => 0), bedrockLive(probe, () => 0)]);
+  assert.equal(calls, 1);
+  assert.equal(a.ok && b.ok && c.ok, true);
 });
