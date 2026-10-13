@@ -1,0 +1,75 @@
+/**
+ * lib/readmission/health.ts — is the readmission agent alive? (READMIT-OBSERVABILITY, 13 Oct 2026)
+ *
+ * The narrative leg failed silently from 17 Sep because every signal shown (worker 200, MAX(audited_at))
+ * kept looking fine. This module turns the stuck-work stamps and Bedrock liveness into one status.
+ *
+ * PURE rule, no I/O: `readmissionHealthStatus`. RED when work has waited more than 24 h (oldest narrative
+ * pending, oldest detected), when Bedrock is not live, or when the health read itself failed. It is
+ * NEVER red merely because the last audit or last narrative is old: audits are sparse (zero on some
+ * days) and that would false-alarm.
+ *
+ * PHI: counts and timestamps only.
+ */
+import type { ReadmissionHealthCounts } from './store';
+
+/** Work older than this is stuck. */
+export const HEALTH_STALE_MS = 24 * 60 * 60 * 1000;
+/** A failed Bedrock liveness is reused for this long (mirrors BEDROCK_LIVE_FAILURE_TTL_MS in lib/bedrock.ts). */
+export const HEALTH_LIVE_CACHE_MS = 5 * 60 * 1000;
+
+export interface BedrockLiveLike { ok: boolean; checkedAt: string; error: string | null }
+
+export interface HealthAges {
+  lastAuditHours: number | null;
+  lastNarrativeHours: number | null;
+  oldestNarrativePendingHours: number | null;
+  oldestDetectedHours: number | null;
+}
+
+export interface ReadmissionHealthStatus {
+  status: 'green' | 'red';
+  reasons: string[];
+  ages: HealthAges;
+}
+
+function ageHours(iso: string | null, nowMs: number): number | null {
+  if (!iso) return null;
+  const t = Date.parse(iso);
+  if (!Number.isFinite(t)) return null;
+  return Math.round(((nowMs - t) / 3_600_000) * 10) / 10;
+}
+
+export function readmissionHealthStatus(
+  counts: ReadmissionHealthCounts, live: BedrockLiveLike, nowMs: number,
+): ReadmissionHealthStatus {
+  const ages: HealthAges = {
+    lastAuditHours: ageHours(counts.lastAuditAt, nowMs),
+    lastNarrativeHours: ageHours(counts.lastNarrativeAt, nowMs),
+    oldestNarrativePendingHours: ageHours(counts.oldestNarrativePendingAt, nowMs),
+    oldestDetectedHours: ageHours(counts.oldestDetectedAt, nowMs),
+  };
+  const limitH = HEALTH_STALE_MS / 3_600_000;
+  const reasons: string[] = [];
+  if (counts.readOk === false) reasons.push('health read failed');
+  if (live.ok === false) reasons.push('Bedrock auth chain is not live');
+  if (ages.oldestNarrativePendingHours !== null && ages.oldestNarrativePendingHours > limitH) {
+    reasons.push(`narrative pending for ${ages.oldestNarrativePendingHours} h`);
+  }
+  if (ages.oldestDetectedHours !== null && ages.oldestDetectedHours > limitH) {
+    reasons.push(`detected case unaudited for ${ages.oldestDetectedHours} h`);
+  }
+  return { status: reasons.length ? 'red' : 'green', reasons, ages };
+}
+
+export interface ReadmissionHealth extends ReadmissionHealthStatus {
+  counts: ReadmissionHealthCounts;
+  bedrock: BedrockLiveLike;
+}
+
+/** Server: the store read plus Bedrock liveness, through the pure rule. */
+export async function readReadmissionHealth(engineVersion?: string): Promise<ReadmissionHealth> {
+  const [{ readmissionHealthCounts }, { bedrockLive }] = await Promise.all([import('./store'), import('../bedrock')]);
+  const [counts, bedrock] = await Promise.all([readmissionHealthCounts(engineVersion), bedrockLive()]);
+  return { ...readmissionHealthStatus(counts, bedrock, Date.now()), counts, bedrock };
+}

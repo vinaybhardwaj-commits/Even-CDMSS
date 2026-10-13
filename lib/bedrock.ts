@@ -125,6 +125,51 @@ export async function bedrockCredentials(): Promise<BedrockCredentials> {
   return cachedCreds;
 }
 
+/** How long a FAILED liveness result is reused, so a broken role is not hammered. */
+export const BEDROCK_LIVE_FAILURE_TTL_MS = 5 * 60 * 1000;
+/** Longest error text bedrockLive returns. */
+export const BEDROCK_LIVE_ERROR_MAX = 200;
+
+export interface BedrockLiveResult { ok: boolean; checkedAt: string; error: string | null }
+
+let cachedLiveFailure: { at: number; result: BedrockLiveResult } | null = null;
+
+/** Message only (never the error object), secret-shaped runs masked, cut to 200 chars. */
+function liveErrorText(e: unknown): string {
+  const raw = e instanceof Error ? e.message : String(e);
+  return raw
+    .replace(/eyJ[A-Za-z0-9_-]{10,}(\.[A-Za-z0-9_-]+){0,2}/g, '[token]')
+    .replace(/\b(AKIA|ASIA)[A-Z0-9]{12,}\b/g, '[key]')
+    .replace(/[A-Za-z0-9+/=_-]{40,}/g, '[redacted]')
+    .slice(0, BEDROCK_LIVE_ERROR_MAX);
+}
+
+/**
+ * Liveness of the Bedrock auth chain: can we get credentials right now? It reuses
+ * `bedrockCredentials()` (60-min cache, so a healthy call is cheap) and caches a FAILURE for
+ * 5 minutes at module scope. Never throws. `error` is a truncated message, never a credential.
+ * `probe` and `now` are test seams; production callers pass nothing.
+ */
+export async function bedrockLive(
+  probe: () => Promise<unknown> = bedrockCredentials,
+  now: () => number = Date.now,
+): Promise<BedrockLiveResult> {
+  const t = now();
+  if (cachedLiveFailure && t - cachedLiveFailure.at < BEDROCK_LIVE_FAILURE_TTL_MS) return cachedLiveFailure.result;
+  try {
+    await probe();
+    cachedLiveFailure = null;
+    return { ok: true, checkedAt: new Date(t).toISOString(), error: null };
+  } catch (e) {
+    const result: BedrockLiveResult = { ok: false, checkedAt: new Date(t).toISOString(), error: liveErrorText(e) };
+    cachedLiveFailure = { at: t, result };
+    return result;
+  }
+}
+
+/** TEST SEAM — drop the cached liveness failure. Not used in production code. */
+export function __resetBedrockLiveCache(): void { cachedLiveFailure = null; }
+
 /** TEST SEAM — drop the cached credentials. Not used in production code. */
 export function __resetBedrockCredentialCache(): void { cachedCreds = null; }
 

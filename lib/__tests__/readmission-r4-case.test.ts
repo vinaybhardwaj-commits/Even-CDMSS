@@ -299,7 +299,8 @@ test('PHI source-read: the R4 sections name no patient_name / patient_mobile / t
 
 test('run.ts: the inline leg is on by default (measured fit, R4-11), opt-out READMIT_NARRATIVE_INLINE=0, guarded by Bedrock reachability, and runs AFTER the audit row is stored; recon legs untouched in shape', () => {
   const run = code('lib/readmission/run.ts');
-  assert.match(run, /process\.env\.READMIT_NARRATIVE_INLINE === '0'\) return false;\s*\n\s*return probeReachable\('bedrock'\);/);
+  // READMIT-OBSERVABILITY (13 Oct 2026): the guard is now async and also requires bedrockLive().ok.
+  assert.match(run, /process\.env\.READMIT_NARRATIVE_INLINE === '0'\) return false;\s*\n\s*if \(!probeReachable\('bedrock'\)\) return false;\s*\n\s*return \(await bedrockLive\(\)\)\.ok;/);
   const idxSave = run.indexOf("status: 'audited', finding,");
   const idxNarr = run.indexOf('composeCaseArtefacts({');
   assert.ok(idxSave > 0 && idxNarr > idxSave, 'the narrative leg follows saveAuditResult');

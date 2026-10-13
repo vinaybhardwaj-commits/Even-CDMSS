@@ -17,6 +17,7 @@ import { sql } from '../db';
 import { metabaseQuery } from '../metabase';
 import { READMIT_ENGINE_VERSION } from './store';
 import { getLastCheckAt } from './check-state';
+import { readReadmissionHealth } from './health';
 import type { FreshnessInfo } from '../readmission-rates-core';
 
 /** db13 — VERBATIM (no bind params; both facility aliases pass through because nothing filters on
@@ -52,6 +53,11 @@ async function readFindingsFreshness(engineVersion: string): Promise<{ newestRet
 }
 
 export async function readFreshness(engineVersion: string = READMIT_ENGINE_VERSION): Promise<FreshnessInfo> {
-  const [feedCurrentTo, findings] = await Promise.all([readFeedCurrentTo(), readFindingsFreshness(engineVersion)]);
-  return { feedCurrentTo, newestReturnAt: findings.newestReturnAt, lastAuditAt: findings.lastAuditAt, lastCheckAt: getLastCheckAt() };
+  const [feedCurrentTo, findings, health] = await Promise.all([
+    readFeedCurrentTo(), readFindingsFreshness(engineVersion),
+    readReadmissionHealth(engineVersion).catch(() => null),
+  ]);
+  const info: FreshnessInfo = { feedCurrentTo, newestReturnAt: findings.newestReturnAt, lastAuditAt: findings.lastAuditAt, lastCheckAt: getLastCheckAt() };
+  if (health) info.health = { status: health.status, reasons: health.reasons, lastNarrativeAt: health.counts.lastNarrativeAt };
+  return info;
 }
