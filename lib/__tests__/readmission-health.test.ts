@@ -4,7 +4,11 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readmissionHealthStatus, HEALTH_STALE_MS, classifyBedrockError, publicBedrock } from '../readmission/health';
+import { readFileSync } from 'node:fs';
+import {
+  readmissionHealthStatus, HEALTH_STALE_MS, classifyBedrockError, publicBedrock,
+  NARRATIVE_ERROR_CODES, normaliseNarrativeCode, classifyNarrativeFailure,
+} from '../readmission/health';
 import type { ReadmissionHealthCounts } from '../readmission/store';
 
 const NOW = Date.parse('2026-10-13T12:00:00Z');
@@ -39,6 +43,31 @@ test('public payload: no error key; reasons match the allowlist even with hostil
   assert.equal(r.reasons.length, 4);
   for (const x of r.reasons) assert.match(x, REASON_OK);
   assert.ok(!JSON.stringify(r).includes('arn:'));
+});
+
+test('classifier order: id-token failure beats sts; incomplete credential set is error', () => {
+  assert.equal(cls('IAM Credentials generateIdToken failed before AssumeRoleWithWebIdentity'), 'id_token_failed');
+  assert.equal(cls('bedrock: STS AssumeRoleWithWebIdentity returned an incomplete credential set'), 'error');
+});
+
+test('narrative stamp: closed code set, hostile input normalised, SQL writes exactly {at, code}', () => {
+  for (const c of NARRATIVE_ERROR_CODES) assert.equal(normaliseNarrativeCode(c), c);
+  for (const bad of ['arn:aws:iam::1:role/x: boom', '', null, undefined, 42, 'STS_DENIED']) {
+    assert.equal(normaliseNarrativeCode(bad), 'error');
+  }
+  assert.equal(classifyNarrativeFailure('narrative reply unparseable — nothing stored'), 'narrative_failed');
+  assert.equal(classifyNarrativeFailure('narrative leg failed: timeout after 8000 ms'), 'narrative_failed');
+  assert.equal(classifyNarrativeFailure('timeout after 8000 ms'), 'timeout');
+  assert.equal(classifyNarrativeFailure('AccessDenied sts:AssumeRoleWithWebIdentity arn:aws:iam::1:role/x'), 'sts_denied');
+  assert.ok((NARRATIVE_ERROR_CODES as readonly string[]).includes(classifyNarrativeFailure('anything arn:aws:iam::1:role/x')));
+  const store = readFileSync('lib/readmission/store.ts', 'utf8');
+  const sqlText = store.slice(store.indexOf('export async function recordNarrativeError'), store.indexOf('export async function clearNarrativeError'));
+  assert.ok(sqlText.includes(`jsonb_build_object('at', to_char(now() AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS"Z"'), 'code', $2::text)`));
+  assert.ok(!/message/.test(sqlText.replace(/\/\*[\s\S]*?\*\//g, '')), 'the stamp has no message field');
+  assert.match(sqlText, /normaliseNarrativeCode\(code\)/);
+  const health = readFileSync('lib/readmission/store.ts', 'utf8');
+  assert.match(health, /last_narrative_error_at/); // the health read uses 'at' only
+  assert.ok(!/narrativeError'->>'(message|code)'/.test(health));
 });
 
 test('threshold is 24 h', () => assert.equal(HEALTH_STALE_MS, 24 * H));

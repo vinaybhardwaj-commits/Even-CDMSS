@@ -21,6 +21,7 @@
  */
 
 import { sql } from '../db';
+import { normaliseNarrativeCode } from './health';
 import type { ReadmitPair, OonDetection } from '../readmission-detect-core';
 import { pairDedupKey, oonDedupKey } from '../readmission-detect-core';
 import type { ReadmissionFinding, LabTier } from '../readmission-reconcile-core';
@@ -275,11 +276,11 @@ export async function recordAuditError(dedupKey: string, error: string, engineVe
 
 /** Best-effort: stamp the last narrative-leg failure on the finding blob. Additive key, no
  *  version snapshot (same rule as caseNarrative). Never throws. */
-export async function recordNarrativeError(dedupKey: string, message: string, engineVersion: string = READMIT_ENGINE_VERSION): Promise<void> {
+export async function recordNarrativeError(dedupKey: string, code: string, engineVersion: string = READMIT_ENGINE_VERSION): Promise<void> {
   try {
     await sql(
-      `UPDATE readmission_findings SET finding = jsonb_set(COALESCE(finding,'{}'::jsonb), '{narrativeError}', jsonb_build_object('at', to_char(now() AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS"Z"'), 'message', $2::text)) WHERE dedup_key = $1 AND engine_version = $3`,
-      [dedupKey, String(message).slice(0, 300), engineVersion],
+      `UPDATE readmission_findings SET finding = jsonb_set(COALESCE(finding,'{}'::jsonb), '{narrativeError}', jsonb_build_object('at', to_char(now() AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS"Z"'), 'code', $2::text)) WHERE dedup_key = $1 AND engine_version = $3`,
+      [dedupKey, normaliseNarrativeCode(code), engineVersion],
     );
   } catch { /* observability must never break the audit path */ }
 }

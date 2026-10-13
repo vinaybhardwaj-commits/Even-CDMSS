@@ -20,15 +20,33 @@ export interface BedrockLiveLike { ok: boolean; checkedAt: string; error: string
 
 export type BedrockCode = 'not_configured' | 'sts_denied' | 'timeout' | 'id_token_failed' | 'error';
 
-/** PURE: map bedrockLive's masked error text to ONE code. null when ok. The text itself never leaves the server. */
+/** PURE: map bedrockLive's masked error text to ONE code. null when ok. The text itself never leaves the server.
+ *  Order matters: id-token failures are tested BEFORE sts (their text can mention the STS call), and an
+ *  incomplete credential set is a plain 'error'. */
 export function classifyBedrockError(live: { ok: boolean; error: string | null }): BedrockCode | null {
   if (live.ok) return null;
   const e = live.error ?? '';
   if (/not configured/i.test(e)) return 'not_configured';
   if (/^timeout after/i.test(e)) return 'timeout';
-  if (/AccessDenied|not authorized|AssumeRoleWithWebIdentity/i.test(e)) return 'sts_denied';
   if (/generateIdToken|iamcredentials|id[ _-]?token/i.test(e)) return 'id_token_failed';
+  if (/incomplete credential set/i.test(e)) return 'error';
+  if (/AccessDenied|not authorized|AssumeRoleWithWebIdentity/i.test(e)) return 'sts_denied';
   return 'error';
+}
+
+/** The closed set of codes the narrativeError stamp may carry (the stamp reaches clients; it holds a code, never text). */
+export const NARRATIVE_ERROR_CODES = ['not_configured', 'sts_denied', 'timeout', 'id_token_failed', 'error', 'narrative_failed'] as const;
+export type NarrativeErrorCode = (typeof NARRATIVE_ERROR_CODES)[number];
+
+/** Anything outside the closed set becomes 'error'. */
+export function normaliseNarrativeCode(code: unknown): NarrativeErrorCode {
+  return (NARRATIVE_ERROR_CODES as readonly string[]).includes(code as string) ? (code as NarrativeErrorCode) : 'error';
+}
+
+/** PURE: a narrative-leg failure reason (text) to a code; non-Bedrock failures (parse, validation, store) are 'narrative_failed'. */
+export function classifyNarrativeFailure(reason: string | null | undefined): NarrativeErrorCode {
+  const c = classifyBedrockError({ ok: false, error: reason ?? '' });
+  return c === null || c === 'error' ? 'narrative_failed' : c;
 }
 
 export interface PublicBedrock { ok: boolean; checkedAt: string; code: BedrockCode | null }

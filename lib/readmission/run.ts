@@ -44,6 +44,8 @@ import type { CaseSource, ThreeSourceInputs } from './assemble';
 import { composeCaseArtefacts } from './narrative';
 import { probeReachable } from '../lab-override';
 import { bedrockLive } from '../bedrock';
+import { classifyBedrockError, classifyNarrativeFailure } from './health';
+import type { NarrativeErrorCode } from './health';
 import {
   saveDetection, saveAuditResult, recordAuditError, recordNarrativeError, clearNarrativeError, pairToDetectionRow, oonToDetectionRow,
   READMIT_ENGINE_VERSION,
@@ -550,21 +552,22 @@ export async function runReadmissionAudit(row: PendingRow): Promise<ReadmitAudit
       // the recon legs read (source 'audit').
       let narrative: 'stored' | 'invalid' | 'skipped' | 'failed' = 'skipped';
       if (await narrativeInlineEnabled()) {
-        let narrativeMsg = 'narrative leg failed';
+        let narrativeCode: NarrativeErrorCode = 'narrative_failed';
         try {
           const n = await composeCaseArtefacts({
             row, finding, catalog: inputs.catalog, identity: assembled.identity,
             ledgerSource: 'audit', narrativeSource: 'audit', traceId,
           });
           narrative = n.ok ? (n.valid ? 'stored' : 'invalid') : 'failed';
-        } catch (e) { narrative = 'failed'; narrativeMsg = String((e as Error)?.message ?? e); }
+          if (!n.ok) narrativeCode = classifyNarrativeFailure((n as { reason?: string }).reason);
+        } catch (e) { narrative = 'failed'; narrativeCode = classifyNarrativeFailure(String((e as Error)?.message ?? e)); }
         // Observability only (best-effort, never changes the audit outcome).
-        if (narrative === 'failed') await recordNarrativeError(row.dedup_key, narrativeMsg);
+        if (narrative === 'failed') await recordNarrativeError(row.dedup_key, narrativeCode);
         else await clearNarrativeError(row.dedup_key);
       } else if (process.env.READMIT_NARRATIVE_INLINE !== '0' && probeReachable('bedrock')) {
         // Skipped because bedrockLive is not ok (the kill switch and missing env are deliberate, not faults).
         const live = await bedrockLive();
-        await recordNarrativeError(row.dedup_key, `bedrock not live: ${live.error ?? 'unknown'}`);
+        await recordNarrativeError(row.dedup_key, classifyBedrockError(live) ?? 'error');
       }
       await finishTrace(traceId, 'success');
       return {
