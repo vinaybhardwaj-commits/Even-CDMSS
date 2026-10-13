@@ -18,6 +18,25 @@ export const HEALTH_STALE_MS = 24 * 60 * 60 * 1000;
 
 export interface BedrockLiveLike { ok: boolean; checkedAt: string; error: string | null }
 
+export type BedrockCode = 'not_configured' | 'sts_denied' | 'timeout' | 'id_token_failed' | 'error';
+
+/** PURE: map bedrockLive's masked error text to ONE code. null when ok. The text itself never leaves the server. */
+export function classifyBedrockError(live: { ok: boolean; error: string | null }): BedrockCode | null {
+  if (live.ok) return null;
+  const e = live.error ?? '';
+  if (/not configured/i.test(e)) return 'not_configured';
+  if (/^timeout after/i.test(e)) return 'timeout';
+  if (/AccessDenied|not authorized|AssumeRoleWithWebIdentity/i.test(e)) return 'sts_denied';
+  if (/generateIdToken|iamcredentials|id[ _-]?token/i.test(e)) return 'id_token_failed';
+  return 'error';
+}
+
+export interface PublicBedrock { ok: boolean; checkedAt: string; code: BedrockCode | null }
+
+export function publicBedrock(live: BedrockLiveLike): PublicBedrock {
+  return { ok: live.ok, checkedAt: live.checkedAt, code: classifyBedrockError(live) };
+}
+
 export interface HealthAges {
   lastAuditHours: number | null;
   lastNarrativeHours: number | null;
@@ -50,7 +69,7 @@ export function readmissionHealthStatus(
   const limitH = HEALTH_STALE_MS / 3_600_000;
   const reasons: string[] = [];
   if (counts.readOk === false) reasons.push('health read failed');
-  if (live.ok === false) reasons.push('Bedrock auth chain is not live');
+  if (live.ok === false) reasons.push(`bedrock unreachable (${classifyBedrockError(live)})`);
   if (ages.oldestNarrativePendingHours !== null && ages.oldestNarrativePendingHours > limitH) {
     reasons.push(`narrative pending for ${ages.oldestNarrativePendingHours} h`);
   }
@@ -62,12 +81,12 @@ export function readmissionHealthStatus(
 
 export interface ReadmissionHealth extends ReadmissionHealthStatus {
   counts: ReadmissionHealthCounts;
-  bedrock: BedrockLiveLike;
+  bedrock: PublicBedrock;
 }
 
 /** Server: the store read plus Bedrock liveness, through the pure rule. */
 export async function readReadmissionHealth(engineVersion?: string): Promise<ReadmissionHealth> {
   const [{ readmissionHealthCounts }, { bedrockLive }] = await Promise.all([import('./store'), import('../bedrock')]);
   const [counts, bedrock] = await Promise.all([readmissionHealthCounts(engineVersion), bedrockLive()]);
-  return { ...readmissionHealthStatus(counts, bedrock, Date.now()), counts, bedrock };
+  return { ...readmissionHealthStatus(counts, bedrock, Date.now()), counts, bedrock: publicBedrock(bedrock) };
 }
