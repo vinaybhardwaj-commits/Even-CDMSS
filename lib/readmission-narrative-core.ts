@@ -464,11 +464,22 @@ export interface CaseArtefacts {
   relatedLvc?: RelatedLvc | null;
 }
 
+/** PURE: drop free error text from a finding blob on read (legacy rows may hold lastRefreshError.reason / narrativeError.message). Keeps at, attempts, stuck, code. */
+export function scrubErrorText<T extends object>(blob: T | null): T | null {
+  if (!blob) return blob;
+  const out = { ...blob } as Record<string, unknown>;
+  const lre = out.lastRefreshError;
+  if (lre && typeof lre === 'object') { const { reason: _reason, ...rest } = lre as Record<string, unknown>; out.lastRefreshError = rest; }
+  const ne = out.narrativeError;
+  if (ne && typeof ne === 'object') { const { message: _message, ...rest } = ne as Record<string, unknown>; out.narrativeError = rest; }
+  return out as T;
+}
+
 /** The list route emits the finding blob per card; the ledger and narrative text would make it
  *  heavy for nothing (the card renders neither). Strip them, keep the small facts. PURE. */
 export function stripCaseArtefacts<T extends { evidenceLedger?: unknown; caseNarrative?: { text?: string } | null }>(blob: T | null): T | null {
   if (!blob) return blob;
-  const out = { ...blob };
+  const out = scrubErrorText({ ...blob }) as T;
   delete out.evidenceLedger;
   if (out.caseNarrative) out.caseNarrative = { ...out.caseNarrative, text: '' };   // renderableNarrative() → null on a stripped copy
   return out;

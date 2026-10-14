@@ -22,6 +22,8 @@
 import { sql } from '../db';
 import { CAPTURE_REASONS, type VersionSnapshot } from '../readmission-versions-core';
 import { READMIT_ENGINE_VERSION } from './store';
+import { scrubErrorText } from '../readmission-narrative-core';
+import { asJson } from './surface-row';
 
 /**
  * Insert ONE snapshot row. THROWS on failure — never swallowed here (O2). The caller
@@ -73,6 +75,18 @@ export interface VersionListRow extends Record<string, unknown> {
 
 const LIST_LIMIT = 200;
 
+/** PURE: scrub free error text (lastRefreshError.reason, narrativeError.message) from row_snapshot.finding on read.
+ *  Non-mutating; stored snapshots are never updated. A snapshot that is not an object with a finding is returned as is. */
+export function scrubVersionRows<T extends { row_snapshot?: unknown }>(rows: T[]): T[] {
+  return rows.map((r) => {
+    const snap = asJson<Record<string, unknown>>(r.row_snapshot);
+    if (!snap || typeof snap !== 'object' || snap.finding == null) return r;
+    const finding = asJson<object>(snap.finding);
+    if (!finding) return r;
+    return { ...r, row_snapshot: { ...snap, finding: scrubErrorText(finding) } };
+  });
+}
+
 /**
  * Every snapshot for one case at the engine version, newest first. FAIL-SAFE: a DB error
  * returns { rows: [], error } — the honest empty list, never a throw, never a 500.
@@ -96,7 +110,7 @@ export async function listVersionsForCase(
         LIMIT ${LIST_LIMIT}`,
       [dedupKey, engineVersion],
     )) as VersionListRow[];
-    return { rows, error: null };
+    return { rows: scrubVersionRows(rows), error: null };
   } catch (e) {
     return { rows: [], error: `versions list unavailable: ${String((e as Error).message).slice(0, 300)}` };
   }
