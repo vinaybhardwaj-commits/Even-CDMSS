@@ -371,6 +371,10 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "unregistered"
   },
   {
+    "id": "engine-auth",
+    "plane": "unregistered"
+  },
+  {
     "id": "episode-state",
     "plane": "pure-core"
   },
@@ -1612,6 +1616,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "app/api",
+    "to": "ccb-dossier-core",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
     "to": "ccb-episode-docs-core",
     "kind": "value"
   },
@@ -1768,6 +1777,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "app/api",
     "to": "drugs",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
+    "to": "engine-auth",
     "kind": "value"
   },
   {
