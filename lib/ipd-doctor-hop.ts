@@ -49,7 +49,7 @@
  *      SAME display name on both rows and two different e-mails. Picking either would be a coin
  *      toss recorded as a fact about a named clinician.
  *   2. E-MAIL IS NOT A TIEBREAK. The obvious repair — "when two uids compete, prefer the one whose
- *      e-mail matches" — dies on the measurement: Mahendra Jain's two rows share the identical
+ *      e-mail matches" — dies on the measurement: Example Person's two rows share the identical
  *      address `person@example.com`. This file reads no e-mail column at all, and a test asserts it.
  *   3. NO DISPLAY-NAME JOIN, EVER (D-identity, refuse-list §8). Name matching was 87/140 at the
  *      27 Aug cut and it is forbidden regardless of its rate. `resolveDoctor` in

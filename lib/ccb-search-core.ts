@@ -14,8 +14,8 @@
  *   • member ID  → `accounts-members`.membership_id / old_membership_ids → .mobile
  *                  → `individuals`.mobiles (array overlap)            (Member 000000000000 → Example Person)
  *   • phone      → `individuals`.mobiles && ARRAY['+91…']
- *   • individual → `individuals`.uid   (the id Pulse calls "uid": 3cK6aGinZxFUhgF65NqM)
- *   • uhid       → `individuals`.kx_uhid  (UHID-41072)
+ *   • individual → `individuals`.uid   (the id Pulse calls "uid": 00000000000000000000)
+ *   • uhid       → `individuals`.kx_uhid  (UHID000001)
  *   • presc uid  → `individuals-prescriptions`.uid → ._parent_id (back-compat with old links)
  *   • name       → `individuals`.first_name / last_name / display_name
  *   • episodes   → `individuals-prescriptions` WHERE _parent_id = individual_uid, medical types.
@@ -96,7 +96,7 @@ export function classifyQuery(raw: string): QueryPlan {
     plan.uid = trimmed;
   }
 
-  // UHID: a code with a separator or letters-then-digits (UHID-41072, EHRC123456).
+  // UHID: a code with a separator or letters-then-digits (UHID000001, UHID000002).
   if (!hasSpace && isUhidLike(trimmed) && /\d/.test(trimmed)
       && (/[-/]/.test(trimmed) || /^[A-Za-z]{2,10}\d{2,}$/.test(trimmed))) {
     plan.uhid = trimmed;
