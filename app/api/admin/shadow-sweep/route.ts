@@ -23,6 +23,7 @@
  * surfaces that as a 200 with the failure named, so a cron tick reports rather than alerts. A 500 is
  * reserved for the route itself being broken.
  */
+import { safeEqual } from '@/lib/safe-equal';
 import { hasCronBearer } from '@/lib/cron-auth';
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
@@ -56,9 +57,9 @@ async function authed(req: NextRequest) {
 async function cronAuthed(req: NextRequest): Promise<boolean> {
   const isCron = hasCronBearer(req);
   const auth = req.headers.get('authorization') || '';
-  const bearerOk = !!process.env.CRON_SECRET && auth === `Bearer ${process.env.CRON_SECRET}`;
+  const bearerOk = !!process.env.CRON_SECRET && safeEqual(auth, `Bearer ${process.env.CRON_SECRET}`);
   const secret = req.nextUrl.searchParams.get('secret');
-  const secretOk = !!process.env.CRON_SECRET && !!secret && secret === process.env.CRON_SECRET;
+  const secretOk = !!process.env.CRON_SECRET && !!secret && safeEqual(secret, process.env.CRON_SECRET);
   if (isCron || bearerOk || secretOk) return true;
   try { return await isAdminUnlocked(); } catch { return false; }
 }

@@ -72,3 +72,22 @@ test('admin path unchanged: routes still fall through to isAdminUnlocked after t
     assert.ok(src.includes('hasCronBearer'), f);
   }
 });
+
+test('guard: no plain === / !== compare of a request value to CRON_SECRET or ADMIN_TOKEN in app/ or lib/ (use safeEqual)', () => {
+  const bad: string[] = [];
+  const re = /(?:[!=]==\s*(?:process\.env\.(?:CRON_SECRET|ADMIN_TOKEN)\b|`Bearer \$\{(?:process\.env\.CRON_SECRET|secret)\}`))|(?:(?:process\.env\.(?:CRON_SECRET|ADMIN_TOKEN)|`Bearer \$\{(?:process\.env\.CRON_SECRET|secret)\}`)\s*[!=]==)/;
+  for (const f of [...walk('app'), ...walk('lib')]) {
+    const code = readFileSync(f, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
+    if (re.test(code)) bad.push(f);
+  }
+  assert.deepEqual(bad, [], 'compare secrets with safeEqual from lib/safe-equal');
+});
+
+test('guard: the secret guard regex catches the old forms', () => {
+  const re = /(?:[!=]==\s*(?:process\.env\.(?:CRON_SECRET|ADMIN_TOKEN)\b|`Bearer \$\{(?:process\.env\.CRON_SECRET|secret)\}`))|(?:(?:process\.env\.(?:CRON_SECRET|ADMIN_TOKEN)|`Bearer \$\{(?:process\.env\.CRON_SECRET|secret)\}`)\s*[!=]==)/;
+  assert.ok(re.test('secret === process.env.CRON_SECRET'));
+  assert.ok(re.test('token === process.env.ADMIN_TOKEN'));
+  assert.ok(re.test('auth === `Bearer ${process.env.CRON_SECRET}`'));
+  assert.ok(re.test('process.env.ADMIN_TOKEN === token'));
+  assert.ok(!re.test('safeEqual(secret, process.env.CRON_SECRET)'));
+});

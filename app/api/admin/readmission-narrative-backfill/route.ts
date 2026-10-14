@@ -22,6 +22,7 @@ export const maxDuration = 300;
  *   POST {action:'pause'|'resume'|'stop'|'status'}
  *   POST {action:'run_one', dedup_key, force?}   → ONE finding, off-ledger (its trace carries the cost)
  */
+import { safeEqual } from '@/lib/safe-equal';
 import { hasCronBearer } from '@/lib/cron-auth';
 import { NextRequest, NextResponse } from 'next/server';
 import { isAdminUnlocked } from '@/lib/admin-cookie';
@@ -31,9 +32,9 @@ import { narrativeTick, narrativeStatus, startNarrativeRun, controlNarrativeRun,
 async function authed(req: NextRequest): Promise<boolean> {
   const isCron = hasCronBearer(req);
   const auth = req.headers.get('authorization') || '';
-  const bearerOk = !!process.env.CRON_SECRET && auth === `Bearer ${process.env.CRON_SECRET}`;
+  const bearerOk = !!process.env.CRON_SECRET && safeEqual(auth, `Bearer ${process.env.CRON_SECRET}`);
   const secret = req.nextUrl.searchParams.get('secret');
-  const secretOk = !!process.env.CRON_SECRET && !!secret && secret === process.env.CRON_SECRET;
+  const secretOk = !!process.env.CRON_SECRET && !!secret && safeEqual(secret, process.env.CRON_SECRET);
   if (isCron || bearerOk || secretOk) return true;
   try { return await isAdminUnlocked(); } catch { return false; }
 }

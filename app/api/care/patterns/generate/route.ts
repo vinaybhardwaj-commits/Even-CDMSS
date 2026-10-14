@@ -18,6 +18,7 @@
  * FLAGGED OFF by default: needs CCB_ENABLED=1 and LVC_PATTERNS_ENABLED=1 — the same pair that
  * gates the shelf itself, so this route cannot decorate a page nobody can open.
  */
+import { safeEqual } from '@/lib/safe-equal';
 import { hasCronBearer } from '@/lib/cron-auth';
 import { NextRequest, NextResponse } from 'next/server';
 import { isAdminUnlocked } from '@/lib/admin-cookie';
@@ -38,8 +39,8 @@ function cronAuthed(req: NextRequest): boolean {
   const secret = process.env.CRON_SECRET;
   if (!secret) return false;
   const auth = req.headers.get('authorization') || '';
-  if (auth === `Bearer ${secret}`) return true;
-  return req.nextUrl.searchParams.get('secret') === secret;
+  if (safeEqual(auth, `Bearer ${secret}`)) return true;
+  return safeEqual(req.nextUrl.searchParams.get('secret'), secret);
 }
 
 export async function POST(req: NextRequest) {

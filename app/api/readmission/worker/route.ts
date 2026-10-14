@@ -8,6 +8,7 @@ export const runtime = 'nodejs';
 // Any future change to maxDuration must move the cron interval with it, in the same commit.
 export const maxDuration = 800;
 
+import { safeEqual } from '@/lib/safe-equal';
 import { hasCronBearer } from '@/lib/cron-auth';
 import { NextRequest, NextResponse } from 'next/server';
 import { isAdminUnlocked } from '@/lib/admin-cookie';
@@ -43,9 +44,9 @@ import { pendingFindings, findingCounts, READMIT_ENGINE_VERSION, AUDITABLE_LANES
 async function authed(req: NextRequest): Promise<boolean> {
   const isCron = hasCronBearer(req);
   const auth = req.headers.get('authorization') || '';
-  const bearerOk = !!process.env.CRON_SECRET && auth === `Bearer ${process.env.CRON_SECRET}`;
+  const bearerOk = !!process.env.CRON_SECRET && safeEqual(auth, `Bearer ${process.env.CRON_SECRET}`);
   const secret = req.nextUrl.searchParams.get('secret');
-  const secretOk = !!process.env.CRON_SECRET && !!secret && secret === process.env.CRON_SECRET;
+  const secretOk = !!process.env.CRON_SECRET && !!secret && safeEqual(secret, process.env.CRON_SECRET);
   if (isCron || bearerOk || secretOk) return true;
   try { return await isAdminUnlocked(); } catch { return false; }
 }

@@ -23,6 +23,7 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 export const maxDuration = 60;
 
+import { safeEqual } from '@/lib/safe-equal';
 import { NextRequest, NextResponse } from 'next/server';
 import { assembleEpisode } from '@/lib/ccb-fetch';
 import { docsFromBundle } from '@/lib/ccb-episode-docs-core';
@@ -34,7 +35,7 @@ import { ccbApiKeyValid } from '@/lib/ccb-apikey';
 async function authed(req: NextRequest): Promise<boolean> {
   if (ccbApiKeyValid(req)) return true;
   const secret = req.nextUrl.searchParams.get('secret');
-  if (!!process.env.CRON_SECRET && secret === process.env.CRON_SECRET) return true;
+  if (!!process.env.CRON_SECRET && safeEqual(secret, process.env.CRON_SECRET)) return true;
   try { if (await isCareUnlocked()) return true; } catch { /* fall through */ }
   try { return await isAdminUnlocked(); } catch { return false; }
 }

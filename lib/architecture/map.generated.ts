@@ -1015,6 +1015,10 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "unregistered"
   },
   {
+    "id": "safe-equal",
+    "plane": "unregistered"
+  },
+  {
     "id": "scoring-policy",
     "plane": "pure-core"
   },
@@ -1088,6 +1092,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "adjudication-ledger",
     "to": "db",
+    "kind": "value"
+  },
+  {
+    "from": "admin-gate",
+    "to": "safe-equal",
     "kind": "value"
   },
   {
@@ -2347,6 +2356,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "app/api",
+    "to": "safe-equal",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
     "to": "scoring-policy",
     "kind": "value"
   },
@@ -3133,6 +3147,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "corpus-eval",
     "to": "trace",
+    "kind": "value"
+  },
+  {
+    "from": "cron-auth",
+    "to": "safe-equal",
     "kind": "value"
   },
   {

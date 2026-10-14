@@ -2,6 +2,7 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 export const maxDuration = 60;
 
+import { safeEqual } from '@/lib/safe-equal';
 import { hasCronBearer } from '@/lib/cron-auth';
 import { NextRequest, NextResponse } from 'next/server';
 import { sql } from '@/lib/db';
@@ -98,7 +99,7 @@ const TOPICS: [string, string][] = [
 export async function GET(req: NextRequest) {
   const isCron = hasCronBearer(req);
   const secret = req.nextUrl.searchParams.get('secret');
-  const ok = isCron || (process.env.CRON_SECRET && secret === process.env.CRON_SECRET);
+  const ok = isCron || (process.env.CRON_SECRET && safeEqual(secret, process.env.CRON_SECRET));
   if (!ok) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   try {
     const before = (await sql`SELECT count(*)::int AS n FROM ingest_topics`) as Array<{ n: number }>;

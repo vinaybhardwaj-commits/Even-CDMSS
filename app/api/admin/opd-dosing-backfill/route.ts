@@ -2,6 +2,7 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 export const maxDuration = 300;
 
+import { safeEqual } from '@/lib/safe-equal';
 import { NextRequest, NextResponse } from 'next/server';
 import { sql } from '@/lib/db';
 import { auditOpdNote } from '@/lib/opd-note-audit';
@@ -17,9 +18,9 @@ const run = sql as unknown as (text: string, params?: unknown[]) => Promise<Reco
 
 async function authed(req: NextRequest): Promise<boolean> {
   const token = req.nextUrl.searchParams.get('token');
-  if (!!process.env.ADMIN_TOKEN && token === process.env.ADMIN_TOKEN) return true;
+  if (!!process.env.ADMIN_TOKEN && safeEqual(token, process.env.ADMIN_TOKEN)) return true;
   const secret = req.nextUrl.searchParams.get('secret');
-  if (!!process.env.CRON_SECRET && secret === process.env.CRON_SECRET) return true;
+  if (!!process.env.CRON_SECRET && safeEqual(secret, process.env.CRON_SECRET)) return true;
   try { return await isAdminUnlocked(); } catch { return false; }
 }
 

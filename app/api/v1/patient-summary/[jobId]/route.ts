@@ -19,6 +19,7 @@ export const runtime = 'nodejs';
  * ⚠️ AUTH IS V1/PILOT-SCOPED — shared CRON_SECRET. Split before live clinical traffic (see ../route.ts).
  */
 
+import { safeEqual } from '@/lib/safe-equal';
 import { NextRequest, NextResponse } from 'next/server';
 import { getJob } from '@/lib/patient-summary';
 import { isJobId } from '@/lib/patient-summary-core';
@@ -27,8 +28,8 @@ function authed(req: NextRequest): boolean {
   const secret = process.env.CRON_SECRET;
   if (!secret) return false;
   const auth = req.headers.get('authorization') || '';
-  if (auth === `Bearer ${secret}`) return true;
-  return req.nextUrl.searchParams.get('secret') === secret;
+  if (safeEqual(auth, `Bearer ${secret}`)) return true;
+  return safeEqual(req.nextUrl.searchParams.get('secret'), secret);
 }
 
 export async function GET(req: NextRequest, ctx: { params: Promise<{ jobId: string }> }) {

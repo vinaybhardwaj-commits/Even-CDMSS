@@ -7,6 +7,7 @@
  * (Bearer CRON_SECRET) / Bearer CRON_SECRET / ?secret= / care-unlock / admin cookie. NEVER a 500 from a
  * generation failure — an OpenRouter error returns status='error', 0 candidates (PRD §1.3).
  */
+import { safeEqual } from '@/lib/safe-equal';
 import { hasCronBearer } from '@/lib/cron-auth';
 import { NextRequest, NextResponse } from 'next/server';
 import { isCareUnlocked } from '@/lib/care-cookie';
@@ -22,9 +23,9 @@ function enabled(): boolean { return process.env.CCB_ENABLED === '1' && process.
 async function authed(req: NextRequest): Promise<boolean> {
   const isCron = hasCronBearer(req);
   const auth = req.headers.get('authorization') || '';
-  const bearerOk = !!process.env.CRON_SECRET && auth === `Bearer ${process.env.CRON_SECRET}`;
+  const bearerOk = !!process.env.CRON_SECRET && safeEqual(auth, `Bearer ${process.env.CRON_SECRET}`);
   const secret = req.nextUrl.searchParams.get('secret');
-  const secretOk = !!process.env.CRON_SECRET && !!secret && secret === process.env.CRON_SECRET;
+  const secretOk = !!process.env.CRON_SECRET && !!secret && safeEqual(secret, process.env.CRON_SECRET);
   if (isCron || bearerOk || secretOk) return true;
   try { if (await isCareUnlocked()) return true; } catch { /* fall through */ }
   try { return await isAdminUnlocked(); } catch { return false; }

@@ -22,6 +22,7 @@ export const runtime = 'nodejs';
  *
  * Auth: Vercel cron header / Bearer|?secret=CRON_SECRET / admin session.
  */
+import { safeEqual } from '@/lib/safe-equal';
 import { hasCronBearer } from '@/lib/cron-auth';
 import { NextRequest, NextResponse } from 'next/server';
 import { sql } from '@/lib/db';
@@ -37,9 +38,9 @@ const TARGET_WHERE =
 async function authed(req: NextRequest): Promise<boolean> {
   const isCron = hasCronBearer(req);
   const auth = req.headers.get('authorization') || '';
-  const bearerOk = !!process.env.CRON_SECRET && auth === `Bearer ${process.env.CRON_SECRET}`;
+  const bearerOk = !!process.env.CRON_SECRET && safeEqual(auth, `Bearer ${process.env.CRON_SECRET}`);
   const secret = req.nextUrl.searchParams.get('secret');
-  const secretOk = !!process.env.CRON_SECRET && !!secret && secret === process.env.CRON_SECRET;
+  const secretOk = !!process.env.CRON_SECRET && !!secret && safeEqual(secret, process.env.CRON_SECRET);
   if (isCron || bearerOk || secretOk) return true;
   try { return await isAdminUnlocked(); } catch { return false; }
 }

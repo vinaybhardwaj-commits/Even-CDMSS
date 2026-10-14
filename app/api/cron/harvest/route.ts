@@ -2,6 +2,7 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 export const maxDuration = 300;
 
+import { safeEqual } from '@/lib/safe-equal';
 import { hasCronBearer } from '@/lib/cron-auth';
 import { NextRequest, NextResponse } from 'next/server';
 import { runHarvest } from '@/lib/harvest';
@@ -13,9 +14,9 @@ import { runHarvest } from '@/lib/harvest';
 export async function GET(req: NextRequest) {
   const isCron = hasCronBearer(req);
   const auth = req.headers.get('authorization') || '';
-  const bearerOk = !!process.env.CRON_SECRET && auth === `Bearer ${process.env.CRON_SECRET}`;
+  const bearerOk = !!process.env.CRON_SECRET && safeEqual(auth, `Bearer ${process.env.CRON_SECRET}`);
   const secret = req.nextUrl.searchParams.get('secret');
-  const ok = isCron || bearerOk || (!!process.env.CRON_SECRET && secret === process.env.CRON_SECRET);
+  const ok = isCron || bearerOk || (!!process.env.CRON_SECRET && safeEqual(secret, process.env.CRON_SECRET));
   if (!ok) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   if (!process.env.NCBI_API_KEY) {
     // not fatal (anon 3 req/s still works) — just a heads-up in the response

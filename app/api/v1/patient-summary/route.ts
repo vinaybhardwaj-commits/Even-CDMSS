@@ -47,6 +47,7 @@ export const maxDuration = 800;
  * member_ref); they never enter a model payload. Nothing new is persisted beyond the job record.
  */
 
+import { safeEqual } from '@/lib/safe-equal';
 import { NextRequest, NextResponse } from 'next/server';
 import { buildPatientSummary, putJob, type SummaryRequest } from '@/lib/patient-summary';
 import { makeJobId } from '@/lib/patient-summary-core';
@@ -55,8 +56,8 @@ function authed(req: NextRequest): boolean {
   const secret = process.env.CRON_SECRET;
   if (!secret) return false;
   const auth = req.headers.get('authorization') || '';
-  if (auth === `Bearer ${secret}`) return true;
-  return req.nextUrl.searchParams.get('secret') === secret;
+  if (safeEqual(auth, `Bearer ${secret}`)) return true;
+  return safeEqual(req.nextUrl.searchParams.get('secret'), secret);
 }
 
 export async function POST(req: NextRequest) {

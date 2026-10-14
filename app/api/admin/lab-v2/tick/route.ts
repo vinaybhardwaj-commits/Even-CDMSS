@@ -27,6 +27,7 @@ export const maxDuration = 800;
  * single TTL lock in app_settings, while v2 uses per-item row leases (§5.3), so two ticks
  * overlapping is normal and safe rather than something to serialise.
  */
+import { safeEqual } from '@/lib/safe-equal';
 import { hasCronBearer } from '@/lib/cron-auth';
 import { NextRequest, NextResponse } from 'next/server';
 import { isAdminUnlocked } from '@/lib/admin-cookie';
@@ -40,9 +41,9 @@ import { pairedAuditConcurrency } from '@/lib/lab-v2/paired-audit-core';
 async function authed(req: NextRequest): Promise<boolean> {
   const isCron = hasCronBearer(req);
   const auth = req.headers.get('authorization') || '';
-  const bearerOk = !!process.env.CRON_SECRET && auth === `Bearer ${process.env.CRON_SECRET}`;
+  const bearerOk = !!process.env.CRON_SECRET && safeEqual(auth, `Bearer ${process.env.CRON_SECRET}`);
   const secret = req.nextUrl.searchParams.get('secret');
-  const secretOk = !!process.env.CRON_SECRET && !!secret && secret === process.env.CRON_SECRET;
+  const secretOk = !!process.env.CRON_SECRET && !!secret && safeEqual(secret, process.env.CRON_SECRET);
   if (isCron || bearerOk || secretOk) return true;
   try { return await isAdminUnlocked(); } catch { return false; }
 }

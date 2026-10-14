@@ -2,6 +2,7 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 export const maxDuration = 300;
 
+import { safeEqual } from '@/lib/safe-equal';
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAdmin } from '@/lib/admin-gate';
 import { isAdminUnlocked } from '@/lib/admin-cookie';
@@ -26,7 +27,7 @@ import { fetchBilledTotal } from '@/lib/ipd-audit/billing';
 
 async function authed(req: NextRequest): Promise<boolean> {
   const auth = req.headers.get('authorization') || '';
-  if (process.env.CRON_SECRET && auth === `Bearer ${process.env.CRON_SECRET}`) return true;
+  if (process.env.CRON_SECRET && safeEqual(auth, `Bearer ${process.env.CRON_SECRET}`)) return true;
   const denied = requireAdmin(req);
   if (!denied) return true;
   try { return await isAdminUnlocked(); } catch { return false; }
