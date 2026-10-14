@@ -135,20 +135,20 @@ test('truncateCard: caps + ellipsis at the 140 boundary, collapses whitespace', 
 
 test('mineMissedFlags: same-signature flags cluster; a singleton is its own cluster (≥1 harvests)', () => {
   const flags = [
-    mf('a1', 'Missed dual H1 antihistamine duplication', 'zaki'),
+    mf('a1', 'Missed dual H1 antihistamine duplication', 'sample'),
     mf('a2', 'missed the dual H1-antihistamine duplication', 'meera'),
-    mf('a3', 'A totally unrelated one-off note', 'zaki'),
+    mf('a3', 'A totally unrelated one-off note', 'sample'),
   ];
   const out = mineMissedFlags(flags); // no coverage probe → all uncovered → all harvest
   assert.equal(out.length, 2, 'the 2-flag cluster AND the singleton both harvest');
   assert.equal(out[0].provenance.nFlags, 2);
-  assert.deepEqual(out[0].provenance.reviewers.sort(), ['meera', 'zaki']);
+  assert.deepEqual(out[0].provenance.reviewers.sort(), ['meera', 'sample']);
   assert.equal(out[1].provenance.nFlags, 1);
   assert.ok(out.every((c) => c.type === 'harvest_topic'));
 });
 
 test('mineMissedFlags: citable cluster → deterministic missed_rule draft', () => {
-  const flags = [mf('a1', 'Missed dual antihistamine duplication', 'zaki'), mf('a2', 'missed dual antihistamine duplication', 'meera')];
+  const flags = [mf('a1', 'Missed dual antihistamine duplication', 'sample'), mf('a2', 'missed dual antihistamine duplication', 'meera')];
   const out = mineMissedFlags(flags, { isCitable: () => true });
   assert.equal(out.length, 1);
   const c = out[0];
@@ -164,7 +164,7 @@ test('mineMissedFlags: citable cluster → deterministic missed_rule draft', () 
 });
 
 test('mineMissedFlags: uncitable → harvest_topic (evidence over frequency)', () => {
-  const flags = [mf('a1', 'Missed some novel emerging thing', 'zaki', 'other'), mf('a2', 'missed some novel emerging thing', 'meera', 'other')];
+  const flags = [mf('a1', 'Missed some novel emerging thing', 'sample', 'other'), mf('a2', 'missed some novel emerging thing', 'meera', 'other')];
   const out = mineMissedFlags(flags, { isCitable: () => false });
   assert.equal(out[0].type, 'harvest_topic');
   if (out[0].type !== 'harvest_topic') return;
@@ -177,9 +177,9 @@ const fl = (audit_id: string, subject: string, verdict: string, author: string, 
 
 test('mineFalseClusters: ≥3 false/nitpick across ≥2 reviewers AND precision <0.5 → suppression', () => {
   const labels = [
-    fl('a1', 'Vitamin D level in routine screen', 'false', 'zaki'),
+    fl('a1', 'Vitamin D level in routine screen', 'false', 'sample'),
     fl('a2', 'vitamin D level routine screen', 'nitpick', 'meera'),
-    fl('a3', 'Vitamin-D level, routine screen', 'false', 'zaki'),
+    fl('a3', 'Vitamin-D level, routine screen', 'false', 'sample'),
   ];
   const out = mineFalseClusters(labels);
   assert.equal(out.length, 1);
@@ -196,11 +196,11 @@ test('mineFalseClusters: ≥3 false/nitpick across ≥2 reviewers AND precision 
 
 test('mineFalseClusters: precision ≥0.5 blocks the candidate even at volume', () => {
   const labels = [
-    fl('a1', 'Same subject phrase here', 'false', 'zaki'),
+    fl('a1', 'Same subject phrase here', 'false', 'sample'),
     fl('a2', 'same subject phrase here', 'nitpick', 'meera'),
-    fl('a3', 'same subject phrase here', 'false', 'zaki'),
+    fl('a3', 'same subject phrase here', 'false', 'sample'),
     fl('a4', 'same subject phrase here', 'true_positive', 'meera'),
-    fl('a5', 'same subject phrase here', 'true_positive', 'zaki'),
+    fl('a5', 'same subject phrase here', 'true_positive', 'sample'),
     fl('a6', 'same subject phrase here', 'true_positive', 'meera'),
   ]; // tp=3, fn=3 → precision 0.5, NOT <0.5
   assert.equal(mineFalseClusters(labels).length, 0);
@@ -208,9 +208,9 @@ test('mineFalseClusters: precision ≥0.5 blocks the candidate even at volume', 
 
 test('mineFalseClusters: single-reviewer cluster blocked (needs ≥2)', () => {
   const labels = [
-    fl('a1', 'Only zaki flagged this', 'false', 'zaki'),
-    fl('a2', 'only zaki flagged this', 'nitpick', 'zaki'),
-    fl('a3', 'only zaki flagged this', 'false', 'zaki'),
+    fl('a1', 'Only sample flagged this', 'false', 'sample'),
+    fl('a2', 'only sample flagged this', 'nitpick', 'sample'),
+    fl('a3', 'only sample flagged this', 'false', 'sample'),
   ];
   assert.equal(mineFalseClusters(labels).length, 0);
 });
@@ -312,7 +312,7 @@ test('mineHarvestGaps: unprobed (deferred) clusters survive, unranked — never 
 
 // ── §2.3 — the missed-flag rail at ≥1 ──
 test('missed rail: ONE uncovered flag yields a demand-ranked harvest candidate', () => {
-  const flags = [mf('a1', 'Missed oxymetazoline duration and rhinitis medicamentosa rebound', 'zaki')];
+  const flags = [mf('a1', 'Missed oxymetazoline duration and rhinitis medicamentosa rebound', 'sample')];
   const out = mineMissedFlags(flags, { coverage: () => ({ topSim: 0.08, covered: false }) });
   assert.equal(out.length, 1);
   const c = out[0];
@@ -327,7 +327,7 @@ test('missed rail: ONE uncovered flag yields a demand-ranked harvest candidate',
 });
 
 test('missed rail: ONE flag NEVER yields a rule, however well the corpus covers it', () => {
-  const flags = [mf('a1', 'Missed dual antihistamine duplication', 'zaki')];
+  const flags = [mf('a1', 'Missed dual antihistamine duplication', 'sample')];
   const covered = mineMissedFlags(flags, { coverage: () => ({ topSim: 0.9, covered: true }) });
   assert.equal(covered.length, 0, 'covered + 1 flag → no rule (too few flags), no harvest (corpus has it)');
   const uncovered = mineMissedFlags(flags, { coverage: () => ({ topSim: 0.1, covered: false }) });
@@ -335,7 +335,7 @@ test('missed rail: ONE flag NEVER yields a rule, however well the corpus covers 
 });
 
 test('missed rail: ≥2 flags + covered corpus → missed_rule (unchanged bar)', () => {
-  const flags = [mf('a1', 'Missed dual antihistamine duplication', 'zaki'), mf('a2', 'missed dual antihistamine duplication', 'meera')];
+  const flags = [mf('a1', 'Missed dual antihistamine duplication', 'sample'), mf('a2', 'missed dual antihistamine duplication', 'meera')];
   const out = mineMissedFlags(flags, { coverage: () => ({ topSim: 0.71, covered: true }) });
   assert.equal(out.length, 1);
   assert.equal(out[0].type, 'missed_rule');
@@ -385,9 +385,9 @@ test('routeAdjudications: accept/defer/monitor vouch nothing and surface nothing
 
 test('suppression vouch: an adjudicated suppress lets a ONE-reviewer cluster propose', () => {
   const labels = [
-    fl('a1', 'Dosing frequency not stated for amoxicillin', 'false', 'zaki', 'incomplete_dosing'),
-    fl('a2', 'dosing frequency not stated for amoxicillin', 'nitpick', 'zaki', 'incomplete_dosing'),
-    fl('a3', 'Dosing frequency, not stated for amoxicillin', 'false', 'zaki', 'incomplete_dosing'),
+    fl('a1', 'Dosing frequency not stated for amoxicillin', 'false', 'sample', 'incomplete_dosing'),
+    fl('a2', 'dosing frequency not stated for amoxicillin', 'nitpick', 'sample', 'incomplete_dosing'),
+    fl('a3', 'Dosing frequency, not stated for amoxicillin', 'false', 'sample', 'incomplete_dosing'),
   ];
   assert.equal(mineFalseClusters(labels).length, 0, 'without a vouch the ≥2-reviewer gate holds');
   const out = mineFalseClusters(labels, { vouchedSignalTypes: ['incomplete_dosing'] });
@@ -401,22 +401,22 @@ test('suppression vouch: relaxes ONLY the reviewer gate — volume + precision s
   const vouched = { vouchedSignalTypes: ['incomplete_dosing'] };
   // 2 false/nitpick (< FALSE_CLUSTER_MIN) — vouch cannot rescue it
   assert.equal(mineFalseClusters([
-    fl('a1', 'Dosing frequency not stated here', 'false', 'zaki', 'incomplete_dosing'),
-    fl('a2', 'dosing frequency not stated here', 'false', 'zaki', 'incomplete_dosing'),
+    fl('a1', 'Dosing frequency not stated here', 'false', 'sample', 'incomplete_dosing'),
+    fl('a2', 'dosing frequency not stated here', 'false', 'sample', 'incomplete_dosing'),
   ], vouched).length, 0, 'volume gate still binds');
   // 3 false/nitpick but precision 0.5 — vouch cannot rescue it
   assert.equal(mineFalseClusters([
-    fl('b1', 'Dosing frequency not stated here', 'false', 'zaki', 'incomplete_dosing'),
-    fl('b2', 'dosing frequency not stated here', 'nitpick', 'zaki', 'incomplete_dosing'),
-    fl('b3', 'dosing frequency not stated here', 'false', 'zaki', 'incomplete_dosing'),
-    fl('b4', 'dosing frequency not stated here', 'true_positive', 'zaki', 'incomplete_dosing'),
-    fl('b5', 'dosing frequency not stated here', 'true_positive', 'zaki', 'incomplete_dosing'),
-    fl('b6', 'dosing frequency not stated here', 'true_positive', 'zaki', 'incomplete_dosing'),
+    fl('b1', 'Dosing frequency not stated here', 'false', 'sample', 'incomplete_dosing'),
+    fl('b2', 'dosing frequency not stated here', 'nitpick', 'sample', 'incomplete_dosing'),
+    fl('b3', 'dosing frequency not stated here', 'false', 'sample', 'incomplete_dosing'),
+    fl('b4', 'dosing frequency not stated here', 'true_positive', 'sample', 'incomplete_dosing'),
+    fl('b5', 'dosing frequency not stated here', 'true_positive', 'sample', 'incomplete_dosing'),
+    fl('b6', 'dosing frequency not stated here', 'true_positive', 'sample', 'incomplete_dosing'),
   ], vouched).length, 0, 'precision gate still binds');
   // a vouch for a DIFFERENT signal class does not relax this one
   assert.equal(mineFalseClusters([
-    fl('c1', 'Dosing frequency not stated here', 'false', 'zaki', 'incomplete_dosing'),
-    fl('c2', 'dosing frequency not stated here', 'nitpick', 'zaki', 'incomplete_dosing'),
-    fl('c3', 'dosing frequency not stated here', 'false', 'zaki', 'incomplete_dosing'),
+    fl('c1', 'Dosing frequency not stated here', 'false', 'sample', 'incomplete_dosing'),
+    fl('c2', 'dosing frequency not stated here', 'nitpick', 'sample', 'incomplete_dosing'),
+    fl('c3', 'dosing frequency not stated here', 'false', 'sample', 'incomplete_dosing'),
   ], { vouchedSignalTypes: ['off_formulary'] }).length, 0, 'vouch is per signal class');
 });

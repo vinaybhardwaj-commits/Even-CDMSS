@@ -127,9 +127,9 @@ test('missed scope: verdict forced to missed, comment required', () => {
 });
 
 test('fields are trimmed, empties collapse to null, oversized values are capped', () => {
-  const v = ok({ auditId: AUDIT_ID, scope: 'finding', verdict: 'nitpick', finding_ref: '  ref1  ', author: '  Zaki  ', uid: '  u1  ', signal_type: '' });
+  const v = ok({ auditId: AUDIT_ID, scope: 'finding', verdict: 'nitpick', finding_ref: '  ref1  ', author: '  Sample  ', uid: '  u1  ', signal_type: '' });
   assert.equal(v.finding_ref, 'ref1');
-  assert.equal(v.author, 'Zaki');
+  assert.equal(v.author, 'Sample');
   assert.equal(v.uid, 'u1');
   assert.equal(v.signal_type, null);
   const long = ok({ auditId: AUDIT_ID, comment: 'x'.repeat(5000) });

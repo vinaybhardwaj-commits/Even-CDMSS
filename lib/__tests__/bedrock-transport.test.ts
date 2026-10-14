@@ -54,7 +54,7 @@ test('⚠️ THE MINT IS THE IAM CREDENTIALS API, NOT THE JWT-BEARER TOKEN ENDPO
   // THE 7 AUG FAILURE. This flow shipped as an extension of getVertexAccessToken — same RS256
   // assertion, `target_audience` in place of `scope`, `id_token` in place of `access_token`. Every
   // reference describes it that way. Reproduced live against the real SA key, Google's token
-  // endpoint answers HTTP 400 `invalid_scope` for audience 588427270277: a numeric AWS-style
+  // endpoint answers HTTP 400 `invalid_scope` for audience 000000000002: a numeric AWS-style
   // audience is not something that endpoint will mint for. The claim shape was right and the
   // endpoint was wrong, which is exactly the failure a pure claim-shape test cannot see.
   const fn = GCP_AUTH.slice(GCP_AUTH.indexOf('export async function getGcpIdToken'));

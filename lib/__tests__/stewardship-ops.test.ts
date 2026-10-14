@@ -34,26 +34,26 @@ const nameOf = () => undefined;
 
 // ── D-ops-identity: unique e-mail or nothing ──────────────────────────────────────────────
 
-/** The three MEASURED duplicate pairs. Mahendra Jain's two clinician records share one address
+/** The three MEASURED duplicate pairs. Demo Mock's two clinician records share one address
  *  outright, which is what makes e-mail unusable as a tiebreak on the inpatient hop as well. */
 const EMAIL_ROWS: EmailMapRow[] = [
   { email: 'poornima.parasuraman@even.in', nUids: 1, uid: 'HalPyIorNPSOYBL7KSJy' },
-  { email: 'mahijain@yahoo.com', nUids: 2, uid: '74zZm5tNZYe1NRoipidm' },
-  { email: 'srikanth.kn@even.in', nUids: 2, uid: 'hh5wHWVgthwC4ESLzx88' },
+  { email: 'person@example.com', nUids: 2, uid: '74zZm5tNZYe1NRoipidm' },
+  { email: 'fakename.kn@even.in', nUids: 2, uid: 'hh5wHWVgthwC4ESLzx88' },
   { email: 'drvinitoswal@gmail.com', nUids: 2, uid: 'TeWNbrcDIm3Fy3EL0NfK' },
 ];
 
 test('D-ops-identity: a unique ops e-mail joins; a shared one joins nobody', () => {
   const m = buildEmailMap(EMAIL_ROWS);
   assert.deepEqual(resolveOpsEmail('poornima.parasuraman@even.in', m), { uid: 'HalPyIorNPSOYBL7KSJy', reason: 'joined' });
-  for (const dup of ['mahijain@yahoo.com', 'srikanth.kn@even.in', 'drvinitoswal@gmail.com']) {
+  for (const dup of ['person@example.com', 'fakename.kn@even.in', 'drvinitoswal@gmail.com']) {
     assert.deepEqual(resolveOpsEmail(dup, m), { uid: null, reason: 'duplicate_email' },
       `${dup} is a known duplicate and must fail closed`);
     assert.equal(m.unique.has(dup), false, 'a duplicate must not be lookup-able at all');
   }
   assert.deepEqual(resolveOpsEmail('nobody@even.in', m), { uid: null, reason: 'no_doctor_row' });
   // the two refusals are DIFFERENT, so the surface can say which one it is
-  assert.notEqual(resolveOpsEmail('mahijain@yahoo.com', m).reason, resolveOpsEmail('nobody@even.in', m).reason);
+  assert.notEqual(resolveOpsEmail('person@example.com', m).reason, resolveOpsEmail('nobody@even.in', m).reason);
 });
 
 test('D-ops-identity: e-mail matching is case- and whitespace-insensitive, and nothing else', () => {

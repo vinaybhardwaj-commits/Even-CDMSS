@@ -15,10 +15,10 @@ import {
 
 test('validators accept real ids/days and reject junk', () => {
   assert.equal(isUid('uTAWDQinrFFW'), true);
-  assert.equal(isUid('FHpN3DmRklMEbdQAr4oV'), true);
+  assert.equal(isUid('ExampleUid0000000002'), true);
   assert.equal(isUid("x'; DROP TABLE--"), false);
   assert.equal(isUid('short'), false);            // <6 chars
-  assert.equal(isUhid('EHRC123456'), true);
+  assert.equal(isUhid('UHID000001'), true);
   assert.equal(isUhid("123'); --"), false);
   assert.equal(isDay('2026-06-30'), true);
   assert.equal(isDay('2026-6-3'), false);
@@ -44,26 +44,26 @@ test('SQL builders target the right tables/keys and embed only validated values'
   assert.match(p, /_parent_id AS individual_uid/);
   assert.match(p, /specialist_type_uids/);
 
-  assert.match(bridgeSql('FHpN3DmRklMEbdQAr4oV'), /SELECT kx_uhid FROM individuals WHERE uid = 'FHpN3DmRklMEbdQAr4oV'/);
+  assert.match(bridgeSql('ExampleUid0000000002'), /SELECT kx_uhid FROM individuals WHERE uid = 'ExampleUid0000000002'/);
 
   const o = ordersSql('EHRC777', '2026-06-28', '2026-07-05');
   assert.match(o, /FROM kx_lab_reports WHERE uhid = 'EHRC777'/);
   assert.match(o, /FROM kx_radiology_reports WHERE uhid = 'EHRC777'/);
   assert.match(o, /service_date::date BETWEEN '2026-06-28' AND '2026-07-05'/);
 
-  const r = reportsSql('FHpN3DmRklMEbdQAr4oV', '2026-06-28', '2026-07-05');
+  const r = reportsSql('ExampleUid0000000002', '2026-06-28', '2026-07-05');
   // radiology + diagnostic join child→parent on c._parent_id = p._id ; hcu uses the parent url
   assert.match(r, /individuals-radiology_reports-radiology_booking_reports" c ON c\._parent_id = p\._id/);
   assert.match(r, /individuals-diagnostic_reports-diagnostic_booking_reports" c ON c\._parent_id = p\._id/);
   assert.match(r, /coalesce\(consolidated_report_url, report_url\)/);
-  assert.match(r, /p\._parent_id = 'FHpN3DmRklMEbdQAr4oV'/);
+  assert.match(r, /p\._parent_id = 'ExampleUid0000000002'/);
 });
 
 test('SQL builders refuse injection (throw, never interpolate)', () => {
   assert.throws(() => prescriptionSql("x'; DROP TABLE individuals; --"));
   assert.throws(() => bridgeSql('not a uid'));
   assert.throws(() => ordersSql("u'; --", '2026-06-28', '2026-07-05'));
-  assert.throws(() => reportsSql('FHpN3DmRklMEbdQAr4oV', 'bad-date', '2026-07-05'));
+  assert.throws(() => reportsSql('ExampleUid0000000002', 'bad-date', '2026-07-05'));
 });
 
 test('specialityFromLabel parses the trailing-parens speciality', () => {
@@ -73,7 +73,7 @@ test('specialityFromLabel parses the trailing-parens speciality', () => {
 
 test('mapPrescription extracts keys + coerces array/json fields', () => {
   const row: Record<string, unknown> = {
-    uid: 'uTAWDQinrFFW', individual_uid: 'FHpN3DmRklMEbdQAr4oV', kx_encounter_id: 'ENC1',
+    uid: 'uTAWDQinrFFW', individual_uid: 'ExampleUid0000000002', kx_encounter_id: 'ENC1',
     doctor_uid: 'docABCDEF', doctor_name_with_speciality: 'Dr. A(Orthopaedics)',
     consult_type: 'HOSPITAL_GP', type_of_prescription: 'GENERAL_PRACTITIONER',
     ts: '2026-06-30 10:00:00+05:30', prescription_url: 'https://gcs/p.pdf',
@@ -84,7 +84,7 @@ test('mapPrescription extracts keys + coerces array/json fields', () => {
   };
   const { keys, prescription } = mapPrescription(row);
   assert.equal(keys.prescUid, 'uTAWDQinrFFW');
-  assert.equal(keys.individualUid, 'FHpN3DmRklMEbdQAr4oV');
+  assert.equal(keys.individualUid, 'ExampleUid0000000002');
   assert.equal(keys.kxEncounterId, 'ENC1');
   assert.equal(keys.doctorSpeciality, 'Orthopaedics');
   assert.equal(keys.noteDate, '2026-06-30');
@@ -95,7 +95,7 @@ test('mapPrescription extracts keys + coerces array/json fields', () => {
 });
 
 test('mapPrescription prefers the clean CleanCase content when supplied', () => {
-  const row: Record<string, unknown> = { uid: 'uTAWDQinrFFW', individual_uid: 'FHpN3DmRklMEbdQAr4oV', ts: '2026-06-30T00:00:00+05:30' };
+  const row: Record<string, unknown> = { uid: 'uTAWDQinrFFW', individual_uid: 'ExampleUid0000000002', ts: '2026-06-30T00:00:00+05:30' };
   const oc = { presentingComplaints: ['low back pain', 'radiating to leg'], diagnosisCodes: ['M54.5'],
     impressionCodes: [], impressions: ['Lumbar radiculopathy'], advice: ['MRI advised', 'analgesia'], investigations: ['MRI LS spine'] };
   const { prescription } = mapPrescription(row, oc);
@@ -118,7 +118,7 @@ test('mapReports filters null urls; episodeCoverage flips on PDF presence', () =
 });
 
 test('buildBundle assembles + sets coverage', () => {
-  const keys = { prescUid: 'uTAWDQinrFFW', individualUid: 'FHpN3DmRklMEbdQAr4oV', kxUhid: 'EHRC1',
+  const keys = { prescUid: 'uTAWDQinrFFW', individualUid: 'ExampleUid0000000002', kxUhid: 'EHRC1',
     kxEncounterId: null, doctorUid: null, doctorSpeciality: null, noteDate: '2026-06-30',
     consultType: null, prescriptionType: null } as EpisodeKeys;
   const presc = { url: null, meds: null, dxCodes: [], impressionCodes: [], diagnoses: [],

@@ -35,7 +35,7 @@ const UNIQUE_UID = 'HalPyIorNPSOYBL7KSJy';
 const AMBIGUOUS_PID = '0dd90283-71cf-11f0-9659-1243a45a76a3-1021357153';
 const AMBIGUOUS_UIDS = ['b8uerqB7pAmnTI9cr3c4', 'l6FdC9GTBGemrKDOOtTG'];
 
-/** AMBIGUOUS, and the cleanest disproof of the e-mail repair: both rows share `mahijain@yahoo.com`. */
+/** AMBIGUOUS, and the cleanest disproof of the e-mail repair: both rows share `person@example.com`. */
 const SHARED_EMAIL_PID = '5bbd0741-a698-11f0-bc8d-3298c1e077e7-1232548516';
 
 const MAP_ROWS: PractitionerMapRow[] = [
@@ -166,7 +166,7 @@ test('A1: an empty ask makes no db13 call at all', async () => {
 // ── the four refusals, as properties of the source ────────────────────────────────────────
 
 test('refusal: e-mail is never read — the measured tie shares one address', () => {
-  // Mahendra Jain's two competing rows both carry `mahijain@yahoo.com`. The "prefer the matching
+  // Demo Mock's two competing rows both carry `person@example.com`. The "prefer the matching
   // e-mail" repair is not merely unimplemented; it is disproven, and the column is never selected.
   const src = code(HOP);
   assert.ok(!/\bemail\b/i.test(src), 'the hop must not read an e-mail column');

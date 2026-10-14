@@ -3,7 +3,7 @@
  *
  * Audit-integrity batch, PHASE 1 (class B, bug 3) — the resolver gate.
  *
- * THE DEFECT (P0, filed twice by Dr. Zaki): "Atarax Cream For Distressed Dry And Itchy Skin"
+ * THE DEFECT (P0, filed twice by Dr. Sample): "Atarax Cream For Distressed Dry And Itchy Skin"
  * resolved to Hydroxyzine at tier 4 — the family `atarax` holds 3 ORAL hydroxyzine rows and no
  * cream — with confident:true, which licensed a deterministic prescribing-safety finding and an
  * LLM appropriateness finding about topical hydroxyzine. The cream is a pramoxine/zinc-oxide

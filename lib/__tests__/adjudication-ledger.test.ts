@@ -145,8 +145,8 @@ test('GUARDRAIL: no machine/judge verdict store is in the federation set', () =>
 // ── advisory, not a scorecard ──
 test('ADVISORY: no rollup keys by reviewer — two reviewers on the same (surface,engine) collapse', () => {
   const rows = [
-    finding('TP', { reviewer: 'V' }), finding('False', { reviewer: 'Zaki' }),
-    finding('TP', { reviewer: 'Zaki' }),
+    finding('TP', { reviewer: 'V' }), finding('False', { reviewer: 'Sample' }),
+    finding('TP', { reviewer: 'Sample' }),
   ];
   // precision + distribution partition by (surface, engine_version) ONLY — reviewer is never a key
   assert.equal(precisionByEngineVersion(rows).length, 1, 'one precision row despite two reviewers');

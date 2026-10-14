@@ -7,8 +7,8 @@ import assert from 'node:assert/strict';
 import { normalizeDoctorName, mobileLast4, isGenericDoctorRow, buildRoster, type RosterInput } from '../doctor-directory-core.ts';
 
 test('normalizeDoctorName: order-independent, Dr/punct stripped', () => {
-  assert.equal(normalizeDoctorName('Dr. K N Srikanth'), 'k n srikanth');
-  assert.equal(normalizeDoctorName('Srikanth K N'), 'k n srikanth');           // same key regardless of order
+  assert.equal(normalizeDoctorName('Dr. K N Fakename'), 'fakename k n');
+  assert.equal(normalizeDoctorName('Fakename K N'), 'fakename k n');           // same key regardless of order
   assert.equal(normalizeDoctorName('Dr Reshma'), 'reshma');
   assert.equal(normalizeDoctorName('DR. DARSHANA  R.'), 'darshana r');
   assert.equal(normalizeDoctorName(''), '');
@@ -36,7 +36,7 @@ test('buildRoster: drops generics, dedupes same-person by mobile, folds activity
     { doctor_uid: 'uidA', name: 'Dr Darshana R', email: 'd@even.in', mobile: '9000000001', audit_active: true, operational_active: false },
     { doctor_uid: 'uidB', name: 'Darshana R', email: null, mobile: '90000 00001', audit_active: false, operational_active: true },
     // a distinct doctor, no mobile
-    { doctor_uid: 'uidC', name: 'Dr Srikanth K N', email: 's@even.in', mobile: null, audit_active: true, operational_active: false },
+    { doctor_uid: 'uidC', name: 'Dr Fakename K N', email: 's@even.in', mobile: null, audit_active: true, operational_active: false },
     // a generic row → dropped
     { doctor_uid: 'uidZ', name: 'Even Health', email: 'hello@even.in', mobile: '919999999999', audit_active: false, operational_active: false },
   ];
@@ -49,10 +49,10 @@ test('buildRoster: drops generics, dedupes same-person by mobile, folds activity
   assert.equal(darshana.mobile_last4, '0001');
   // canonical uid = the active/lexicographically-first of the cluster (uidA: audit-active)
   assert.equal(darshana.doctor_uid, 'uidA');
-  const srikanth = roster.find((r) => r.doctor_uid === 'uidC')!;
-  assert.equal(srikanth.name_normalized, 'k n srikanth');
-  assert.equal(srikanth.mobile_last4, null);
-  assert.equal(srikanth.has_email, true);
+  const fakename = roster.find((r) => r.doctor_uid === 'uidC')!;
+  assert.equal(fakename.name_normalized, 'fakename k n');
+  assert.equal(fakename.mobile_last4, null);
+  assert.equal(fakename.has_email, true);
 });
 
 test('buildRoster: no-mobile rows are never merged with each other', () => {
