@@ -2,6 +2,7 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 export const maxDuration = 300;
 
+import { hasCronBearer } from '@/lib/cron-auth';
 import { NextRequest, NextResponse } from 'next/server';
 import { sql } from '@/lib/db';
 import { fetchOpdNotesByUids } from '@/lib/metabase';
@@ -12,7 +13,7 @@ const APP = process.env.APP_SOURCE || 'standalone';
 const run = sql as unknown as (text: string, params?: unknown[]) => Promise<Record<string, unknown>[]>;
 
 function authed(req: NextRequest): boolean {
-  const isCron = req.headers.get('x-vercel-cron') !== null;
+  const isCron = hasCronBearer(req);
   const auth = req.headers.get('authorization') || '';
   const bearerOk = !!process.env.CRON_SECRET && auth === `Bearer ${process.env.CRON_SECRET}`;
   const secret = req.nextUrl.searchParams.get('secret');

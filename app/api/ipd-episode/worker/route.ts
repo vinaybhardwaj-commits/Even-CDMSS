@@ -49,6 +49,7 @@ export const runtime = 'nodejs';
  */
 export const maxDuration = 800;
 
+import { hasCronBearer } from '@/lib/cron-auth';
 import { NextRequest, NextResponse } from 'next/server';
 import { isAdminUnlocked } from '@/lib/admin-cookie';
 import { getSettings, setSetting } from '@/lib/mini-backfill';
@@ -121,7 +122,7 @@ function lockHeld(lockTs: string | null, now: Date = new Date(), ttlMs: number =
 /** Execution guard (this route spends LLM compute): Vercel Cron, Bearer/query CRON_SECRET, or a
  *  logged-in admin session. Byte-identical in shape to the IPD discharge worker's. */
 async function authed(req: NextRequest): Promise<boolean> {
-  const isCron = req.headers.get('x-vercel-cron') !== null;
+  const isCron = hasCronBearer(req);
   const auth = req.headers.get('authorization') || '';
   const bearerOk = !!process.env.CRON_SECRET && auth === `Bearer ${process.env.CRON_SECRET}`;
   const secret = req.nextUrl.searchParams.get('secret');

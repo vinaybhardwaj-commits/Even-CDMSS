@@ -23,6 +23,7 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 export const maxDuration = 300;
 
+import { hasCronBearer } from '@/lib/cron-auth';
 import { NextRequest, NextResponse } from 'next/server';
 import { assembleEpisode } from '@/lib/ccb-fetch';
 import { generateBrief } from '@/lib/ccb-brief';
@@ -38,7 +39,7 @@ import { GEMINI_MODEL } from '@/lib/llm';
 // path), Vercel Cron, Bearer/secret CRON_SECRET, a care-manager session, OR an admin session.
 async function authed(req: NextRequest): Promise<boolean> {
   if (ccbApiKeyValid(req)) return true;
-  const isCron = req.headers.get('x-vercel-cron') !== null;
+  const isCron = hasCronBearer(req);
   const auth = req.headers.get('authorization') || '';
   const bearerOk = !!process.env.CRON_SECRET && auth === `Bearer ${process.env.CRON_SECRET}`;
   const secret = req.nextUrl.searchParams.get('secret');

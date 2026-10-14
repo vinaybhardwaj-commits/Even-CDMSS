@@ -2,15 +2,16 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 export const maxDuration = 300;
 
+import { hasCronBearer } from '@/lib/cron-auth';
 import { NextRequest, NextResponse } from 'next/server';
 import { runHarvest } from '@/lib/harvest';
 
 // Daily literature harvest. Guarded operationally (this spends Ollama compute +
-// NCBI quota): runs only for Vercel Cron (un-spoofable x-vercel-cron header) or
+// NCBI quota): runs only for Vercel Cron (Bearer CRON_SECRET) or
 // a manual trigger carrying ?secret=CRON_SECRET. This is execution protection,
 // not a user gate — the admin VIEW stays open per spec.
 export async function GET(req: NextRequest) {
-  const isCron = req.headers.get('x-vercel-cron') !== null;
+  const isCron = hasCronBearer(req);
   const auth = req.headers.get('authorization') || '';
   const bearerOk = !!process.env.CRON_SECRET && auth === `Bearer ${process.env.CRON_SECRET}`;
   const secret = req.nextUrl.searchParams.get('secret');

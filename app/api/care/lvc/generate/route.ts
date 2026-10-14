@@ -4,9 +4,10 @@
  * findings since the last ok run). All logic + the governed model call live in lib/even-lvc.ts.
  *
  * FLAGGED OFF by default: needs LVC_ADJUDICATION_ENABLED=1 (+ CCB_ENABLED=1). Auth: Vercel Cron
- * (x-vercel-cron) / Bearer CRON_SECRET / ?secret= / care-unlock / admin cookie. NEVER a 500 from a
+ * (Bearer CRON_SECRET) / Bearer CRON_SECRET / ?secret= / care-unlock / admin cookie. NEVER a 500 from a
  * generation failure — an OpenRouter error returns status='error', 0 candidates (PRD §1.3).
  */
+import { hasCronBearer } from '@/lib/cron-auth';
 import { NextRequest, NextResponse } from 'next/server';
 import { isCareUnlocked } from '@/lib/care-cookie';
 import { isAdminUnlocked } from '@/lib/admin-cookie';
@@ -19,7 +20,7 @@ export const maxDuration = 300;
 function enabled(): boolean { return process.env.CCB_ENABLED === '1' && process.env.LVC_ADJUDICATION_ENABLED === '1'; }
 
 async function authed(req: NextRequest): Promise<boolean> {
-  const isCron = req.headers.get('x-vercel-cron') !== null;
+  const isCron = hasCronBearer(req);
   const auth = req.headers.get('authorization') || '';
   const bearerOk = !!process.env.CRON_SECRET && auth === `Bearer ${process.env.CRON_SECRET}`;
   const secret = req.nextUrl.searchParams.get('secret');

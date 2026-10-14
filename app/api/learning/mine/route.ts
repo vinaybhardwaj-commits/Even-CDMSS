@@ -2,6 +2,7 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 export const maxDuration = 300;
 
+import { hasCronBearer } from '@/lib/cron-auth';
 import { NextRequest, NextResponse } from 'next/server';
 import { mineAndSaveProposals } from '@/lib/learning';
 import { DEFAULT_THRESHOLDS, DEFAULT_GAP_THRESHOLDS } from '@/lib/learning-core';
@@ -12,7 +13,7 @@ import { isAdminUnlocked } from '@/lib/admin-cookie';
 // learning_proposals — never to lvc_recommendations or the live engine. Auth: Vercel Cron
 // header, OR Bearer/?secret=CRON_SECRET, OR a logged-in admin session.
 async function authed(req: NextRequest): Promise<boolean> {
-  if (req.headers.get('x-vercel-cron') !== null) return true;
+  if (hasCronBearer(req)) return true;
   const auth = req.headers.get('authorization') || '';
   const secret = req.nextUrl.searchParams.get('secret');
   if (process.env.CRON_SECRET && (auth === `Bearer ${process.env.CRON_SECRET}` || secret === process.env.CRON_SECRET)) return true;

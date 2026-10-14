@@ -23,6 +23,7 @@
  * surfaces that as a 200 with the failure named, so a cron tick reports rather than alerts. A 500 is
  * reserved for the route itself being broken.
  */
+import { hasCronBearer } from '@/lib/cron-auth';
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 import { requireAdmin } from '@/lib/admin-gate';
@@ -53,7 +54,7 @@ async function authed(req: NextRequest) {
 
 /** Cron-caller auth for ?auto=1 — the repo's existing pattern, unchanged. */
 async function cronAuthed(req: NextRequest): Promise<boolean> {
-  const isCron = req.headers.get('x-vercel-cron') !== null;
+  const isCron = hasCronBearer(req);
   const auth = req.headers.get('authorization') || '';
   const bearerOk = !!process.env.CRON_SECRET && auth === `Bearer ${process.env.CRON_SECRET}`;
   const secret = req.nextUrl.searchParams.get('secret');

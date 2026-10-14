@@ -23,6 +23,7 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 export const maxDuration = 300;
 
+import { hasCronBearer } from '@/lib/cron-auth';
 import { NextRequest, NextResponse } from 'next/server';
 import { assembleEpisode } from '@/lib/ccb-fetch';
 import { generateBrief } from '@/lib/ccb-brief';
@@ -34,10 +35,10 @@ import { istYesterday } from '@/lib/metabase';
 import { isAdminUnlocked } from '@/lib/admin-cookie';
 import { GEMINI_MODEL } from '@/lib/llm';
 
-// Execution guard (spends Vertex compute): Vercel Cron (x-vercel-cron), Bearer/secret CRON_SECRET,
+// Execution guard (spends Vertex compute): Vercel Cron (Bearer CRON_SECRET), Bearer/secret CRON_SECRET,
 // OR a logged-in admin session (one-click run from a dashboard) — same contract as the OPD worker.
 async function authed(req: NextRequest): Promise<boolean> {
-  const isCron = req.headers.get('x-vercel-cron') !== null;
+  const isCron = hasCronBearer(req);
   const auth = req.headers.get('authorization') || '';
   const bearerOk = !!process.env.CRON_SECRET && auth === `Bearer ${process.env.CRON_SECRET}`;
   const secret = req.nextUrl.searchParams.get('secret');

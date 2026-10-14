@@ -287,6 +287,10 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "advisory"
   },
   {
+    "id": "cron-auth",
+    "plane": "unregistered"
+  },
+  {
     "id": "curator",
     "plane": "unregistered"
   },
@@ -364,6 +368,10 @@ export const MAP_MODULES: MapModule[] = [
   },
   {
     "id": "drugs",
+    "plane": "unregistered"
+  },
+  {
+    "id": "engine-auth",
     "plane": "unregistered"
   },
   {
@@ -1608,6 +1616,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "app/api",
+    "to": "ccb-dossier-core",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
     "to": "ccb-episode-docs-core",
     "kind": "value"
   },
@@ -1688,6 +1701,11 @@ export const MAP_EDGES: MapEdge[] = [
   },
   {
     "from": "app/api",
+    "to": "cron-auth",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
     "to": "curator",
     "kind": "value"
   },
@@ -1759,6 +1777,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "app/api",
     "to": "drugs",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
+    "to": "engine-auth",
     "kind": "value"
   },
   {

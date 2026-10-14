@@ -48,6 +48,7 @@ import {
   auditedRowsForRefresh, auditedRowForNarrative, saveAuditResult, saveCaseArtefacts, READMIT_ENGINE_VERSION, type NarrativeRow, type PendingRow,
 } from './store';
 import { asJson } from './surface-row';
+import { classifyRefreshFailure, normaliseRefreshCode, type RefreshErrorCode, type RefreshFailureKind } from './health';
 
 export const REFRESH_LOCK_KEY = 'readmit_refresh_lock';
 export const REFRESH_TICK_BUDGET_MS = 200_000;
@@ -155,20 +156,20 @@ export async function reanalyzeOnOpus(row: PendingRow, opts: { save: boolean; ru
   const usage = deps.usage ?? usageForTrace;
   let traceId: string | null = null;
   const attemptsSoFar = Number(asJson<{ refreshAttempts?: number }>((row as NarrativeRow).finding ?? null)?.refreshAttempts ?? 0) || 0;
-  /** The ONE place a failed refresh is booked (save path only): attempts + 1, the reason, parked at the cap. */
-  const bookFailure = async (reason: string): Promise<{ attempts: number; stuck: boolean }> => {
+  /** The ONE place a failed refresh is booked (save path only): attempts + 1, a CODE from a closed set (never text: the blob reaches clients), parked at the cap. */
+  const bookFailure = async (code: RefreshErrorCode): Promise<{ attempts: number; stuck: boolean }> => {
     const attempts = attemptsSoFar + 1;
     const stuck = attempts >= REFRESH_MAX_ATTEMPTS;
-    if (opts.save) await saveArtefacts(row.dedup_key, { refreshAttempts: attempts, lastRefreshError: { at: new Date().toISOString(), reason: reason.slice(0, 400), attempts, stuck } }).catch(() => {});
+    if (opts.save) await saveArtefacts(row.dedup_key, { refreshAttempts: attempts, lastRefreshError: { at: new Date().toISOString(), code: normaliseRefreshCode(code), attempts, stuck } }).catch(() => {});
     return { attempts, stuck };
   };
-  const fail = async (reason: string, extra: Partial<RefreshOneResult> = {}): Promise<RefreshOneResult> => {
-    const b = await bookFailure(reason);
+  const fail = async (kind: RefreshFailureKind, reason: string, extra: Partial<RefreshOneResult> = {}): Promise<RefreshOneResult> => {
+    const b = await bookFailure(classifyRefreshFailure(kind, reason));
     return { ...base, ...extra, ok: false, reason: `${reason}${opts.save ? ` (attempt ${b.attempts}/${REFRESH_MAX_ATTEMPTS}${b.stuck ? ' — parked as refresh_stuck' : ''})` : ''}`, ms: Date.now() - t0 };
   };
   try {
     const assembled = await assemble(row);
-    if ('notAuditable' in assembled) return fail(`evidence could not be re-assembled: ${assembled.notAuditable}`);
+    if ('notAuditable' in assembled) return fail('reassemble', `evidence could not be re-assembled: ${assembled.notAuditable}`);
     traceId = await trace.start(opts.save ? 'readmit_refresh' : 'readmit_refresh_probe', { dedupKey: row.dedup_key, engine: READMIT_ENGINE_VERSION, model: NARRATIVE_MODEL, runId: opts.runId ?? null });
     base.traceId = traceId;
     // Every leg is recorded — label, wall, whether the JSON closed, the verdicts parsed — so the
@@ -195,7 +196,7 @@ export async function reanalyzeOnOpus(row: PendingRow, opts: { save: boolean; ru
     const served = await served0(traceId, legs[legs.length - 1]?.label ?? 'readmit_recon_a');
     if (served.model && !modelsAgree(served.model, NARRATIVE_MODEL_ID)) {
       await trace.finish(traceId, 'error', 'DEC-2 model disagreement');
-      return fail(`DEC-2: asked ${NARRATIVE_MODEL_ID} but ${served.provider ?? '?'}:${served.model} answered — nothing saved`, { judgements });
+      return fail('disagreement', `DEC-2: asked ${NARRATIVE_MODEL_ID} but ${served.provider ?? '?'}:${served.model} answered — nothing saved`, { judgements });
     }
     const model = served.model ?? NARRATIVE_MODEL_ID, provider = served.provider ?? 'bedrock';
 
@@ -207,7 +208,7 @@ export async function reanalyzeOnOpus(row: PendingRow, opts: { save: boolean; ru
       // re-runs untouched inside it; the whole finding blob is replaced (the artefacts are re-added
       // below; if the narrative leg fails, the narrative backfill sweep re-offers the case).
       const ok = await saveAudit({ dedupKey: row.dedup_key, status: 'audited', finding, model, provider, traceId, promoted: seq.promoted });
-      if (!ok) { await trace.finish(traceId, 'partial'); return fail('re-analysis produced a finding but the in-place store write failed', { judgements }); }
+      if (!ok) { await trace.finish(traceId, 'partial'); return fail('write', 're-analysis produced a finding but the in-place store write failed', { judgements }); }
       saved = true;
       const n = await compose({
         row, finding, catalog: assembled.inputs.catalog, identity: assembled.identity,
@@ -223,7 +224,7 @@ export async function reanalyzeOnOpus(row: PendingRow, opts: { save: boolean; ru
       await saveArtefacts(row.dedup_key, {
         lastRefresh: { at: new Date().toISOString(), runId: opts.runId ?? null, model, provider, sources: opts.sources ?? [], landed, narrative: n.ok ? (n.valid ? 'stored' : 'invalid') : 'failed', traceId },
         refreshAttempts: attemptsAfter,
-        ...(landed ? {} : { lastRefreshError: { at: new Date().toISOString(), reason: 'refresh landed no template rows — every targeted source came back fetch_failed', attempts: attemptsAfter, stuck: attemptsAfter >= REFRESH_MAX_ATTEMPTS } }),
+        ...(landed ? {} : { lastRefreshError: { at: new Date().toISOString(), code: classifyRefreshFailure('no_rows'), attempts: attemptsAfter, stuck: attemptsAfter >= REFRESH_MAX_ATTEMPTS } }),
       });
     }
     // Recon-leg spend off THIS trace (all readmit_% legs); the narrative added its own above.
@@ -238,7 +239,7 @@ export async function reanalyzeOnOpus(row: PendingRow, opts: { save: boolean; ru
     // An unparseable / thrown leg (or any other throw): booked like every other failure.
     const msg = String((e as Error).message).slice(0, 400);
     if (traceId) await trace.finish(traceId, 'error', msg).catch(() => {});
-    return fail(msg);
+    return fail('thrown', msg);
   }
 }
 

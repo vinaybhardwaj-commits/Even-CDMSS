@@ -27,6 +27,7 @@ export const maxDuration = 800;
  * single TTL lock in app_settings, while v2 uses per-item row leases (§5.3), so two ticks
  * overlapping is normal and safe rather than something to serialise.
  */
+import { hasCronBearer } from '@/lib/cron-auth';
 import { NextRequest, NextResponse } from 'next/server';
 import { isAdminUnlocked } from '@/lib/admin-cookie';
 import { labV2Configured, postgres } from '@/lib/lab-v2/db';
@@ -37,7 +38,7 @@ import { pairedAuditConcurrency } from '@/lib/lab-v2/paired-audit-core';
 
 /** Byte-identical in shape to the IPD episode worker's guard. */
 async function authed(req: NextRequest): Promise<boolean> {
-  const isCron = req.headers.get('x-vercel-cron') !== null;
+  const isCron = hasCronBearer(req);
   const auth = req.headers.get('authorization') || '';
   const bearerOk = !!process.env.CRON_SECRET && auth === `Bearer ${process.env.CRON_SECRET}`;
   const secret = req.nextUrl.searchParams.get('secret');

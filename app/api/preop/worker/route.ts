@@ -57,6 +57,7 @@ export const runtime = 'nodejs';
 // cap, redo this arithmetic in the same commit that raises it.
 export const maxDuration = 300;
 
+import { hasCronBearer } from '@/lib/cron-auth';
 import { NextRequest, NextResponse } from 'next/server';
 import { isAdminUnlocked } from '@/lib/admin-cookie';
 import {
@@ -96,9 +97,9 @@ import { boardCounts, PREOP_ENGINE_VERSION } from '@/lib/preop/store';
  */
 
 // Execution guard — byte-for-byte the readmission worker's: Vercel Cron (un-spoofable
-// x-vercel-cron), Bearer CRON_SECRET / ?secret=, or an admin session.
+// Bearer CRON_SECRET), Bearer CRON_SECRET / ?secret=, or an admin session.
 async function authed(req: NextRequest): Promise<boolean> {
-  const isCron = req.headers.get('x-vercel-cron') !== null;
+  const isCron = hasCronBearer(req);
   const auth = req.headers.get('authorization') || '';
   const bearerOk = !!process.env.CRON_SECRET && auth === `Bearer ${process.env.CRON_SECRET}`;
   const secret = req.nextUrl.searchParams.get('secret');

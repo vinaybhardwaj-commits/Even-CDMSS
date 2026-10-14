@@ -2,13 +2,14 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 export const maxDuration = 120;
 
+import { hasCronBearer } from '@/lib/cron-auth';
 import { NextRequest, NextResponse } from 'next/server';
 import { runCurator } from '@/lib/curator';
 
 // Weekly Curator: discovers new harvest topics from real clinician demand.
-// Same operational guard as the harvester (x-vercel-cron header or ?secret=CRON_SECRET).
+// Same operational guard as the harvester (Bearer CRON_SECRET or ?secret=CRON_SECRET).
 export async function GET(req: NextRequest) {
-  const isCron = req.headers.get('x-vercel-cron') !== null;
+  const isCron = hasCronBearer(req);
   const auth = req.headers.get('authorization') || '';
   const bearerOk = !!process.env.CRON_SECRET && auth === `Bearer ${process.env.CRON_SECRET}`;
   const secret = req.nextUrl.searchParams.get('secret');
