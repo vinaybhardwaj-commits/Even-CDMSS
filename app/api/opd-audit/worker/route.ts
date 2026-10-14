@@ -19,6 +19,7 @@ export const runtime = 'nodejs';
 // lib/openrouter-retry.ts and is corrected in both.
 export const maxDuration = 800;
 
+import { hasCronBearer } from '@/lib/cron-auth';
 import { NextRequest, NextResponse } from 'next/server';
 import { sql } from '@/lib/db';
 import { auditOpdNote } from '@/lib/opd-note-audit';
@@ -57,11 +58,11 @@ async function forwardCutoff(): Promise<string | null> {
   return /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : null;
 }
 
-// Execution guard (spends LLM compute): Vercel Cron (un-spoofable x-vercel-cron), a manual
+// Execution guard (spends LLM compute): Vercel Cron (Bearer CRON_SECRET), a manual
 // trigger carrying Bearer CRON_SECRET / ?secret=CRON_SECRET, OR a logged-in admin session
 // (so the dashboard's one-click "Re-audit" button works without handling any secret).
 async function authed(req: NextRequest): Promise<boolean> {
-  const isCron = req.headers.get('x-vercel-cron') !== null;
+  const isCron = hasCronBearer(req);
   const auth = req.headers.get('authorization') || '';
   const bearerOk = !!process.env.CRON_SECRET && auth === `Bearer ${process.env.CRON_SECRET}`;
   const secret = req.nextUrl.searchParams.get('secret');

@@ -6,12 +6,13 @@ export const runtime = 'nodejs';
  * so an external uptime check sees it. Counts and timestamps only: no ids, no uhids, no text.
  * Auth: Vercel cron header / Bearer|?secret=CRON_SECRET / admin session (same as readmission-refresh).
  */
+import { hasCronBearer } from '@/lib/cron-auth';
 import { NextRequest, NextResponse } from 'next/server';
 import { isAdminUnlocked } from '@/lib/admin-cookie';
 import { readReadmissionHealth } from '@/lib/readmission/health';
 
 async function authed(req: NextRequest): Promise<boolean> {
-  const isCron = req.headers.get('x-vercel-cron') !== null;
+  const isCron = hasCronBearer(req);
   const auth = req.headers.get('authorization') || '';
   const bearerOk = !!process.env.CRON_SECRET && auth === `Bearer ${process.env.CRON_SECRET}`;
   const secret = req.nextUrl.searchParams.get('secret');

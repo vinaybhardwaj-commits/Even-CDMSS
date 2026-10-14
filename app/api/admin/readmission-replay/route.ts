@@ -26,6 +26,7 @@ export const maxDuration = 300;
  *   POST {action:'replay', dedup_key, runs?, model?}    → 1–3 stability runs, snapshots + per-run verdicts
  *   POST {action:'list', dedup_key}                     → the same per-case list
  */
+import { hasCronBearer } from '@/lib/cron-auth';
 import { NextRequest, NextResponse } from 'next/server';
 import { isAdminUnlocked } from '@/lib/admin-cookie';
 import { startTrace, finishTrace, tracedChat } from '@/lib/trace';
@@ -46,7 +47,7 @@ import {
 } from '@/lib/readmission-versions-core';
 
 async function authed(req: NextRequest): Promise<boolean> {
-  const isCron = req.headers.get('x-vercel-cron') !== null;
+  const isCron = hasCronBearer(req);
   const auth = req.headers.get('authorization') || '';
   const bearerOk = !!process.env.CRON_SECRET && auth === `Bearer ${process.env.CRON_SECRET}`;
   const secret = req.nextUrl.searchParams.get('secret');

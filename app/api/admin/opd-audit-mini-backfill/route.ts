@@ -45,6 +45,7 @@ export const maxDuration = 300;
  *   GET  (no args)      → status
  *   POST {action:…}     → start_run | pause | resume | stop | status   (§C3)
  */
+import { hasCronBearer } from '@/lib/cron-auth';
 import { NextRequest, NextResponse } from 'next/server';
 import { auditOpdNote } from '@/lib/opd-note-audit';
 import { OPD_ENGINE_VERSION } from '@/lib/opd-note-audit-core';
@@ -71,7 +72,7 @@ import { refreshTick } from '@/lib/readmission/refresh';
 const WORKER = 'opd' as const;
 
 async function authed(req: NextRequest): Promise<boolean> {
-  const isCron = req.headers.get('x-vercel-cron') !== null;
+  const isCron = hasCronBearer(req);
   const auth = req.headers.get('authorization') || '';
   const bearerOk = !!process.env.CRON_SECRET && auth === `Bearer ${process.env.CRON_SECRET}`;
   const secret = req.nextUrl.searchParams.get('secret');

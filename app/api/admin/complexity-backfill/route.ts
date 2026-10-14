@@ -12,6 +12,7 @@
  *        history) stay NULL and are retried on a `?reset=1` re-sweep. Idempotent (UPDATE sets the
  *        same band); read-only against db13; never touches scoring.
  */
+import { hasCronBearer } from '@/lib/cron-auth';
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAdmin } from '@/lib/admin-gate';
 import { isAdminUnlocked } from '@/lib/admin-cookie';
@@ -57,7 +58,7 @@ function authed(req: NextRequest) {
 // header, a CRON_SECRET Bearer/?secret, or an admin session. Manual GET(status)/POST(run) keep the
 // ADMIN_TOKEN-or-cookie `authed` above.
 async function cronAuthed(req: NextRequest): Promise<boolean> {
-  const isCron = req.headers.get('x-vercel-cron') !== null;
+  const isCron = hasCronBearer(req);
   const auth = req.headers.get('authorization') || '';
   const bearerOk = !!process.env.CRON_SECRET && auth === `Bearer ${process.env.CRON_SECRET}`;
   const secret = req.nextUrl.searchParams.get('secret');

@@ -25,6 +25,7 @@ export const runtime = 'nodejs';
 // global; maxDuration is per route, and nobody had checked this one against it.
 export const maxDuration = 800;
 
+import { hasCronBearer } from '@/lib/cron-auth';
 import { NextRequest, NextResponse } from 'next/server';
 import { countDischargeDocsForDay, fetchDischargeDocsForDay } from '@/lib/ipd-audit/db13';
 import { auditedDocIdsAnyVersion, earliestAuditedDay, IPD_ENGINE_VERSION } from '@/lib/ipd-audit/store';
@@ -60,10 +61,10 @@ async function forwardCutoff(): Promise<string | null> {
   return /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : null;
 }
 
-// Execution guard (spends LLM compute): Vercel Cron (un-spoofable x-vercel-cron), a manual
+// Execution guard (spends LLM compute): Vercel Cron (Bearer CRON_SECRET), a manual
 // trigger carrying Bearer CRON_SECRET / ?secret=CRON_SECRET, or a logged-in admin session.
 async function authed(req: NextRequest): Promise<boolean> {
-  const isCron = req.headers.get('x-vercel-cron') !== null;
+  const isCron = hasCronBearer(req);
   const auth = req.headers.get('authorization') || '';
   const bearerOk = !!process.env.CRON_SECRET && auth === `Bearer ${process.env.CRON_SECRET}`;
   const secret = req.nextUrl.searchParams.get('secret');
