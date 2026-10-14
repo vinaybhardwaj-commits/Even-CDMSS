@@ -7,6 +7,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { REFRESH_ERROR_CODES, classifyRefreshFailure, normaliseRefreshCode } from '../readmission/health.ts';
 import { stripCaseArtefacts, scrubErrorText } from '../readmission-narrative-core.ts';
+import { scrubVersionRows } from '../readmission/versions-store.ts';
 import { toFinding } from '../readmission/surface-row.ts';
 
 const HOSTILE = 'AccessDenied: arn:aws:iam::123456789012:role/secret-role sa-x@proj.iam.gserviceaccount.com audience=//iam.googleapis.com/pool';
@@ -84,4 +85,20 @@ test('attempts and stuck logic are unchanged: n+1, parked at the cap, probe writ
   assert.equal(a.writes[0].refreshAttempts, 1); assert.equal((a.writes[0].lastRefreshError as { stuck: boolean }).stuck, false);
   assert.equal(b.writes[0].refreshAttempts, 3); assert.equal((b.writes[0].lastRefreshError as { stuck: boolean }).stuck, true);
   assert.equal(p.writes.length, 0);
+});
+
+test('a legacy row_snapshot comes back from the versions reader path without reason / message (object or JSON-string snapshot; input not mutated)', () => {
+  const fin = () => ({ lastRefreshError: { at: 't', reason: HOSTILE, attempts: 1, stuck: false }, narrativeError: { at: 't', code: 'error', message: HOSTILE } });
+  const row = { id: 'v1', row_snapshot: { dedup_key: 'k', finding: fin() } };
+  const strRow = { id: 'v2', row_snapshot: JSON.stringify({ dedup_key: 'k', finding: JSON.stringify(fin()) }) };
+  const [a, b] = scrubVersionRows([row, strRow]);
+  for (const r of [a, b]) {
+    const f = (r.row_snapshot as { finding: ReturnType<typeof fin> }).finding;
+    assert.equal('reason' in f.lastRefreshError, false); assert.equal('message' in f.narrativeError, false);
+    assert.equal(f.lastRefreshError.attempts, 1);
+    assert.ok(!JSON.stringify(r).includes('AccessDenied'));
+  }
+  assert.equal((row.row_snapshot.finding.lastRefreshError as { reason?: string }).reason, HOSTILE, 'input not mutated');
+  const odd = [{ id: 'v3', row_snapshot: null }, { id: 'v4', row_snapshot: { x: 1 } }];
+  assert.deepEqual(scrubVersionRows(odd), odd);
 });

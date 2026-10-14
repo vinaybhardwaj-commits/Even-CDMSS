@@ -464,8 +464,6 @@ export interface CaseArtefacts {
   relatedLvc?: RelatedLvc | null;
 }
 
-/** The list route emits the finding blob per card; the ledger and narrative text would make it
- *  heavy for nothing (the card renders neither). Strip them, keep the small facts. PURE. */
 /** PURE: drop free error text from a finding blob on read (legacy rows may hold lastRefreshError.reason / narrativeError.message). Keeps at, attempts, stuck, code. */
 export function scrubErrorText<T extends object>(blob: T | null): T | null {
   if (!blob) return blob;
@@ -477,6 +475,8 @@ export function scrubErrorText<T extends object>(blob: T | null): T | null {
   return out as T;
 }
 
+/** The list route emits the finding blob per card; the ledger and narrative text would make it
+ *  heavy for nothing (the card renders neither). Strip them, keep the small facts. PURE. */
 export function stripCaseArtefacts<T extends { evidenceLedger?: unknown; caseNarrative?: { text?: string } | null }>(blob: T | null): T | null {
   if (!blob) return blob;
   const out = scrubErrorText({ ...blob }) as T;
