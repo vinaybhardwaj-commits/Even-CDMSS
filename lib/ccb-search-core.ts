@@ -12,7 +12,7 @@
  *
  * DATA SPINE (verified live in db13, 1 Jul):
  *   • member ID  → `accounts-members`.membership_id / old_membership_ids → .mobile
- *                  → `individuals`.mobiles (array overlap)            (Member 950137113001 → Jeniffer)
+ *                  → `individuals`.mobiles (array overlap)            (Member 000000000000 → Example Person)
  *   • phone      → `individuals`.mobiles && ARRAY['+91…']
  *   • individual → `individuals`.uid   (the id Pulse calls "uid": 3cK6aGinZxFUhgF65NqM)
  *   • uhid       → `individuals`.kx_uhid  (UHID-41072)
@@ -29,7 +29,7 @@
 export const isUid = (u: string): boolean => /^[A-Za-z0-9_-]{6,64}$/.test(u);
 export const isUhidLike = (u: string): boolean => /^[A-Za-z0-9][A-Za-z0-9/_-]{2,39}$/.test(u);
 export const isPresType = (t: string): boolean => /^[A-Z][A-Z_]{2,59}$/.test(t);
-/** A stored consumer mobile: E.164-ish, e.g. +919082955048. */
+/** A stored consumer mobile: E.164-ish, e.g. +910000000000. */
 export const isMobile = (m: string): boolean => /^\+\d{10,15}$/.test(m);
 
 const digitsOf = (s: string): string => (s || '').replace(/\D+/g, '');
