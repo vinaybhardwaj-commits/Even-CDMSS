@@ -49,6 +49,36 @@ export function classifyNarrativeFailure(reason: string | null | undefined): Nar
   return c === null || c === 'error' ? 'narrative_failed' : c;
 }
 
+/** The closed set of codes the lastRefreshError stamp may carry (the stamp reaches clients; it holds a code, never text). */
+export const REFRESH_ERROR_CODES = [
+  'reassemble_failed', 'model_disagreement', 'write_failed', 'no_rows_landed',
+  'not_configured', 'sts_denied', 'timeout', 'id_token_failed', 'error', 'refresh_failed',
+] as const;
+export type RefreshErrorCode = (typeof REFRESH_ERROR_CODES)[number];
+
+/** Anything outside the closed set becomes 'refresh_failed'. */
+export function normaliseRefreshCode(code: unknown): RefreshErrorCode {
+  return (REFRESH_ERROR_CODES as readonly string[]).includes(code as string) ? (code as RefreshErrorCode) : 'refresh_failed';
+}
+
+export type RefreshFailureKind = 'reassemble' | 'disagreement' | 'write' | 'no_rows' | 'thrown';
+
+/** PURE: a refresh failure (its kind plus free text) to ONE code. Only a 'thrown' failure reads the text, and only
+ *  through classifyBedrockError; a non-Bedrock throw (parse, validation, store) is 'refresh_failed'. */
+export function classifyRefreshFailure(kind: RefreshFailureKind, text?: string | null): RefreshErrorCode {
+  switch (kind) {
+    case 'reassemble': return 'reassemble_failed';
+    case 'disagreement': return 'model_disagreement';
+    case 'write': return 'write_failed';
+    case 'no_rows': return 'no_rows_landed';
+    case 'thrown': {
+      const c = classifyBedrockError({ ok: false, error: text ?? '' });
+      return c === null || c === 'error' ? 'refresh_failed' : c;
+    }
+    default: return 'refresh_failed';
+  }
+}
+
 export interface PublicBedrock { ok: boolean; checkedAt: string; code: BedrockCode | null }
 
 export function publicBedrock(live: BedrockLiveLike): PublicBedrock {

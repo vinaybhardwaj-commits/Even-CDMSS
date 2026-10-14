@@ -12,6 +12,7 @@ import type { FindingBlob, IndexCaseSummary, ReturnBill, ReturnContext, SurfaceF
 import { toFindingClass } from '../readmission-surface-core';
 import type { ExtractedCase } from '../doc-audit-core';
 import type { CaseArtefacts } from '../readmission-narrative-core';
+import { scrubErrorText } from '../readmission-narrative-core';
 import { canonicalFacility, returnContext } from '../readmission-rates-core';
 
 /** Display-only identity from KX (decision 5 / decision 13). Never sent to a model. */
@@ -118,7 +119,7 @@ export function toFinding(
     needsHumanReview: r.needs_human_review == null ? null : Boolean(r.needs_human_review),
     promotedToFull: r.promoted_to_full == null ? null : Boolean(r.promoted_to_full),
     notAuditableReason: s(r.not_auditable_reason),
-    finding: blob,
+    finding: scrubErrorText(blob),   // legacy lastRefreshError.reason / narrativeError.message never reach a client
     omissionEvidence: asJson<FindingBlob['omissions']>(r.omission_evidence) ?? blob?.omissions ?? null,
     // R1 — the stored judgements and the index-extract join (both additive).
     preventableInjury: s(r.preventable_injury),

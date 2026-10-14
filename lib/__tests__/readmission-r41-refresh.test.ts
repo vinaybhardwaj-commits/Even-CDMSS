@@ -323,7 +323,7 @@ test('A1: a successful refresh that LANDED rows resets attempts to 0; one whose 
     pass: () => async () => claims(), served, saveAudit: async () => true, saveArtefacts: notLanded.save as never, compose: compose as never, trace: trace as never, usage: usage0 as never,
   });
   assert.equal(b.ok, true); assert.equal(notLanded.writes[0].refreshAttempts, 2); assert.equal((notLanded.writes[0].lastRefresh as { landed: boolean }).landed, false);
-  assert.match((notLanded.writes[0].lastRefreshError as { reason: string }).reason, /every targeted source came back fetch_failed/);
+  assert.equal((notLanded.writes[0].lastRefreshError as { code: string }).code, 'no_rows_landed');
   // and the stored fetch_failed coverage is not a delta any more: rows-now on OT, coverage fetch_failed → not pending
   assert.deepEqual(refreshDelta({ ot: { status: 'fetch_failed', count: 0 } }, { ot: 2, pac: 0, progress: 0 }, 2), { pending: false, stuck: false, sources: [] });
 });
