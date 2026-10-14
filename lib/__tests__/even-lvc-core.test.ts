@@ -124,8 +124,8 @@ test('rollupContests counts per assertion and flips ONLY active→contested at �
 
 // ── (4) own_cases ───────────────────────────────────────────────────────────────
 test('computeOwnCases true only when ratifier name is among the supporting doctor_uids', () => {
-  assert.equal(computeOwnCases('Zaki', ['DOC_A', 'Zaki', 'DOC_B']), true);
-  assert.equal(computeOwnCases('Zaki', ['DOC_A', 'DOC_B']), false, 'roster reviewer not among doctors ⇒ false (the common case)');
+  assert.equal(computeOwnCases('Sample', ['DOC_A', 'Sample', 'DOC_B']), true);
+  assert.equal(computeOwnCases('Sample', ['DOC_A', 'DOC_B']), false, 'roster reviewer not among doctors ⇒ false (the common case)');
   assert.equal(computeOwnCases('', ['']), false, 'empty ratifier ⇒ false');
 });
 

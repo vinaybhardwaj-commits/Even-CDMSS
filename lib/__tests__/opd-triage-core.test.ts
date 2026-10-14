@@ -187,7 +187,7 @@ test('buildTriageEvent: enforces chip, free text optional, telemetry columns nor
     assert.equal(ok.value.note, null);           // free text omitted → null (not required)
     assert.equal(ok.value.app_source, 'standalone');
   }
-  const routed = buildTriageEvent({ validity: 'valid_signal', routed: true, chip: 'resolved_with_doctor', note: 'called, agreed to stop', actor: 'Zaki' });
+  const routed = buildTriageEvent({ validity: 'valid_signal', routed: true, chip: 'resolved_with_doctor', note: 'called, agreed to stop', actor: 'Sample' });
   assert.ok(routed.ok);
   if (routed.ok) { assert.equal(routed.value.to_status, 'routed'); assert.equal(routed.value.note, 'called, agreed to stop'); }
 });

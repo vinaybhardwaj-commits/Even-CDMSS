@@ -14,13 +14,13 @@ import {
 
 // ── SQL builders target the right tables/keys, embed only validated ids ──────────
 test('builders target the right tables and validate ids', () => {
-  assert.match(individualSql('3cK6aGinZxFUhgF65NqM'), /FROM individuals WHERE uid = '3cK6aGinZxFUhgF65NqM'/);
-  assert.match(episodesSql('3cK6aGinZxFUhgF65NqM'), /FROM "individuals-prescriptions"/);
-  assert.match(episodesSql('3cK6aGinZxFUhgF65NqM'), /_parent_id = '3cK6aGinZxFUhgF65NqM' AND is_draft = false/);
-  assert.match(reportsSql('diagnostic', '3cK6aGinZxFUhgF65NqM'), /FROM "individuals-diagnostic_reports"/);
-  assert.match(reportsSql('radiology', '3cK6aGinZxFUhgF65NqM'), /FROM "individuals-radiology_reports"/);
-  assert.match(dischargeSql('UHID-41072'), /FROM kx_discharge_summary_records WHERE uhid = 'UHID-41072'/);
-  assert.match(dischargeSql('UHID-41072'), /DISTINCT ON \(coalesce\(nullif\(ipd_no/);   // dedupe revised versions per admission
+  assert.match(individualSql('ExampleUid0000000001'), /FROM individuals WHERE uid = 'ExampleUid0000000001'/);
+  assert.match(episodesSql('ExampleUid0000000001'), /FROM "individuals-prescriptions"/);
+  assert.match(episodesSql('ExampleUid0000000001'), /_parent_id = 'ExampleUid0000000001' AND is_draft = false/);
+  assert.match(reportsSql('diagnostic', 'ExampleUid0000000001'), /FROM "individuals-diagnostic_reports"/);
+  assert.match(reportsSql('radiology', 'ExampleUid0000000001'), /FROM "individuals-radiology_reports"/);
+  assert.match(dischargeSql('UHID-000000'), /FROM kx_discharge_summary_records WHERE uhid = 'UHID-000000'/);
+  assert.match(dischargeSql('UHID-000000'), /DISTINCT ON \(coalesce\(nullif\(ipd_no/);   // dedupe revised versions per admission
   assert.match(dischargeSql('AH2425/007334'), /uhid = 'AH2425\/007334'/);   // slash-form uhid allowed
   assert.match(dpipeByUidsSql(['lFe7BzBrSyekYqYRRlZe']), /dpipe_prescription_pipeline WHERE presc_uid IN \('lFe7BzBrSyekYqYRRlZe'\)/);
 });
@@ -130,10 +130,10 @@ test('computeSnapshot counts + lastContact + medsLastVisit', () => {
 });
 
 test('buildMember shapes identity + age + allergies', () => {
-  const m = buildMember({ uid: '3cK6aGinZxFUhgF65NqM', first_name: 'Jeniffer', last_name: 'Fernandes', gender: 'FEMALE', dob: '1995-11-09', kx_uhid: 'UHID-41072', mobiles: ['+919082955048'], allergies: ['Penicillin'] }, '950137113001', new Date(Date.UTC(2026, 6, 1)));
-  assert.equal(m.name, 'Jeniffer Fernandes');
+  const m = buildMember({ uid: 'ExampleUid0000000001', first_name: 'Example', last_name: 'Fernandes', gender: 'FEMALE', dob: '1995-11-09', kx_uhid: 'UHID-000000', mobiles: ['+919000000001'], allergies: ['Penicillin'] }, '000000000001', new Date(Date.UTC(2026, 6, 1)));
+  assert.equal(m.name, 'Example Fernandes');
   assert.equal(m.age, 30);
-  assert.equal(m.uhid, 'UHID-41072');
-  assert.equal(m.membershipId, '950137113001');
+  assert.equal(m.uhid, 'UHID-000000');
+  assert.equal(m.membershipId, '000000000001');
   assert.deepEqual(m.allergies, ['Penicillin']);
 });

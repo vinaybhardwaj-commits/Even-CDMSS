@@ -43,10 +43,10 @@ test('overlap is ~20% and buckets < 20', () => {
 });
 
 test('overlap findings are served to EVERY reviewer; partitioned to exactly one', () => {
-  const roster = ['V', 'Zaki'];
+  const roster = ['V', 'Sample'];
   for (const r of REFS) {
     if (isOverlap(r)) {
-      assert.ok(assignedToReviewer(r, 'V', roster) && assignedToReviewer(r, 'Zaki', roster));
+      assert.ok(assignedToReviewer(r, 'V', roster) && assignedToReviewer(r, 'Sample', roster));
     } else {
       const owners = roster.filter((rev) => assignedToReviewer(r, rev, roster));
       assert.equal(owners.length, 1, `partitioned ${r} owned by exactly one, got ${owners.length}`);
@@ -56,14 +56,14 @@ test('overlap findings are served to EVERY reviewer; partitioned to exactly one'
 });
 
 test('a reviewer not on the roster still gets the overlap set (only)', () => {
-  const roster = ['V', 'Zaki'];
+  const roster = ['V', 'Sample'];
   for (const r of REFS) {
     assert.equal(assignedToReviewer(r, 'Ghost', roster), isOverlap(r));
   }
 });
 
 test('partition is roughly even across the roster', () => {
-  const roster = ['V', 'Zaki', 'Sam'];
+  const roster = ['V', 'Sample', 'Sam'];
   const counts = [0, 0, 0];
   for (const r of REFS) { const i = partitionIndex(r, roster.length); if (i >= 0) counts[i]++; }
   const total = counts.reduce((a, b) => a + b, 0);
@@ -114,7 +114,7 @@ test('passthrough: optional uid + prescription_url survive buildReviewQueue onto
 });
 
 test('excludes labeled-by-this-reviewer, informational, unassigned, and filtered-out findings', () => {
-  const roster = ['V', 'Zaki'];
+  const roster = ['V', 'Sample'];
   const mine = REFS.filter((r) => assignedToReviewer(r, 'V', roster)).slice(0, 10).map((r) => mkFinding({ finding_ref: r }));
   const theirs = REFS.filter((r) => !assignedToReviewer(r, 'V', roster)).slice(0, 5).map((r) => mkFinding({ finding_ref: r }));
   const info = mkFinding({ finding_ref: mine[0].finding_ref + 'info', signal_type: 'X', informational: true });

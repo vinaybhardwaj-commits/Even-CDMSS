@@ -149,7 +149,7 @@ function intakeExcludeClause(excludeDoctorUids: string[]): string {
  * Count non-draft medical notes for an IST calendar day (eligible, house accounts excluded).
  *
  * SWEEP-1 (D1, 7 Aug 2026): count(DISTINCT ip.uid), NOT count(*). The db13 sync can write the
- * same note twice — MEASURED: `uprUJbQnetwvlFrmm2tb` landed in this table a second time on
+ * same note twice — MEASURED: `ExampleUid0000000009` landed in this table a second time on
  * 6 Aug 12:51 IST with the same _doc_id — and count(*) then reports 469 where 468 distinct
  * notes exist. Every consumer compares this number against a set of audited UIDS, so a
  * count that outruns the distinct uids makes a fully-audited day look permanently

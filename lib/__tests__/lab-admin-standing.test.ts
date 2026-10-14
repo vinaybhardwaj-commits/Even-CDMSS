@@ -56,8 +56,8 @@ function withEnv(vars: Record<string, string | undefined>, fn: () => void | Prom
 const BEDROCK_ENV = {
   GCP_SA_KEY: '{"client_email":"sa@p.iam.gserviceaccount.com","private_key":"k"}',
   BEDROCK_REGION: 'ap-south-1',
-  BEDROCK_ROLE_ARN: 'arn:aws:iam::819481466105:role/GCPBedrockRole',
-  BEDROCK_OIDC_AUDIENCE: '588427270277',
+  BEDROCK_ROLE_ARN: 'arn:aws:iam::ACCOUNT:role/GCPBedrockRole',
+  BEDROCK_OIDC_AUDIENCE: '000000000002',
 };
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════

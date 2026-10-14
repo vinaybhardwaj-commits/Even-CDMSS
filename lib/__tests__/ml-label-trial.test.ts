@@ -37,7 +37,7 @@ const NOTE_CONTEXT = 'Presenting complaints: knee pain · Diagnosis: osteoarthri
 // model must be told its three classes) — blindness is about the HUMAN'S data, not the taxonomy.
 const POISON = {
   humanVerdict: 'true_positive',
-  reviewerName: 'ZAKI-SENTINEL-9Q4',
+  reviewerName: 'SAMPLE-SENTINEL-9Q4',
   humanComment: 'COMMENT-SENTINEL-7X2 — I checked this one myself',
   triageField: 'finding_ref_SENTINEL',
   contested: 'contested',
@@ -52,7 +52,7 @@ test('D1 FIRST: the rendered prompt contains NO human label, reviewer name, or t
   assert.ok(!rendered.includes('true_positive'), 'the HUMAN vocabulary must not appear — the model answers tp|nitpick|false');
   assert.ok(!/\bauthor\b/i.test(rendered), 'no author field');
   assert.ok(!/\breviewer\b/i.test(rendered), 'no reviewer framing — calibrate, don\'t cosplay (ruling §2a)');
-  assert.ok(!/\bDr\.?\s/i.test(rendered), 'no persona (ruling §2a: no "Dr. Zaki" costume)');
+  assert.ok(!/\bDr\.?\s/i.test(rendered), 'no persona (ruling §2a: no "Dr. Sample" costume)');
   // 'contested' is reserved for humans (D3) — the model must never even see the word.
   assert.ok(!rendered.includes('contested'), 'contested is the clinician\'s speech act, never offered to the model');
 });

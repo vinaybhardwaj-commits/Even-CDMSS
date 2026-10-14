@@ -2,7 +2,7 @@
  *   node --test --import tsx lib/__tests__/clinical-bands.test.ts
  *
  * Phase 3b — ratified vitamin-D bands and the dose concordance matrix (rulings R-6, D-3, and
- * Dr Zaki's 29 Jul ratification).
+ * Dr Sample's 29 Jul ratification).
  *
  * BUG 8 (P0): two notes from ONE prescriber on ONE day — 17 and 18 ng/mL, identical 60,000 IU
  * weekly × 8 week regimens — scored 100 and 60. One nanogram, forty points. MEASURED by exhaustive
@@ -88,7 +88,7 @@ test('row 1: deficient + 60,000 IU weekly × 8 weeks is concordant', () => {
   assert.equal(vitaminDConcordance('deficient', { iu: 60000, weekly: true, weeks: 8 }), 'concordant');
 });
 
-test('row 2: insufficient + the same regimen is concordant (Dr Zaki, Indian context)', () => {
+test('row 2: insufficient + the same regimen is concordant (Dr Sample, Indian context)', () => {
   assert.equal(vitaminDConcordance('insufficient', { iu: 60000, weekly: true, weeks: 8 }), 'concordant');
 });
 

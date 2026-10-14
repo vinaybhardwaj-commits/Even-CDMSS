@@ -55,7 +55,7 @@ test('countedLabels: impact excluded, missed included, roster filter, finding cu
     row({ author: 'V', scope: 'missed', day: '2026-07-09' }),
     row({ author: 'Ghost', scope: 'finding', finding_ref: 'f2', verdict: 'false', day: '2026-07-09' }), // not in roster
   ];
-  const counted = countedLabels(rows, ['V', 'Zaki']);
+  const counted = countedLabels(rows, ['V', 'Sample']);
   assert.equal(counted.length, 2); // one current-state finding + one missed
   const f = counted.find((c) => c.finding_ref === 'f1')!;
   assert.equal(f.verdict, 'true_positive'); assert.equal(f.day, '2026-07-09'); // later row won
@@ -86,46 +86,46 @@ test('streak: threshold exactly 15, consecutive, yesterday-grace, today-only, ga
 
 // ── pairwise agreement ─────────────────────────────────────────────────────────
 test('agreement: pair construction (2 & 3 reviewers), tier match/mismatch, overlap-only', () => {
-  const roster = ['V', 'Zaki', 'Aravind'];
+  const roster = ['V', 'Sample', 'Aravind'];
   const o = OVERLAP[0];
-  // one overlap finding, 3 reviewers: V=tp, Zaki=tp, Aravind=false
+  // one overlap finding, 3 reviewers: V=tp, Sample=tp, Aravind=false
   const counted = countedLabels([
     row({ author: 'V', scope: 'finding', finding_ref: o, verdict: 'true_positive', day: '2026-07-09' }),
-    row({ author: 'Zaki', scope: 'finding', finding_ref: o, verdict: 'true_positive', day: '2026-07-09' }),
+    row({ author: 'Sample', scope: 'finding', finding_ref: o, verdict: 'true_positive', day: '2026-07-09' }),
     row({ author: 'Aravind', scope: 'finding', finding_ref: o, verdict: 'false', day: '2026-07-09' }),
     // a NON-overlap finding both label — must NOT create a pair
     row({ author: 'V', scope: 'finding', finding_ref: NONOVERLAP[0], verdict: 'nitpick', day: '2026-07-09' }),
-    row({ author: 'Zaki', scope: 'finding', finding_ref: NONOVERLAP[0], verdict: 'nitpick', day: '2026-07-09' }),
+    row({ author: 'Sample', scope: 'finding', finding_ref: NONOVERLAP[0], verdict: 'nitpick', day: '2026-07-09' }),
   ], roster);
   const ag = agreementByReviewer(counted, roster);
-  assert.equal(ag.V.pairs, 2); assert.equal(ag.V.matches, 1);   // vs Zaki (match), vs Aravind (miss)
-  assert.equal(ag.Zaki.pairs, 2); assert.equal(ag.Zaki.matches, 1);
+  assert.equal(ag.V.pairs, 2); assert.equal(ag.V.matches, 1);   // vs Sample (match), vs Aravind (miss)
+  assert.equal(ag.Sample.pairs, 2); assert.equal(ag.Sample.matches, 1);
   assert.equal(ag.Aravind.pairs, 2); assert.equal(ag.Aravind.matches, 0);
   assert.equal(ag.V.agreement_pct, 50);
 });
 
 test('agreement: current-state dedup feeds pairs (later verdict wins), then match recomputed', () => {
-  const roster = ['V', 'Zaki'];
+  const roster = ['V', 'Sample'];
   const o = OVERLAP[1];
   const counted = countedLabels([
     row({ author: 'V', scope: 'finding', finding_ref: o, verdict: 'false', day: '2026-07-08' }),
     row({ author: 'V', scope: 'finding', finding_ref: o, verdict: 'true_positive', day: '2026-07-09' }), // later wins → tp
-    row({ author: 'Zaki', scope: 'finding', finding_ref: o, verdict: 'true_positive', day: '2026-07-09' }),
+    row({ author: 'Sample', scope: 'finding', finding_ref: o, verdict: 'true_positive', day: '2026-07-09' }),
   ], roster);
   const ag = agreementByReviewer(counted, roster);
   assert.equal(ag.V.pairs, 1); assert.equal(ag.V.matches, 1); // tp vs tp after dedup
 });
 
 test('computeReviewStats: ≥20-pair display boundary, week total, badges shape', () => {
-  const roster = ['V', 'Zaki'];
+  const roster = ['V', 'Sample'];
   const today = '2026-07-09';
   const rows: LabelRow[] = [];
-  // 25 distinct OVERLAP findings both V & Zaki agree on → 25 pairs each (≥20 → agreement shown)
+  // 25 distinct OVERLAP findings both V & Sample agree on → 25 pairs each (≥20 → agreement shown)
   const refs: string[] = [];
   for (let i = 0; refs.length < 25; i++) { const r = `ov-${i}`; if (isOverlap(r)) refs.push(r); if (i > 5000) break; }
   for (const ref of refs) {
     rows.push(row({ author: 'V', scope: 'finding', finding_ref: ref, verdict: 'true_positive', day: today }));
-    rows.push(row({ author: 'Zaki', scope: 'finding', finding_ref: ref, verdict: 'true_positive', day: today }));
+    rows.push(row({ author: 'Sample', scope: 'finding', finding_ref: ref, verdict: 'true_positive', day: today }));
   }
   const stats = computeReviewStats({ rows, roster, today, goal: DEFAULT_GOAL });
   assert.equal(stats.team.total, 50);            // 25 findings × 2 authors, all current-state

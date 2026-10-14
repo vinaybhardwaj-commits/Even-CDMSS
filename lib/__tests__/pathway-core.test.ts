@@ -16,7 +16,7 @@ import {
   type SkeletonStage,
 } from '../pathway-core.ts';
 
-// De-anchoring guard (from Dr. Zaki's Widal/enteric-fever feedback): a low-certainty
+// De-anchoring guard (from Dr. Sample's Widal/enteric-fever feedback): a low-certainty
 // or anchored diagnosis must force the DDx hand-off even if the model says needs_ddx=false.
 test('parseSkeleton forces DDx hand-off on a low-certainty / anchored diagnosis', () => {
   const stages = '[{"kind":"diagnosis","title":"Confirm","action":"blood culture","flag":"high-value"}]';

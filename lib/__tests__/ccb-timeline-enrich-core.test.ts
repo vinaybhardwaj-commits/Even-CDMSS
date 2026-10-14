@@ -13,8 +13,8 @@ import {
   furthestSurgeryStage, hcuDocUrl,
 } from '../ccb-timeline-enrich-core.ts';
 
-const UID = '3cK6aGinZxFUhgF65NqM';
-const UHID = 'UHID-372114';
+const UID = 'ExampleUid0000000001';
+const UHID = 'UHID-000000';
 
 // Ids that must never reach a query.
 const BAD_UIDS = ["' OR 1=1 --", 'short', '', '  ', "abc'; DROP TABLE surgery_cases; --", 'a'.repeat(65)];
