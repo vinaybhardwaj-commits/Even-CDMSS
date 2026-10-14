@@ -21,13 +21,14 @@ export const maxDuration = 300;
  *   POST {action:'start_run', model:'bedrock:global.anthropic.claude-opus-4-6-v1', dayFrom, dayTo}   (n_per_tick forced to 1)
  *   POST {action:'pause'|'resume'|'stop'|'status'}
  */
+import { hasCronBearer } from '@/lib/cron-auth';
 import { NextRequest, NextResponse } from 'next/server';
 import { isAdminUnlocked } from '@/lib/admin-cookie';
 import { logTick } from '@/lib/mini-backfill';
 import { refreshTick, refreshStatus, startRefreshRun, controlRefreshRun, probeCase } from '@/lib/readmission/refresh';
 
 async function authed(req: NextRequest): Promise<boolean> {
-  const isCron = req.headers.get('x-vercel-cron') !== null;
+  const isCron = hasCronBearer(req);
   const auth = req.headers.get('authorization') || '';
   const bearerOk = !!process.env.CRON_SECRET && auth === `Bearer ${process.env.CRON_SECRET}`;
   const secret = req.nextUrl.searchParams.get('secret');

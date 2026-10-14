@@ -2,15 +2,16 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 export const maxDuration = 300;
 
+import { hasCronBearer } from '@/lib/cron-auth';
 import { NextRequest, NextResponse } from 'next/server';
 import { runHarvestEpmc } from '@/lib/harvest-epmc';
 
 // Europe PMC literature harvest (OA full text + abstract fallback). Same execution
-// guard as /api/cron/harvest: Vercel Cron (x-vercel-cron) OR Authorization: Bearer
+// guard as /api/cron/harvest: Vercel Cron (Bearer CRON_SECRET) OR Authorization: Bearer
 // CRON_SECRET OR ?secret=CRON_SECRET. Not wired into vercel.json cron yet — manual
 // trigger only until validated. ?topic=<id> targets one topic, ?max=<n> caps articles.
 export async function GET(req: NextRequest) {
-  const isCron = req.headers.get('x-vercel-cron') !== null;
+  const isCron = hasCronBearer(req);
   const auth = req.headers.get('authorization') || '';
   const bearerOk = !!process.env.CRON_SECRET && auth === `Bearer ${process.env.CRON_SECRET}`;
   const secret = req.nextUrl.searchParams.get('secret');

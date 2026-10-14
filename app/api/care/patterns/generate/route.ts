@@ -18,6 +18,7 @@
  * FLAGGED OFF by default: needs CCB_ENABLED=1 and LVC_PATTERNS_ENABLED=1 — the same pair that
  * gates the shelf itself, so this route cannot decorate a page nobody can open.
  */
+import { hasCronBearer } from '@/lib/cron-auth';
 import { NextRequest, NextResponse } from 'next/server';
 import { isAdminUnlocked } from '@/lib/admin-cookie';
 import { requireAdmin } from '@/lib/admin-gate';
@@ -31,9 +32,9 @@ function enabled(): boolean {
   return process.env.CCB_ENABLED === '1' && process.env.LVC_PATTERNS_ENABLED === '1';
 }
 
-/** The cron arm: Vercel's own header, or a bearer/query CRON_SECRET. No cookie of any kind. */
+/** The cron arm: Vercel's bearer, or a bearer/query CRON_SECRET. No cookie of any kind. */
 function cronAuthed(req: NextRequest): boolean {
-  if (req.headers.get('x-vercel-cron') !== null) return true;
+  if (hasCronBearer(req)) return true;
   const secret = process.env.CRON_SECRET;
   if (!secret) return false;
   const auth = req.headers.get('authorization') || '';

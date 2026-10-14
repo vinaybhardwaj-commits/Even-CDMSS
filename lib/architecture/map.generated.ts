@@ -287,6 +287,10 @@ export const MAP_MODULES: MapModule[] = [
     "plane": "advisory"
   },
   {
+    "id": "cron-auth",
+    "plane": "unregistered"
+  },
+  {
     "id": "curator",
     "plane": "unregistered"
   },
@@ -1684,6 +1688,11 @@ export const MAP_EDGES: MapEdge[] = [
   {
     "from": "app/api",
     "to": "concordance-store",
+    "kind": "value"
+  },
+  {
+    "from": "app/api",
+    "to": "cron-auth",
     "kind": "value"
   },
   {

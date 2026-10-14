@@ -2,6 +2,7 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 export const maxDuration = 120;
 
+import { hasCronBearer } from '@/lib/cron-auth';
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 import { sql } from '@/lib/db';
@@ -11,12 +12,12 @@ import { fetchDoctorSpecialities } from '@/lib/metabase';
 // Sync the doctor_uid → speciality directory from db13 (via the existing Metabase client) so the
 // stewardship view has a real department dimension (the source consult_type is blank). Creates the
 // table if missing — one-click, cookie-auth. Read-only against db13; writes only doctor_directory
-// in Neon (staff data, not PHI). Auth: Vercel Cron header, OR Bearer/?secret=CRON_SECRET, OR admin.
+// in Neon (staff data, not PHI). Auth: Vercel Cron (Bearer CRON_SECRET), OR Bearer/?secret=CRON_SECRET, OR admin.
 const APP = process.env.APP_SOURCE || 'standalone';
 const sql2 = sql as unknown as (q: string, p: unknown[]) => Promise<Record<string, unknown>[]>;
 
 async function authed(req: NextRequest): Promise<boolean> {
-  if (req.headers.get('x-vercel-cron') !== null) return true;
+  if (hasCronBearer(req)) return true;
   const auth = req.headers.get('authorization') || '';
   const secret = new URL(req.url).searchParams.get('secret');
   if (process.env.CRON_SECRET && (auth === `Bearer ${process.env.CRON_SECRET}` || secret === process.env.CRON_SECRET)) return true;
