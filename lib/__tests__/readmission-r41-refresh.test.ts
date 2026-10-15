@@ -271,7 +271,7 @@ test('A1: re-assemble failure on the save path books an attempt (n+1) and parks 
   const m = await import('../readmission/refresh.ts');
   const rec = recorder();
   const r = await m.reanalyzeOnOpus(seamRow(0) as never, { save: true }, { assemble: async () => ({ notAuditable: 'no index PDF' }), saveArtefacts: rec.save as never, trace: trace as never, usage: usage0 as never });
-  assert.equal(r.ok, false); assert.match(r.reason!, /could not be re-assembled.*\(attempt 1\/3\)/);
+  assert.equal(r.ok, false); assert.match(r.reason!, /^reassemble_failed \(attempt 1\/3\)$/);
   assert.equal(rec.writes[0].refreshAttempts, 1); assert.equal((rec.writes[0].lastRefreshError as { stuck: boolean }).stuck, false);
   const rec3 = recorder();
   const r3 = await m.reanalyzeOnOpus(seamRow(2) as never, { save: true }, { assemble: async () => ({ notAuditable: 'no index PDF' }), saveArtefacts: rec3.save as never, trace: trace as never, usage: usage0 as never });
@@ -288,7 +288,7 @@ test('A1: DEC-2 model-disagreement refusal books an attempt and saves no finding
     assemble: async () => okAssembled() as never, pass: () => async () => claims(), served: async () => ({ model: 'gemini-2.5-pro', provider: 'gemini' }),
     saveAudit: async () => { audits++; return true; }, saveArtefacts: rec.save as never, trace: trace as never, usage: usage0 as never,
   });
-  assert.equal(r.ok, false); assert.match(r.reason!, /DEC-2.*nothing saved \(attempt 2\/3\)/); assert.equal(audits, 0);
+  assert.equal(r.ok, false); assert.match(r.reason!, /^model_disagreement \(attempt 2\/3\)$/); assert.equal(audits, 0);
   assert.equal(rec.writes.length, 1); assert.equal(rec.writes[0].refreshAttempts, 2);
 });
 
@@ -299,12 +299,12 @@ test('A1: in-place write failure books an attempt; a thrown / unparseable leg bo
     assemble: async () => okAssembled() as never, pass: () => async () => claims(), served: async () => ({ model: 'global.anthropic.claude-opus-4-6-v1', provider: 'bedrock' }),
     saveAudit: async () => false, saveArtefacts: rec.save as never, trace: trace as never, usage: usage0 as never,
   });
-  assert.equal(r.ok, false); assert.match(r.reason!, /in-place store write failed \(attempt 1\/3\)/); assert.equal(rec.writes[0].refreshAttempts, 1);
+  assert.equal(r.ok, false); assert.match(r.reason!, /^write_failed \(attempt 1\/3\)$/); assert.equal(rec.writes[0].refreshAttempts, 1);
   const rec2 = recorder();
   const r2 = await m.reanalyzeOnOpus(seamRow(2) as never, { save: true }, {
     assemble: async () => okAssembled() as never, pass: () => async () => null, saveArtefacts: rec2.save as never, trace: trace as never, usage: usage0 as never,
   });
-  assert.equal(r2.ok, false); assert.match(r2.reason!, /recon pass A unparseable.*attempt 3\/3 — parked as refresh_stuck/); assert.equal(rec2.writes[0].refreshAttempts, 3);
+  assert.equal(r2.ok, false); assert.match(r2.reason!, /^refresh_failed \(attempt 3\/3 — parked as refresh_stuck/); assert.equal(rec2.writes[0].refreshAttempts, 3);
 });
 
 test('A1: a successful refresh that LANDED rows resets attempts to 0; one whose targeted sources all came back fetch_failed counts as an attempt (no reset) — and fetch_failed no longer pends, so it cannot loop', async () => {

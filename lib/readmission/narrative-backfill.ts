@@ -46,6 +46,7 @@ import { assembleForRow } from './run';
 import { composeCaseArtefacts } from './narrative';
 import { auditedRowsNeedingNarrative, auditedRowForNarrative, narrativePendingCountForDay, narrativeBacklog, READMIT_ENGINE_VERSION, type NarrativeRow } from './store';
 import { asJson } from './surface-row';
+import { classifyWorkerError, workerCatchCode } from './health';
 
 export const NARRATIVE_WORKER = 'readmission' as const;
 /** Own soft lock (app_settings key) — the OPD runner's lock guards ITS ticks; this one guards ours,
@@ -185,7 +186,7 @@ export async function narrativeTick(): Promise<NarrativeTickResult> {
           results.push(b);
           tokensIn += b.tokensIn; tokensOut += b.tokensOut; cost += b.usd;
           if (b.ok) { processed++; if (b.valid === false) invalid++; }
-          else { failed++; lastError = (b.reason ?? 'unknown').slice(0, 500); }
+          else { failed++; lastError = classifyWorkerError(b.reason, 'narrative_failed'); }
         }
       }
       const remaining = await narrativePendingCountForDay(day);
@@ -220,7 +221,7 @@ export async function narrativeTick(): Promise<NarrativeTickResult> {
       results,
     };
   } catch (e) {
-    const msg = String((e as Error).message).slice(0, 500);
+    const msg = workerCatchCode(e, 'run_failed', '[readmission-narrative]');
     await setRunStatus(active.id, 'error', msg, { onlyIfActive: true });
     await logTick({ status: 'error', note: msg.slice(0, 200), run_id: active.id });
     return { worker: NARRATIVE_WORKER, run_id: active.id, status: 'error', error: msg };

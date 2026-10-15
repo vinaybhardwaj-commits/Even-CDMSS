@@ -79,6 +79,29 @@ export function classifyRefreshFailure(kind: RefreshFailureKind, text?: string |
   }
 }
 
+/** The closed set of codes a readmission worker may STORE (backfill_runs.last_error / status message,
+ *  readmission_findings.last_error) or RETURN in its cron/admin JSON. A code, never exception text. */
+export const WORKER_ERROR_CODES = [
+  'not_configured', 'sts_denied', 'timeout', 'id_token_failed', 'error',
+  'refresh_failed', 'narrative_failed', 'audit_failed', 'run_failed',
+] as const;
+export type WorkerErrorCode = (typeof WORKER_ERROR_CODES)[number];
+
+/** PURE: free text to a code in WORKER_ERROR_CODES. Bedrock classes come from classifyBedrockError; anything else
+ *  (and the generic 'error') is the caller's fallback. The input is never echoed. */
+export function classifyWorkerError(text: string | null | undefined, fallback: WorkerErrorCode): WorkerErrorCode {
+  const f: WorkerErrorCode = (WORKER_ERROR_CODES as readonly string[]).includes(fallback) ? fallback : 'run_failed';
+  const c = classifyBedrockError({ ok: false, error: typeof text === 'string' ? text : '' });
+  return c === null || c === 'error' ? f : c;
+}
+
+/** A worker's catch block: log the raw message once (server log only), return the code that is stored and returned. */
+export function workerCatchCode(e: unknown, fallback: WorkerErrorCode, tag: string): WorkerErrorCode {
+  const raw = String((e as Error)?.message ?? e).slice(0, 500);
+  console.warn(`${tag} ${raw}`);
+  return classifyWorkerError(raw, fallback);
+}
+
 export interface PublicBedrock { ok: boolean; checkedAt: string; code: BedrockCode | null }
 
 export function publicBedrock(live: BedrockLiveLike): PublicBedrock {
