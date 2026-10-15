@@ -21,7 +21,7 @@ function finding(over: Partial<ClinicalFinding>): ClinicalFinding {
   return { id: 'f1', kind: 'synthesis', claim: 'c', grounding: 'general_reasoning', citation_ids: [], confidence: 0.6, ...over };
 }
 function bundle(over: Partial<EpisodePrescription> = {}, coverage: 'rich' | 'order_only' = 'rich'): EpisodeBundle {
-  const keys: EpisodeKeys = { prescUid: 'uTAWDQinrFFW', individualUid: 'FHpN3DmRklMEbdQAr4oV', kxUhid: 'EHRC1',
+  const keys: EpisodeKeys = { prescUid: '00000000-0000-4000-8000-000000000001', individualUid: 'test-individualUid-01', kxUhid: 'EHRC1',
     kxEncounterId: null, doctorUid: null, doctorSpeciality: null, noteDate: '2026-06-30', consultType: null, prescriptionType: null };
   const prescription: EpisodePrescription = { url: null, meds: [{ generic: 'paracetamol' }], dxCodes: ['M54.5'], impressionCodes: [],
     diagnoses: [], presentingComplaint: 'low back pain', planOfManagement: 'MRI advised', investigations: [], specialistReferral: [], ...over };
@@ -167,7 +167,7 @@ test('composeEpisodeText is de-identified and notes order-only coverage', () => 
   assert.match(t, /Medications: paracetamol/);
   assert.match(t, /Tests done this episode: MRI LUMBAR SPINE/);
   assert.match(t, /order-level only/);
-  assert.doesNotMatch(t, /FHpN3DmRklMEbdQAr4oV|EHRC1/);   // no identifiers leak into the model text
+  assert.doesNotMatch(t, /test-individualUid-01|EHRC1/);   // no identifiers leak into the model text
 });
 
 test('retrievalQuery surfaces the clinical content', () => {
@@ -186,7 +186,7 @@ test('assembleEnvelope carries member_ref for join-back + the disclaimer', () =>
   });
   assert.equal(env.engine_version, 'care-brief/0.1');
   assert.equal(env.member_ref.uhid, 'EHRC1');
-  assert.equal(env.member_ref.individual_uid, 'FHpN3DmRklMEbdQAr4oV');
+  assert.equal(env.member_ref.individual_uid, 'test-individualUid-01');
   assert.equal(env.episode.coverage, 'rich');
   assert.equal(env.grounding_summary.corpus_cited, 1);
   assert.match(env.disclaimer, /Advisory, non-diagnostic/);
