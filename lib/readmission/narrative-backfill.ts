@@ -116,15 +116,20 @@ export async function narrateOne(row: NarrativeRow, opts: { force?: boolean } = 
       ledgerSource: 'reassembled', narrativeSource: 'backfill', traceId,
     });
     await finishTrace(traceId, r.ok ? 'success' : 'error', r.ok ? undefined : r.reason);
+    let legReason = r.reason;
+    if (!r.ok && r.reason != null) {
+      console.warn(`[readmission-narrative] ${String(r.reason).slice(0, 500)}`);
+      legReason = classifyWorkerError(r.reason, 'narrative_failed');
+    }
     return {
-      ...base, ok: r.ok, valid: r.valid, reason: r.reason, ms: Date.now() - t0,
+      ...base, ok: r.ok, valid: r.valid, reason: legReason, ms: Date.now() - t0,
       tokensIn: r.tokensIn, tokensOut: r.tokensOut, usd: r.costUsd, traceId,
       relatedState: r.artefacts?.relatedLvc?.state ?? null,
     };
   } catch (e) {
     const msg = String((e as Error).message).slice(0, 400);
     if (traceId) await finishTrace(traceId, 'error', msg).catch(() => {});
-    return { ...base, ok: false, reason: msg, ms: Date.now() - t0, traceId };
+    return { ...base, ok: false, reason: workerCatchCode(e, 'narrative_failed', '[readmission-narrative]'), ms: Date.now() - t0, traceId };
   }
 }
 
