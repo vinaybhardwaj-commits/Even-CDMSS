@@ -173,7 +173,7 @@ test('postgres text[] parsing, as Metabase renders it', () => {
 // ── one episode, assembled end to end ───────────────────────────────────────────
 
 const episodeRow = {
-  docId: 'AbfAHNyYgrrax6fbLPnu', individualUid: 'McBSBlExqOKdWJWyJ5PR', uhid: 'UHID-1',
+  docId: 'test-episode-key', individualUid: 'McBSBlExqOKdWJWyJ5PR', uhid: 'UHID-1',
   patientName: 'Test Patient', age: 62, sex: 'FEMALE',
   procedure: 'Total Hip Replacement - Unilateral- (Package )', hospitalUid: 'vZmEPseTKP3vS3DrZzrv',
   surgeryDate: '2026-08-27', status: 'ADMITTED', urgency: 'ELECTIVE',
@@ -201,7 +201,7 @@ test('a real upcoming episode assembles into exactly the inputs its sources supp
   const proc = a.observations.find((o) => o.inputId === 'high_risk_surgery');
   assert.equal(proc?.status, 'absent');
   assert.equal(proc?.source, 'BOOKING');
-  assert.equal(a.facts.episodeKey, 'AbfAHNyYgrrax6fbLPnu');
+  assert.equal(a.facts.episodeKey, 'test-episode-key');
 });
 
 test('sources arriving flip bookingOnly and tighten the inputs', () => {

@@ -96,7 +96,7 @@ test('§12.3: a long quote is capped, not rejected', () => {
 test('§6.3: the stored row carries its own gate, its authority and its window', () => {
   const d = standingDecision(TURN, { stated: true, standing: 'restricted-review', quote: 'want the pattern watched' });
   const row = standingRow({
-    caseType: 'physician', caseKey: 'HalPyIorNPSOYBL7KSJy', engineVersion: 'opd-0.81.x+ipd-0.2|90d',
+    caseType: 'physician', caseKey: 'test-case-key-not-a-secret', engineVersion: 'opd-0.81.x+ipd-0.2|90d',
     decision: d, actor: 'admin', turnId: 't-1', model: 'global.anthropic.claude-opus-4-6-v1', windowDays: 90,
   })!;
   assert.equal(row.standing, 'restricted-review');

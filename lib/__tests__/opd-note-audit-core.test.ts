@@ -11,7 +11,7 @@ import type { DeidOpdCase, OpdMed } from '../opd-ingest-core.ts';
 
 // Mirrors a real GP row (medications + jsonb arrive as JSON strings via Metabase).
 const ROW: Record<string, unknown> = {
-  uid: 'MqG3ihcPeU4ptLWCBiY6', consult_uid: 'tg3doq', doctor_uid: 'HalPy', kx_encounter_id: null,
+  uid: 'test-uid-not-a-secret', consult_uid: 'tg3doq', doctor_uid: 'HalPy', kx_encounter_id: null,
   type_of_prescription: 'GENERAL_PRACTITIONER', consult_type: null, timestamp: '2026-06-29T05:00:00+05:30',
   presenting_complaints: '[]',
   diagnosis_icd_codes: ['R10.12', 'E78.2', 'E55'],
@@ -33,7 +33,7 @@ test('rowToOpdCase parses stringified JSONB + separates de-identified case from 
   assert.equal(c.presentingComplaints.length, 0); // no nested + empty top-level
   assert.equal(c.followUpType, 'FOLLOW_UP_WITH_REPORTS');
   assert.equal(c.followUpDateSet, false);
-  assert.equal(keys.uid, 'MqG3ihcPeU4ptLWCBiY6');
+  assert.equal(keys.uid, 'test-uid-not-a-secret');
   assert.equal(keys.doctorUid, 'HalPy');
 });
 

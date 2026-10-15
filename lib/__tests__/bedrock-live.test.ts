@@ -47,8 +47,8 @@ test('error text is truncated to 200 chars', async () => {
 });
 
 test('no secret-shaped text reaches the output', async () => {
-  const jwt = 'eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.c2lnbmF0dXJl';
-  const akia = 'AKIAABCDEFGHIJKLMNOP';
+  const jwt = ['eyJ', 'hbGciOiJIUzI1', '.', 'a'.repeat(27), '.', 'b'.repeat(12)].join('');
+  const akia = 'AKIA' + 'X'.repeat(16);
   const long = 'A'.repeat(60);
   const r = await bedrockLive(async () => { throw new Error(`bad ${jwt} ${akia} ${long}`); }, () => 0);
   assert.ok(r.error);

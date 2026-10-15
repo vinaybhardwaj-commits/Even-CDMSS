@@ -214,13 +214,13 @@ test('R6: `fac` URL round-trip incl. malformed values; a stored fac under a fail
 test('R6: composition — hospital AND verdict AND gap; unknown-facility cases ride through the hospital leg and are still judged by the other legs', () => {
   const rows = [
     f({ dedupKey: 'ehbr-avoid-2', facility: 'Even-EHBR', avoidable: 'avoidable', gapDays: 2 }),
-    f({ dedupKey: 'ehbr-avoid-12', facility: 'Even-EHBR', avoidable: 'avoidable', gapDays: 12 }),     // fails gap
+    f({ dedupKey: 'ehbr-avoid-gap-wide', facility: 'Even-EHBR', avoidable: 'avoidable', gapDays: 12 }),     // fails gap
     f({ dedupKey: 'even-avoid-2', facility: 'Even', avoidable: 'avoidable', gapDays: 2 }),             // fails hospital
     f({ dedupKey: 'unknown-avoid-3', facility: null, avoidable: 'avoidable', gapDays: 3 }),           // unknown facility passes (R6-3)
     f({ dedupKey: 'unknown-justified-3', facility: null, avoidable: 'justified', gapDays: 3 }),       // passes hospital, fails verdict
   ];
   assert.deepEqual(applyFilters(rows, st({ fac: 'Even-EHBR', verdict: 'avoidable', gap: 7 })).map((r) => r.dedupKey), ['ehbr-avoid-2', 'unknown-avoid-3']);
-  assert.deepEqual(applyFilters(rows, st({ fac: 'Even-EHBR' })).map((r) => r.dedupKey), ['ehbr-avoid-2', 'ehbr-avoid-12', 'unknown-avoid-3', 'unknown-justified-3']);
+  assert.deepEqual(applyFilters(rows, st({ fac: 'Even-EHBR' })).map((r) => r.dedupKey), ['ehbr-avoid-2', 'ehbr-avoid-gap-wide', 'unknown-avoid-3', 'unknown-justified-3']);
 });
 
 test('R6: the list route maps facility_name off the ADT row the name join ALREADY fetches — no new SQL; the summary-record fallback carries no facility; toFinding passes it through; the card renders it verbatim', () => {

@@ -35,7 +35,7 @@ test('classifier: one code per failure class, null when ok', () => {
 
 const REASON_OK = /^(health read failed|bedrock unreachable \((not_configured|sts_denied|timeout|id_token_failed|error)\)|narrative pending for [\d.]+ h|detected case unaudited for [\d.]+ h)$/;
 test('public payload: no error key; reasons match the allowlist even with hostile error text', () => {
-  const hostile = { ok: false, checkedAt: iso(0), error: 'AccessDenied arn:aws:iam::123456789012:role/secret-role: boom' };
+  const hostile = { ok: false, checkedAt: iso(0), error: 'AccessDenied arn:aws:iam::ACCOUNTID:role/secret-role: boom' };
   const pub = publicBedrock(hostile);
   assert.deepEqual(Object.keys(pub).sort(), ['checkedAt', 'code', 'ok']);
   assert.ok(!JSON.stringify(pub).includes('arn:'));
