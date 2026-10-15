@@ -44,7 +44,7 @@ import type { CaseSource, ThreeSourceInputs } from './assemble';
 import { composeCaseArtefacts } from './narrative';
 import { probeReachable } from '../lab-override';
 import { bedrockLive } from '../bedrock';
-import { classifyBedrockError, classifyNarrativeFailure } from './health';
+import { classifyBedrockError, classifyNarrativeFailure, workerCatchCode } from './health';
 import type { NarrativeErrorCode } from './health';
 import {
   saveDetection, saveAuditResult, recordAuditError, recordNarrativeError, clearNarrativeError, pairToDetectionRow, oonToDetectionRow,
@@ -577,13 +577,14 @@ export async function runReadmissionAudit(row: PendingRow): Promise<ReadmitAudit
     } catch (e) {
       // Transient (model/parse) failure: row stays 'detected' → the sweep IS the retry.
       const msg = String((e as Error).message);
-      await recordAuditError(row.dedup_key, msg);
+      const code = workerCatchCode(e, 'audit_failed', '[readmission-audit]');
+      await recordAuditError(row.dedup_key, code);
       await finishTrace(traceId, 'error', msg);
-      return { dedupKey: row.dedup_key, status: 'failed', reason: msg, traceId, latencyMs: Date.now() - t0 };
+      return { dedupKey: row.dedup_key, status: 'failed', reason: code, traceId, latencyMs: Date.now() - t0 };
     }
   } catch (e) {
-    const msg = String((e as Error).message);
-    await recordAuditError(row.dedup_key, msg);
-    return { dedupKey: row.dedup_key, status: 'failed', reason: msg, latencyMs: Date.now() - t0 };
+    const code = workerCatchCode(e, 'audit_failed', '[readmission-audit]');
+    await recordAuditError(row.dedup_key, code);
+    return { dedupKey: row.dedup_key, status: 'failed', reason: code, latencyMs: Date.now() - t0 };
   }
 }

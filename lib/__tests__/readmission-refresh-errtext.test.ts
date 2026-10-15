@@ -32,13 +32,14 @@ test('the stored stamp has exactly {at, code, attempts, stuck} (no reason), on t
   assert.ok(!JSON.stringify(rec.writes).includes('arn:aws'), 'no hostile text stored');
 });
 
-test('hostile text from a thrown leg gives a code in the set; the stamp stays text-free; the admin result is unchanged', async () => {
+test('hostile text from a thrown leg gives a code in the set; the stamp stays text-free; the admin result carries the code only', async () => {
   const m = await import('../readmission/refresh.ts');
   const rec = recorder();
   const r = await m.reanalyzeOnOpus(seamRow(0) as never, { save: true }, { assemble: async () => { throw new Error(HOSTILE); }, saveArtefacts: rec.save as never, trace: trace as never, usage: usage0 as never });
   const e = rec.writes[0].lastRefreshError as { code: string; reason?: string };
   assert.ok(set.includes(e.code)); assert.equal(e.code, 'sts_denied'); assert.equal('reason' in e, false);
-  assert.match(r.reason!, /AccessDenied/, 'RefreshOneResult.reason (admin route response) is unchanged');
+  assert.equal(r.reason, 'sts_denied (attempt 1/' + r.reason!.split('/')[1], 'FU-READMIT-RESULT-ERRTEXT: RefreshOneResult.reason is the code plus the attempt suffix, no exception text');
+  assert.equal(r.code, 'sts_denied'); assert.ok(!JSON.stringify(r).includes('AccessDenied'));
 });
 
 test('classifyRefreshFailure / normaliseRefreshCode: every kind and hostile text lands in the closed set', () => {

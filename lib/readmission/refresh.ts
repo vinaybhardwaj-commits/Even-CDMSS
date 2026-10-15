@@ -48,7 +48,7 @@ import {
   auditedRowsForRefresh, auditedRowForNarrative, saveAuditResult, saveCaseArtefacts, READMIT_ENGINE_VERSION, type NarrativeRow, type PendingRow,
 } from './store';
 import { asJson } from './surface-row';
-import { classifyRefreshFailure, normaliseRefreshCode, type RefreshErrorCode, type RefreshFailureKind } from './health';
+import { classifyRefreshFailure, classifyWorkerError, workerCatchCode, normaliseRefreshCode, type RefreshErrorCode, type RefreshFailureKind, type WorkerErrorCode } from './health';
 
 export const REFRESH_LOCK_KEY = 'readmit_refresh_lock';
 export const REFRESH_TICK_BUDGET_MS = 200_000;
@@ -105,6 +105,8 @@ export interface RefreshOneResult {
   dedupKey: string;
   ok: boolean;
   reason?: string;
+  /** The closed-set code the failure was booked under (set by fail(); absent on success and on the fixed-literal early returns). */
+  code?: RefreshErrorCode;
   legs: ProbeLeg[];
   judgements?: { planned: string | null; sameCondition: string | null; avoidable: string | null; nOmissions: number };
   coverage?: unknown;
@@ -164,8 +166,9 @@ export async function reanalyzeOnOpus(row: PendingRow, opts: { save: boolean; ru
     return { attempts, stuck };
   };
   const fail = async (kind: RefreshFailureKind, reason: string, extra: Partial<RefreshOneResult> = {}): Promise<RefreshOneResult> => {
-    const b = await bookFailure(classifyRefreshFailure(kind, reason));
-    return { ...base, ...extra, ok: false, reason: `${reason}${opts.save ? ` (attempt ${b.attempts}/${REFRESH_MAX_ATTEMPTS}${b.stuck ? ' — parked as refresh_stuck' : ''})` : ''}`, ms: Date.now() - t0 };
+    const code = classifyRefreshFailure(kind, reason);
+    const b = await bookFailure(code);
+    return { ...base, ...extra, ok: false, code, reason: `${code}${opts.save ? ` (attempt ${b.attempts}/${REFRESH_MAX_ATTEMPTS}${b.stuck ? ' — parked as refresh_stuck' : ''})` : ''}`, ms: Date.now() - t0 };
   };
   try {
     const assembled = await assemble(row);
@@ -305,6 +308,13 @@ export async function controlRefreshRun(action: 'pause' | 'resume' | 'stop'): Pr
   return { ok: true, run_id: target.id, status: change.status };
 }
 
+/** PURE: the value a failed case writes to backfill_runs.last_error: a code, never text. It is the case's own
+ *  RefreshErrorCode when set (REFRESH_ERROR_CODES, which adds reassemble_failed, model_disagreement, write_failed,
+ *  no_rows_landed), else a WorkerErrorCode classified from the reason. */
+export function refreshLastError(result: Pick<RefreshOneResult, 'code' | 'reason'>): RefreshErrorCode | WorkerErrorCode {
+  return result.code ?? classifyWorkerError(result.reason, 'refresh_failed');
+}
+
 export interface RefreshTickResult extends Record<string, unknown> { worker: typeof REFRESH_WORKER }
 
 /** Work the ACTIVE refresh run: ONE pending case on the cursor day; empty days marched past. */
@@ -360,7 +370,7 @@ export async function refreshTick(): Promise<RefreshTickResult> {
       if (next) {
         result = await reanalyzeOnOpus(next.row, { save: true, runId: active.id, sources: next.sources });
         tokensIn += result.tokensIn; tokensOut += result.tokensOut; cost += result.usd;
-        if (result.ok) processed++; else { failed++; lastError = (result.reason ?? 'unknown').slice(0, 500); }
+        if (result.ok) processed++; else { failed++; lastError = refreshLastError(result); }
       }
       // Remaining on this day after this tick's work: a failed case stays pending (re-offered next
       // tick until the attempt cap parks it); a stuck case is not pending. Cursor moves only at 0.
@@ -388,7 +398,7 @@ export async function refreshTick(): Promise<RefreshTickResult> {
       tokens_in: tokensIn, tokens_out: tokensOut, cost_usd: Number(cost.toFixed(4)), result,
     };
   } catch (e) {
-    const msg = String((e as Error).message).slice(0, 500);
+    const msg = workerCatchCode(e, 'run_failed', '[readmission-refresh]');
     await setRunStatus(active.id, 'error', msg, { onlyIfActive: true });
     await logTick({ status: 'error', note: msg.slice(0, 200), run_id: active.id });
     return { worker: REFRESH_WORKER, run_id: active.id, status: 'error', error: msg };
