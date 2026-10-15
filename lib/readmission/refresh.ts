@@ -183,11 +183,12 @@ export async function reanalyzeOnOpus(row: PendingRow, opts: { save: boolean; ru
       let claims: PassClaims | null = null;
       let err: string | null = null;
       try { claims = await raw(label, prompt); } catch (e) { err = String((e as Error).message).slice(0, 200); }
+      if (err != null) console.warn(`[readmission-refresh] ${err}`);
       legs.push({
         label, ms: Date.now() - l0, jsonClosed: claims != null,
         verdicts: claims
           ? { planned: claims.planned?.verdict ?? null, sameCondition: claims.sameCondition?.verdict ?? null, avoidable: claims.avoidable?.verdict ?? null, omissions: claims.omissions?.length ?? 0, exculpatory: claims.exculpatory?.length ?? 0, refusals: claims.refusalRecord?.length ?? 0 }
-          : { error: err ?? 'unparseable' },
+          : { error: err != null ? classifyWorkerError(err, 'refresh_failed') : 'unparseable' },
       });
       return claims;
     };
