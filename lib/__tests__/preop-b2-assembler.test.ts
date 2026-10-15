@@ -173,9 +173,9 @@ test('postgres text[] parsing, as Metabase renders it', () => {
 // ── one episode, assembled end to end ───────────────────────────────────────────
 
 const episodeRow = {
-  docId: 'test-episode-key', individualUid: 'McBSBlExqOKdWJWyJ5PR', uhid: 'UHID-1',
+  docId: 'test-episode-key', individualUid: 'test-individualUid-01', uhid: 'UHID-1',
   patientName: 'Test Patient', age: 62, sex: 'FEMALE',
-  procedure: 'Total Hip Replacement - Unilateral- (Package )', hospitalUid: 'vZmEPseTKP3vS3DrZzrv',
+  procedure: 'Total Hip Replacement - Unilateral- (Package )', hospitalUid: 'test-hospitalUid-01',
   surgeryDate: '2026-08-27', status: 'ADMITTED', urgency: 'ELECTIVE',
   pacWorkflowStatus: 'COMPLETED', pacWorkflowLoggedAt: '2026-08-25T00:00:00Z', comorbidities: ['DIABETES', 'HYPOTHYROID'],
   createdAt: '2026-08-01T00:00:00Z',
@@ -188,7 +188,7 @@ test('the hospital renders as a NAME, falling back to its uid rather than to not
   const named = assembleEpisode(episodeRow, { creatinine: [], icd: [], pac: null, hospitalName: 'Even Hospital' });
   assert.equal(named.facts.hospital, 'Even Hospital');
   const unresolved = assembleEpisode(episodeRow, { creatinine: [], icd: [], pac: null, hospitalName: null });
-  assert.equal(unresolved.facts.hospital, 'vZmEPseTKP3vS3DrZzrv', 'ugly but true beats a name we could not look up');
+  assert.equal(unresolved.facts.hospital, 'test-hospitalUid-01', 'ugly but true beats a name we could not look up');
 });
 
 test('a real upcoming episode assembles into exactly the inputs its sources support', () => {

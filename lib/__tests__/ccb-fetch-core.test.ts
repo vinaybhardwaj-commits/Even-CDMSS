@@ -14,11 +14,11 @@ import {
 } from '../ccb-fetch-core.ts';
 
 test('validators accept real ids/days and reject junk', () => {
-  assert.equal(isUid('uTAWDQinrFFW'), true);
+  assert.equal(isUid('00000000-0000-4000-8000-000000000001'), true);
   assert.equal(isUid('test-uid-not-a-secret'), true);
   assert.equal(isUid("x'; DROP TABLE--"), false);
   assert.equal(isUid('short'), false);            // <6 chars
-  assert.equal(isUhid('EHRC123456'), true);
+  assert.equal(isUhid('test-uhid-01'), true);
   assert.equal(isUhid("123'); --"), false);
   assert.equal(isDay('2026-06-30'), true);
   assert.equal(isDay('2026-6-3'), false);
@@ -37,10 +37,10 @@ test('bundleWindow is asymmetric (reports land after the visit) and crosses mont
 });
 
 test('SQL builders target the right tables/keys and embed only validated values', () => {
-  const p = prescriptionSql('uTAWDQinrFFW');
+  const p = prescriptionSql('00000000-0000-4000-8000-000000000001');
   assert.match(p, /FROM "individuals-prescriptions" ip /);
-  assert.match(p, /WHERE ip\.uid = 'uTAWDQinrFFW'/);
-  assert.match(p, /dpipe_prescription_pipeline WHERE presc_uid = 'uTAWDQinrFFW'/);  // clean-content join
+  assert.match(p, /WHERE ip\.uid = '00000000-0000-4000-8000-000000000001'/);
+  assert.match(p, /dpipe_prescription_pipeline WHERE presc_uid = '00000000-0000-4000-8000-000000000001'/);  // clean-content join
   assert.match(p, /_parent_id AS individual_uid/);
   assert.match(p, /specialist_type_uids/);
 
@@ -73,7 +73,7 @@ test('specialityFromLabel parses the trailing-parens speciality', () => {
 
 test('mapPrescription extracts keys + coerces array/json fields', () => {
   const row: Record<string, unknown> = {
-    uid: 'uTAWDQinrFFW', individual_uid: 'test-uid-not-a-secret', kx_encounter_id: 'ENC1',
+    uid: '00000000-0000-4000-8000-000000000001', individual_uid: 'test-uid-not-a-secret', kx_encounter_id: 'ENC1',
     doctor_uid: 'docABCDEF', doctor_name_with_speciality: 'Dr. A(Orthopaedics)',
     consult_type: 'HOSPITAL_GP', type_of_prescription: 'GENERAL_PRACTITIONER',
     ts: '2026-06-30 10:00:00+05:30', prescription_url: 'https://gcs/p.pdf',
@@ -83,7 +83,7 @@ test('mapPrescription extracts keys + coerces array/json fields', () => {
     presenting_complaint: 'low back pain', plan_of_management: 'MRI advised',
   };
   const { keys, prescription } = mapPrescription(row);
-  assert.equal(keys.prescUid, 'uTAWDQinrFFW');
+  assert.equal(keys.prescUid, '00000000-0000-4000-8000-000000000001');
   assert.equal(keys.individualUid, 'test-uid-not-a-secret');
   assert.equal(keys.kxEncounterId, 'ENC1');
   assert.equal(keys.doctorSpeciality, 'Orthopaedics');
@@ -95,7 +95,7 @@ test('mapPrescription extracts keys + coerces array/json fields', () => {
 });
 
 test('mapPrescription prefers the clean CleanCase content when supplied', () => {
-  const row: Record<string, unknown> = { uid: 'uTAWDQinrFFW', individual_uid: 'test-uid-not-a-secret', ts: '2026-06-30T00:00:00+05:30' };
+  const row: Record<string, unknown> = { uid: '00000000-0000-4000-8000-000000000001', individual_uid: 'test-uid-not-a-secret', ts: '2026-06-30T00:00:00+05:30' };
   const oc = { presentingComplaints: ['low back pain', 'radiating to leg'], diagnosisCodes: ['M54.5'],
     impressionCodes: [], impressions: ['Lumbar radiculopathy'], advice: ['MRI advised', 'analgesia'], investigations: ['MRI LS spine'] };
   const { prescription } = mapPrescription(row, oc);
@@ -118,7 +118,7 @@ test('mapReports filters null urls; episodeCoverage flips on PDF presence', () =
 });
 
 test('buildBundle assembles + sets coverage', () => {
-  const keys = { prescUid: 'uTAWDQinrFFW', individualUid: 'test-uid-not-a-secret', kxUhid: 'EHRC1',
+  const keys = { prescUid: '00000000-0000-4000-8000-000000000001', individualUid: 'test-uid-not-a-secret', kxUhid: 'EHRC1',
     kxEncounterId: null, doctorUid: null, doctorSpeciality: null, noteDate: '2026-06-30',
     consultType: null, prescriptionType: null } as EpisodeKeys;
   const presc = { url: null, meds: null, dxCodes: [], impressionCodes: [], diagnoses: [],
