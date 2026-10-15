@@ -182,7 +182,7 @@ test('…and it PROBES REACHABLE only when the WHOLE OIDC chain is configured', 
   const VALUES: Record<string, string> = {
     GCP_SA_KEY: '{"client_email":"x@y.iam.gserviceaccount.com","private_key":"k"}',
     BEDROCK_REGION: 'ap-south-1',
-    BEDROCK_ROLE_ARN: 'arn:aws:iam::819481466105:role/GCPBedrockRole',
+    BEDROCK_ROLE_ARN: 'arn:aws:iam::ACCOUNTID:role/ExampleBedrockRole',
     BEDROCK_OIDC_AUDIENCE: '588427270277',
   };
   try {

@@ -10,7 +10,7 @@ import { stripCaseArtefacts, scrubErrorText } from '../readmission-narrative-cor
 import { scrubVersionRows } from '../readmission/versions-store.ts';
 import { toFinding } from '../readmission/surface-row.ts';
 
-const HOSTILE = 'AccessDenied: arn:aws:iam::123456789012:role/secret-role sa-x@proj.iam.gserviceaccount.com audience=//iam.googleapis.com/pool';
+const HOSTILE = 'AccessDenied: arn:aws:iam::ACCOUNTID:role/secret-role sa-x@proj.iam.gserviceaccount.com audience=//iam.googleapis.com/pool';
 const set = REFRESH_ERROR_CODES as readonly string[];
 
 const seamRow = (attempts: number) => ({
