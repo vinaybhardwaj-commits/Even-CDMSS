@@ -80,3 +80,10 @@ test('source: finishTrace still receives raw text; both sites use classifyWorker
   assert.match(nb, /workerCatchCode\(e, 'narrative_failed', '\[readmission-narrative\]'\)/);
   assert.match(rf, /classifyWorkerError\(err, 'refresh_failed'\)/);
 });
+
+test('narrateOne leg-failure branch classifies r.reason (no seam: composeCaseArtefacts is a direct import, so source assert)', () => {
+  const nb = readFileSync(new URL('../readmission/narrative-backfill.ts', import.meta.url), 'utf8');
+  assert.match(nb, /legReason = classifyWorkerError\(r\.reason, 'narrative_failed'\)/);
+  assert.match(nb, /reason: legReason/);
+});
+
